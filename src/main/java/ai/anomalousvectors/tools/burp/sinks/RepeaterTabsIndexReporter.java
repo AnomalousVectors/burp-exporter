@@ -24,8 +24,10 @@ import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
+import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ToolSource;
@@ -69,6 +71,7 @@ public final class RepeaterTabsIndexReporter {
     private static final int STARTUP_DUPLICATE_SLOT_TRACE_LIMIT = 3;
     private static final Map<String, CapturedRepeaterItem> CAPTURED = new ConcurrentHashMap<>();
     private static final Set<String> QUEUED_FOR_EXPORT = ConcurrentHashMap.newKeySet();
+    private static final Set<String> SCOPE_FILTERED_FOR_EXPORT = ConcurrentHashMap.newKeySet();
     private static final Set<String> STARTUP_TRACE_LOGGED = ConcurrentHashMap.newKeySet();
     private static final Map<String, String> STARTUP_SLOT_TO_FINGERPRINT = new ConcurrentHashMap<>();
     private static final Map<String, AtomicInteger> STARTUP_DUPLICATE_SLOT_TRACE_COUNTS = new ConcurrentHashMap<>();
@@ -124,6 +127,7 @@ public final class RepeaterTabsIndexReporter {
         STARTUP_SLOT_TO_FINGERPRINT.clear();
         STARTUP_DUPLICATE_SLOT_TRACE_COUNTS.clear();
         QUEUED_FOR_EXPORT.clear();
+        SCOPE_FILTERED_FOR_EXPORT.clear();
         currentStartupSelectionMetadata = null;
         currentStartupSessionId = RepeaterMetadataTraceLabels.NONE;
         startupExportStatsSnapshot = StartupExportStatsSnapshot.empty();
@@ -876,7 +880,7 @@ public final class RepeaterTabsIndexReporter {
                 || !exportRunning
                 || !anyTrafficEnabled
                 || !repeaterTabsEnabled
-                || !QUEUED_FOR_EXPORT.add(item.captureKey)) {
+                || QUEUED_FOR_EXPORT.contains(item.captureKey)) {
             return;
         }
         Map<String, Object> document;
@@ -891,6 +895,10 @@ public final class RepeaterTabsIndexReporter {
             return;
         }
         if (document == null) {
+            recordScopeSkipIfFiltered(item);
+            return;
+        }
+        if (!QUEUED_FOR_EXPORT.add(item.captureKey)) {
             return;
         }
         Logger.logTrace("[RepeaterTabs] Queued captured tab for export captureKey="
@@ -1017,6 +1025,9 @@ public final class RepeaterTabsIndexReporter {
                 requestDoc,
                 "RepeaterTabs");
         boolean burpInScope = isInScope(url);
+        if (!ScopeFilter.shouldExport(RuntimeConfig.getState(), url, burpInScope)) {
+            return null;
+        }
         requestDoc.put("url", HttpMessageDocSupport.urlObject(url, service));
         requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
                 RequestResponseDocBuilder.safeRequestHttpVersion(request)));
@@ -1043,6 +1054,28 @@ public final class RepeaterTabsIndexReporter {
         document.put("meta", ExportMetaFields.meta("1"));
 
         return document;
+    }
+
+    private static void recordScopeSkipIfFiltered(CapturedRepeaterItem item) {
+        if (item == null || item.captureKey == null || item.requestResponse == null) {
+            return;
+        }
+        HttpRequest request = item.requestResponse.request();
+        if (request == null) {
+            return;
+        }
+        HttpService service = item.requestResponse.httpService();
+        Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
+        String url = RequestResponseDocBuilder.buildBestEffortUrl(
+                request,
+                service,
+                requestDoc,
+                "RepeaterTabs");
+        boolean burpInScope = isInScope(url);
+        if (!ScopeFilter.shouldExport(RuntimeConfig.getState(), url, burpInScope)
+                && SCOPE_FILTERED_FOR_EXPORT.add(item.captureKey)) {
+            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
+        }
     }
 
     private static boolean isInScope(String url) {

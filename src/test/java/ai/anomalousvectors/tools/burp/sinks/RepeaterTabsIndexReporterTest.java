@@ -1,6 +1,7 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.callStatic;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -9,6 +10,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.awt.FlowLayout;
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,9 +23,12 @@ import javax.swing.JTabbedPane;
 import javax.swing.JPanel;
 import javax.swing.SwingUtilities;
 
+import org.mockito.Answers;
+
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
+import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.HttpRequestResponse;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -31,6 +36,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.ui.editor.extension.EditorCreationContext;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -38,6 +44,102 @@ import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 class RepeaterTabsIndexReporterTest {
+
+    @Test
+    void buildDocument_returnsNull_whenBurpScopeRejectsRepeaterTab() {
+        ConfigState.State previousState = RuntimeConfig.getState();
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    java.util.List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_BURP,
+                    java.util.List.of(),
+                    null,
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    java.util.List.of("repeater_tabs"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
+            when(api.scope().isInScope(anyString())).thenReturn(false);
+            MontoyaApiProvider.set(api);
+
+            Object doc = callStatic(
+                    RepeaterTabsIndexReporter.class,
+                    "buildDocument",
+                    scopedRepeaterRequestResponse("https://out.example/smoke"),
+                    "Out Tab",
+                    null);
+
+            assertThat(doc).isNull();
+        } finally {
+            RuntimeConfig.updateState(previousState);
+            MontoyaApiProvider.set(null);
+            RepeaterTabsIndexReporter.clearSessionState();
+        }
+    }
+
+    @Test
+    void buildDocument_returnsNull_whenCustomScopeRejectsRepeaterTab() {
+        ConfigState.State previousState = RuntimeConfig.getState();
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    java.util.List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_CUSTOM,
+                    java.util.List.of(new ConfigState.ScopeEntry("in.example", ConfigState.Kind.STRING)),
+                    null,
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    java.util.List.of("repeater_tabs"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
+            when(api.scope().isInScope(anyString())).thenReturn(true);
+            MontoyaApiProvider.set(api);
+
+            Object doc = callStatic(
+                    RepeaterTabsIndexReporter.class,
+                    "buildDocument",
+                    scopedRepeaterRequestResponse("https://out.example/smoke"),
+                    "Out Tab",
+                    null);
+
+            assertThat(doc).isNull();
+        } finally {
+            RuntimeConfig.updateState(previousState);
+            MontoyaApiProvider.set(null);
+            RepeaterTabsIndexReporter.clearSessionState();
+        }
+    }
+
+    @Test
+    void buildDocument_returnsDocument_whenCustomScopeAcceptsRepeaterTab() {
+        ConfigState.State previousState = RuntimeConfig.getState();
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    java.util.List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_CUSTOM,
+                    java.util.List.of(new ConfigState.ScopeEntry("in.example", ConfigState.Kind.STRING)),
+                    null,
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    java.util.List.of("repeater_tabs"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
+            when(api.scope().isInScope(anyString())).thenReturn(false);
+            MontoyaApiProvider.set(api);
+
+            Object doc = callStatic(
+                    RepeaterTabsIndexReporter.class,
+                    "buildDocument",
+                    scopedRepeaterRequestResponse("https://in.example/smoke"),
+                    "In Tab",
+                    null);
+
+            assertThat(doc).isInstanceOf(Map.class);
+        } finally {
+            RuntimeConfig.updateState(previousState);
+            MontoyaApiProvider.set(null);
+            RepeaterTabsIndexReporter.clearSessionState();
+        }
+    }
 
     @Test
     void captureFromEditorContext_queuesOncePerCaptureKey_evenWhenPushSnapshotNowRuns() throws Exception {
@@ -1330,6 +1432,46 @@ class RepeaterTabsIndexReporterTest {
         when(responseBytes.getBytes()).thenReturn(rawResponse.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         when(response.toByteArray()).thenReturn(responseBytes);
         when(requestResponse.response()).thenReturn(response);
+        return requestResponse;
+    }
+
+    private static HttpRequestResponse scopedRepeaterRequestResponse(String url) {
+        URI uri = URI.create(url);
+        String query = uri.getQuery() == null ? "" : uri.getQuery();
+        String path = uri.getRawPath() == null || uri.getRawPath().isBlank() ? "/" : uri.getRawPath();
+        String pathWithQuery = query.isBlank() ? path : path + "?" + query;
+
+        HttpRequest request = mock(HttpRequest.class);
+        when(request.url()).thenReturn(url);
+        when(request.method()).thenReturn("GET");
+        when(request.path()).thenReturn(pathWithQuery);
+        when(request.pathWithoutQuery()).thenReturn(path);
+        when(request.query()).thenReturn(query);
+        when(request.fileExtension()).thenReturn("");
+        when(request.httpVersion()).thenReturn("HTTP/1.1");
+        when(request.headers()).thenReturn(List.of());
+        when(request.parameters()).thenReturn(List.of());
+        when(request.body()).thenReturn(null);
+        when(request.markers()).thenReturn(List.of());
+        when(request.contentType()).thenReturn(null);
+
+        HttpService service = mock(HttpService.class);
+        when(service.host()).thenReturn(uri.getHost());
+        when(service.port()).thenReturn(uri.getPort() < 0 ? 443 : uri.getPort());
+        when(service.secure()).thenReturn("https".equalsIgnoreCase(uri.getScheme()));
+
+        HttpResponse response = mock(HttpResponse.class);
+        ByteArray responseBytes = mock(ByteArray.class);
+        when(responseBytes.getBytes()).thenReturn("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        when(response.toByteArray()).thenReturn(responseBytes);
+
+        HttpRequestResponse requestResponse = mock(HttpRequestResponse.class);
+        when(requestResponse.request()).thenReturn(request);
+        when(requestResponse.response()).thenReturn(response);
+        when(requestResponse.httpService()).thenReturn(service);
+        when(requestResponse.annotations()).thenReturn(null);
+        when(requestResponse.copyToTempFile()).thenReturn(requestResponse);
         return requestResponse;
     }
 

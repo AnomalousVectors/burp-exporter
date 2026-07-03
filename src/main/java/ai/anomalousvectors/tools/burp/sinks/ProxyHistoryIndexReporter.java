@@ -3,15 +3,18 @@ package ai.anomalousvectors.tools.burp.sinks;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
+import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.concurrent.EdtMonitor;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
@@ -117,6 +120,8 @@ public final class ProxyHistoryIndexReporter {
         String trafficIndexName = TrafficRouteBucket.trafficIndexName();
         String trafficIndexKey = TrafficRouteBucket.INDEX_KEY;
         SnapshotScopeCache scopeCache = new SnapshotScopeCache(api);
+        ConfigState.State state = RuntimeConfig.getState();
+        AtomicInteger skippedScope = new AtomicInteger();
 
         // {@link EdtMonitor} captures stack traces when the EDT misses its tick deadline during
         // large snapshots. Completion is logged once via {@link SnapshotSummary#logInfo}.
@@ -143,7 +148,7 @@ public final class ProxyHistoryIndexReporter {
                 trafficIndexName,
                 trafficIndexKey,
                 item -> {
-                    Map<String, Object> doc = buildDocument(item, scopeCache);
+                    Map<String, Object> doc = buildDocument(item, state, scopeCache, skippedScope);
                     if (doc == null) {
                         return null;
                     }
@@ -185,6 +190,15 @@ public final class ProxyHistoryIndexReporter {
                 exportResult.flushMs(),
                 openSearchActive,
                 RuntimeConfig.isAnyFileExportEnabled());
+        int skippedScopeCount = skippedScope.get();
+        if (skippedScopeCount > 0) {
+            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, skippedScopeCount);
+        }
+        Logger.logInfoPanelOnly("[SnapshotExport] ProxyHistory: backlog filters: seen="
+                + history.size()
+                + " exported=" + exportResult.attempted()
+                + " skipped_scope=" + skippedScopeCount
+                + " in " + durationMs + "ms.");
         TrafficStartupBacklogSummary.complete(
                 TrafficStartupBacklogSummary.Component.PROXY_HISTORY,
                 exportResult.attempted(),
@@ -236,8 +250,14 @@ public final class ProxyHistoryIndexReporter {
                 route, outcome, openSearchActive, "Proxy history chunk");
     }
 
-    private static Map<String, Object> buildDocument(
-            ProxyHttpRequestResponse item, SnapshotScopeCache scopeCache) {
+    private static ProxyHistoryWorkItem toWorkItem(
+            ProxyHttpRequestResponse item,
+            ConfigState.State state,
+            SnapshotScopeCache scopeCache,
+            AtomicInteger skippedScope) {
+        if (item == null) {
+            return null;
+        }
         HttpRequest request = item.finalRequest();
         if (request == null) {
             return null;
@@ -246,6 +266,35 @@ public final class ProxyHistoryIndexReporter {
         Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
         String url = RequestResponseDocBuilder.buildBestEffortUrl(request, service, requestDoc, "ProxyHistory");
         boolean burpInScope = scopeCache.isInScope(url);
+        if (!ScopeFilter.shouldExport(state, url, burpInScope)) {
+            skippedScope.incrementAndGet();
+            return null;
+        }
+        return new ProxyHistoryWorkItem(item, service, requestDoc, url, burpInScope);
+    }
+
+    private static Map<String, Object> buildDocument(
+            ProxyHttpRequestResponse item,
+            ConfigState.State state,
+            SnapshotScopeCache scopeCache,
+            AtomicInteger skippedScope) {
+        ProxyHistoryWorkItem work = toWorkItem(item, state, scopeCache, skippedScope);
+        return buildDocument(work);
+    }
+
+    private static Map<String, Object> buildDocument(ProxyHistoryWorkItem work) {
+        if (work == null) {
+            return null;
+        }
+        ProxyHttpRequestResponse item = work.item();
+        HttpRequest request = item.finalRequest();
+        if (request == null) {
+            return null;
+        }
+        HttpService service = work.service();
+        Map<String, Object> requestDoc = work.requestDoc();
+        String url = work.url();
+        boolean burpInScope = work.burpInScope();
         requestDoc.put("url", HttpMessageDocSupport.urlObject(url, service));
         requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
                 RequestResponseDocBuilder.safeRequestHttpVersion(request)));
@@ -274,5 +323,13 @@ public final class ProxyHistoryIndexReporter {
 
         // HTTP docs from Proxy History are not websocket messages.
         return document;
+    }
+
+    private record ProxyHistoryWorkItem(
+            ProxyHttpRequestResponse item,
+            HttpService service,
+            Map<String, Object> requestDoc,
+            String url,
+            boolean burpInScope) {
     }
 }

@@ -5,12 +5,15 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Answers;
 
+import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import burp.api.montoya.MontoyaApi;
@@ -37,6 +40,93 @@ class ProxyHistoryIndexReporterTest {
                 null
         ));
         RuntimeConfig.setExportRunning(false);
+    }
+
+    @Test
+    void buildDocument_returnsNull_whenBurpScopeRejectsProxyHistoryItem() {
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_BURP,
+                    List.of(),
+                    null,
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    List.of("proxy_history"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
+            when(api.scope().isInScope(anyString())).thenReturn(false);
+
+            Object doc = callStatic(
+                    ProxyHistoryIndexReporter.class,
+                    "buildDocument",
+                    proxyHistoryItem("https://out.example/smoke"),
+                RuntimeConfig.getState(),
+                new ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache(api),
+                new AtomicInteger());
+
+            assertThat(doc).isNull();
+        } finally {
+            resetRuntimeConfig();
+        }
+    }
+
+    @Test
+    void buildDocument_returnsNull_whenCustomScopeRejectsProxyHistoryItem() {
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_CUSTOM,
+                    List.of(new ConfigState.ScopeEntry("in.example", ConfigState.Kind.STRING)),
+                    null,
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    List.of("proxy_history"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
+            when(api.scope().isInScope(anyString())).thenReturn(true);
+
+            Object doc = callStatic(
+                    ProxyHistoryIndexReporter.class,
+                    "buildDocument",
+                    proxyHistoryItem("https://out.example/smoke"),
+                RuntimeConfig.getState(),
+                new ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache(api),
+                new AtomicInteger());
+
+            assertThat(doc).isNull();
+        } finally {
+            resetRuntimeConfig();
+        }
+    }
+
+    @Test
+    void buildDocument_returnsDocument_whenCustomScopeAcceptsProxyHistoryItem() {
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_CUSTOM,
+                    List.of(new ConfigState.ScopeEntry("in.example", ConfigState.Kind.STRING)),
+                    null,
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    List.of("proxy_history"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
+            when(api.scope().isInScope(anyString())).thenReturn(false);
+
+            Object doc = callStatic(
+                    ProxyHistoryIndexReporter.class,
+                    "buildDocument",
+                    proxyHistoryItem("https://in.example/smoke"),
+                RuntimeConfig.getState(),
+                new ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache(api),
+                new AtomicInteger());
+
+            assertThat(doc).isInstanceOf(Map.class);
+        } finally {
+            resetRuntimeConfig();
+        }
     }
 
     @Test
@@ -133,7 +223,9 @@ class ProxyHistoryIndexReporterTest {
                 ProxyHistoryIndexReporter.class,
                 "buildDocument",
                 item,
-                new ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache(api));
+                RuntimeConfig.getState(),
+                new ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache(api),
+                new AtomicInteger());
 
         assertThat(doc).isNotNull();
         Map<?, ?> requestDoc = map(doc.get("request"));
@@ -193,6 +285,42 @@ class ProxyHistoryIndexReporterTest {
     private static Map<?, ?> map(Object value) {
         assertThat(value).isInstanceOf(Map.class);
         return (Map<?, ?>) value;
+    }
+
+    private static ProxyHttpRequestResponse proxyHistoryItem(String url) {
+        URI uri = URI.create(url);
+        String query = uri.getQuery() == null ? "" : uri.getQuery();
+        String path = uri.getRawPath() == null || uri.getRawPath().isBlank() ? "/" : uri.getRawPath();
+        String pathWithQuery = query.isBlank() ? path : path + "?" + query;
+
+        HttpRequest request = mock(HttpRequest.class);
+        when(request.url()).thenReturn(url);
+        when(request.method()).thenReturn("GET");
+        when(request.path()).thenReturn(pathWithQuery);
+        when(request.pathWithoutQuery()).thenReturn(path);
+        when(request.query()).thenReturn(query);
+        when(request.fileExtension()).thenReturn("");
+        when(request.httpVersion()).thenReturn("HTTP/1.1");
+        when(request.headers()).thenReturn(List.of());
+        when(request.parameters()).thenReturn(List.of());
+        when(request.body()).thenReturn(null);
+        when(request.markers()).thenReturn(List.of());
+        when(request.contentType()).thenReturn(null);
+
+        HttpService service = mock(HttpService.class);
+        when(service.host()).thenReturn(uri.getHost());
+        when(service.port()).thenReturn(uri.getPort() < 0 ? 443 : uri.getPort());
+        when(service.secure()).thenReturn("https".equalsIgnoreCase(uri.getScheme()));
+
+        ProxyHttpRequestResponse item = mock(ProxyHttpRequestResponse.class);
+        when(item.finalRequest()).thenReturn(request);
+        when(item.httpService()).thenReturn(service);
+        when(item.id()).thenReturn(99);
+        when(item.listenerPort()).thenReturn(8080);
+        when(item.edited()).thenReturn(false);
+        when(item.annotations()).thenReturn(null);
+        when(item.response()).thenReturn(null);
+        return item;
     }
 
     private static void assertContainsKeys(Map<?, ?> map, String... keys) {
