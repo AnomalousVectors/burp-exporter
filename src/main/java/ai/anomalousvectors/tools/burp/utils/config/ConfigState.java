@@ -72,9 +72,39 @@ public final class ConfigState {
     public static final String OPEN_SEARCH_TLS_INSECURE = "insecure";
     /** Default persisted OpenSearch auth type selection. */
     public static final String DEFAULT_OPEN_SEARCH_AUTH_TYPE = "Basic";
+    /** Default database destination selected in the Config UI. */
+    public static final String DEFAULT_SEARCH_DESTINATION = "openSearch";
 
     /** Scope kind for {@link ScopeEntry}. */
     public enum Kind { REGEX, STRING }
+
+    /** Supported database destinations. */
+    public enum SearchDestination {
+        /** Self-managed or upstream OpenSearch. */
+        OPEN_SEARCH("openSearch", "OpenSearch"),
+        /** Amazon OpenSearch Service. */
+        OPEN_SEARCH_AMAZON("openSearchAmazon", "Amazon OpenSearch"),
+        /** Elasticsearch. */
+        ELASTICSEARCH("elasticsearch", "Elasticsearch");
+
+        private final String configKey;
+        private final String displayName;
+
+        SearchDestination(String configKey, String displayName) {
+            this.configKey = configKey;
+            this.displayName = displayName;
+        }
+
+        /** Returns the stable JSON config key for this destination. */
+        public String configKey() {
+            return configKey;
+        }
+
+        /** Returns the UI/operator-facing destination name. */
+        public String displayName() {
+            return displayName;
+        }
+    }
 
     private static final BigDecimal GB_BYTES_DECIMAL = BigDecimal.valueOf(1024L * 1024L * 1024L);
     private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
@@ -99,20 +129,58 @@ public final class ConfigState {
                         boolean fileTotalCapEnabled, double fileTotalCapGb,
                         boolean fileDiskUsagePercentEnabled, int fileDiskUsagePercent,
                         boolean osEnabled, String openSearchUrl, String openSearchUser, String openSearchPassword,
-                        String openSearchTlsMode, OpenSearchOptions openSearchOptions) {
+                        String openSearchTlsMode, OpenSearchOptions openSearchOptions,
+                        String searchDestination,
+                        String openSearchAmazonUrl,
+                        OpenSearchAmazonOptions openSearchAmazonOptions,
+                        String elasticSearchUrl,
+                        ElasticsearchOptions elasticSearchOptions) {
         public Sinks {
             filesPath = filesPath != null ? filesPath : "";
             fileTotalCapGb = normalizeFileTotalCapGb(fileTotalCapGb);
             fileDiskUsagePercent = Math.clamp(fileDiskUsagePercent, 1, 100);
+            openSearchUrl = openSearchUrl != null ? openSearchUrl : "";
             openSearchUser = openSearchUser != null ? openSearchUser : "";
             openSearchPassword = openSearchPassword != null ? openSearchPassword : "";
             openSearchTlsMode = normalizeOpenSearchTlsMode(openSearchTlsMode);
             openSearchOptions = openSearchOptions == null ? defaultOpenSearchOptions() : openSearchOptions;
+            searchDestination = normalizeSearchDestination(searchDestination).configKey();
+            openSearchAmazonUrl = openSearchAmazonUrl != null ? openSearchAmazonUrl : "";
+            openSearchAmazonOptions = openSearchAmazonOptions == null
+                    ? defaultOpenSearchAmazonOptions()
+                    : openSearchAmazonOptions;
+            elasticSearchUrl = elasticSearchUrl != null ? elasticSearchUrl : "";
+            elasticSearchOptions = elasticSearchOptions == null
+                    ? defaultElasticsearchOptions()
+                    : elasticSearchOptions;
         }
 
         /** Returns the configured file cap converted to bytes for runtime enforcement. */
         public long fileTotalCapBytes() {
             return gbToBytes(fileTotalCapGb);
+        }
+
+        /** Returns the selected database destination. */
+        public SearchDestination searchDestinationKind() {
+            return normalizeSearchDestination(searchDestination);
+        }
+
+        /** Returns the configured URL for the selected database destination. */
+        public String selectedSearchUrl() {
+            return switch (searchDestinationKind()) {
+                case OPEN_SEARCH -> openSearchUrl;
+                case OPEN_SEARCH_AMAZON -> openSearchAmazonUrl;
+                case ELASTICSEARCH -> elasticSearchUrl;
+            };
+        }
+
+        /** Returns the configured TLS mode for the selected database destination. */
+        public String selectedSearchTlsMode() {
+            return switch (searchDestinationKind()) {
+                case OPEN_SEARCH -> openSearchTlsMode;
+                case OPEN_SEARCH_AMAZON -> openSearchAmazonOptions.tlsMode();
+                case ELASTICSEARCH -> elasticSearchOptions.tlsMode();
+            };
         }
 
         public Sinks(boolean filesEnabled, String filesPath,
@@ -182,6 +250,21 @@ public final class ConfigState {
             this(filesEnabled, filesPath, osEnabled, openSearchUrl, openSearchUser, openSearchPassword,
                     openSearchInsecureSsl ? OPEN_SEARCH_TLS_INSECURE : OPEN_SEARCH_TLS_VERIFY);
         }
+
+        public Sinks(boolean filesEnabled, String filesPath, boolean fileJsonlEnabled, boolean fileBulkNdjsonEnabled,
+                     boolean fileTotalCapEnabled, double fileTotalCapGb,
+                     boolean fileDiskUsagePercentEnabled, int fileDiskUsagePercent,
+                     boolean osEnabled, String openSearchUrl, String openSearchUser, String openSearchPassword,
+                     String openSearchTlsMode, OpenSearchOptions openSearchOptions) {
+            this(filesEnabled, filesPath, fileJsonlEnabled, fileBulkNdjsonEnabled,
+                    fileTotalCapEnabled, fileTotalCapGb,
+                    fileDiskUsagePercentEnabled, fileDiskUsagePercent,
+                    osEnabled, openSearchUrl, openSearchUser, openSearchPassword,
+                    openSearchTlsMode, openSearchOptions,
+                    DEFAULT_SEARCH_DESTINATION,
+                    "", defaultOpenSearchAmazonOptions(),
+                    "", defaultElasticsearchOptions());
+        }
     }
 
     /** Persisted non-secret OpenSearch settings that should survive config export/import. */
@@ -198,6 +281,54 @@ public final class ConfigState {
             apiKeyId = apiKeyId == null ? "" : apiKeyId;
             certPath = certPath == null ? "" : certPath;
             certKeyPath = certKeyPath == null ? "" : certKeyPath;
+            pinnedTlsCertificateSourcePath = pinnedTlsCertificateSourcePath == null ? "" : pinnedTlsCertificateSourcePath;
+            pinnedTlsCertificateFingerprintSha256 = pinnedTlsCertificateFingerprintSha256 == null
+                    ? "" : pinnedTlsCertificateFingerprintSha256;
+            pinnedTlsCertificateEncodedBase64 = pinnedTlsCertificateEncodedBase64 == null
+                    ? "" : pinnedTlsCertificateEncodedBase64;
+        }
+    }
+
+    /** Persisted non-secret Amazon OpenSearch Service settings. */
+    public record OpenSearchAmazonOptions(
+            String authType,
+            String username,
+            String region,
+            String profile,
+            String tlsMode,
+            String pinnedTlsCertificateSourcePath,
+            String pinnedTlsCertificateFingerprintSha256,
+            String pinnedTlsCertificateEncodedBase64) {
+        public OpenSearchAmazonOptions {
+            authType = normalizeOpenSearchAmazonAuthType(authType);
+            username = username == null ? "" : username.trim();
+            region = region == null ? "" : region.trim();
+            profile = profile == null ? "" : profile.trim();
+            tlsMode = normalizeOpenSearchTlsMode(tlsMode);
+            pinnedTlsCertificateSourcePath = pinnedTlsCertificateSourcePath == null ? "" : pinnedTlsCertificateSourcePath;
+            pinnedTlsCertificateFingerprintSha256 = pinnedTlsCertificateFingerprintSha256 == null
+                    ? "" : pinnedTlsCertificateFingerprintSha256;
+            pinnedTlsCertificateEncodedBase64 = pinnedTlsCertificateEncodedBase64 == null
+                    ? "" : pinnedTlsCertificateEncodedBase64;
+        }
+    }
+
+    /** Persisted non-secret Elasticsearch settings. */
+    public record ElasticsearchOptions(
+            String authType,
+            String username,
+            String certPath,
+            String certKeyPath,
+            String tlsMode,
+            String pinnedTlsCertificateSourcePath,
+            String pinnedTlsCertificateFingerprintSha256,
+            String pinnedTlsCertificateEncodedBase64) {
+        public ElasticsearchOptions {
+            authType = normalizeElasticsearchAuthType(authType);
+            username = username == null ? "" : username.trim();
+            certPath = certPath == null ? "" : certPath.trim();
+            certKeyPath = certKeyPath == null ? "" : certKeyPath.trim();
+            tlsMode = normalizeOpenSearchTlsMode(tlsMode);
             pinnedTlsCertificateSourcePath = pinnedTlsCertificateSourcePath == null ? "" : pinnedTlsCertificateSourcePath;
             pinnedTlsCertificateFingerprintSha256 = pinnedTlsCertificateFingerprintSha256 == null
                     ? "" : pinnedTlsCertificateFingerprintSha256;
@@ -385,6 +516,17 @@ public final class ConfigState {
         return new OpenSearchOptions(DEFAULT_OPEN_SEARCH_AUTH_TYPE, "", "", "", "", "", "");
     }
 
+    /** Default persisted Amazon OpenSearch Service non-secret settings. */
+    public static OpenSearchAmazonOptions defaultOpenSearchAmazonOptions() {
+        return new OpenSearchAmazonOptions("IAM (sigV4)", "", "", "", OPEN_SEARCH_TLS_VERIFY, "", "", "");
+    }
+
+    /** Default persisted Elasticsearch non-secret settings. */
+    public static ElasticsearchOptions defaultElasticsearchOptions() {
+        return new ElasticsearchOptions(DEFAULT_OPEN_SEARCH_AUTH_TYPE, "", "", "",
+                OPEN_SEARCH_TLS_VERIFY, "", "", "");
+    }
+
     /** Converts a human-friendly GB value to runtime bytes using half-up rounding. */
     public static long gbToBytes(double gb) {
         BigDecimal normalized = BigDecimal.valueOf(normalizeFileTotalCapGb(gb));
@@ -423,12 +565,45 @@ public final class ConfigState {
             return DEFAULT_OPEN_SEARCH_AUTH_TYPE;
         }
         return switch (authType.trim().toLowerCase(Locale.ROOT)) {
-            case "api key", "apikey" -> "API Key";
-            case "jwt" -> "JWT";
+            case "api key", "apikey" -> "API key";
+            case "bearer token", "bearer", "jwt" -> "Bearer token";
             case "certificate", "cert" -> "Certificate";
             case "none" -> "None";
             default -> "Basic";
         };
+    }
+
+    /** Returns a normalized database destination, defaulting to upstream OpenSearch. */
+    public static SearchDestination normalizeSearchDestination(String destination) {
+        if (destination == null || destination.isBlank()) {
+            return SearchDestination.OPEN_SEARCH;
+        }
+        return switch (destination.trim().toLowerCase(Locale.ROOT)) {
+            case "opensearch", "open_search", "open-search", "open search" -> SearchDestination.OPEN_SEARCH;
+            case "opensearchamazon", "open_search_amazon", "open-search-amazon", "open search amazon",
+                    "amazonopensearch", "amazon_opensearch", "amazon-opensearch", "amazon opensearch",
+                    "amazon open search", "openSearchAmazon" -> SearchDestination.OPEN_SEARCH_AMAZON;
+            case "elasticsearch", "elastic_search", "elastic-search", "elastic search" -> SearchDestination.ELASTICSEARCH;
+            default -> SearchDestination.OPEN_SEARCH;
+        };
+    }
+
+    /** Returns a normalized Amazon OpenSearch Service auth type. */
+    public static String normalizeOpenSearchAmazonAuthType(String authType) {
+        if (authType == null || authType.isBlank()) {
+            return "IAM (sigV4)";
+        }
+        return switch (authType.trim().toLowerCase(Locale.ROOT)) {
+            case "iam (sigv4)", "iam", "sigv4", "aws sigv4", "aws_sigv4" -> "IAM (sigV4)";
+            case "basic" -> "Basic";
+            case "none" -> "None";
+            default -> "IAM (sigV4)";
+        };
+    }
+
+    /** Returns a normalized Elasticsearch auth type. */
+    public static String normalizeElasticsearchAuthType(String authType) {
+        return normalizeOpenSearchAuthType(authType);
     }
 
     /** Returns one of trace/debug/info/warn/error, defaulting to trace. */

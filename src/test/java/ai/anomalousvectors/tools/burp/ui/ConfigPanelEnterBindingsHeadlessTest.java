@@ -3,7 +3,6 @@ package ai.anomalousvectors.tools.burp.ui;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 
-import javax.swing.JCheckBox;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 
@@ -25,7 +24,7 @@ class ConfigPanelEnterBindingsHeadlessTest {
         @Override public void onFileStatus(String m) {
             // File status is not observed in this test; required by ConfigController.Ui
         }
-        @Override public void onOpenSearchStatus(String m) { os.set(m); }
+        @Override public void onDatabaseStatus(String m) { os.set(m); }
         @Override public void onControlStatus(String m) {
             // Control status is not observed in this test; required by ConfigController.Ui
         }
@@ -45,7 +44,7 @@ class ConfigPanelEnterBindingsHeadlessTest {
             }
             p.doLayout();
 
-            JCheckBox osEnable = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
+            javax.swing.AbstractButton osEnable = javax.swing.AbstractButton.class.cast(get(p, "openSearchSinkCheckbox"));
             if (!osEnable.isSelected()) osEnable.doClick();
 
             ref.set(p);
@@ -87,6 +86,6 @@ class ConfigPanelEnterBindingsHeadlessTest {
             }
             LockSupport.parkNanos(15_000_000L); // ~15ms without using Thread.sleep
         }
-        throw new AssertionError("Timed out waiting for OpenSearch status");
+        throw new AssertionError("Timed out waiting for Database status");
     }
 }

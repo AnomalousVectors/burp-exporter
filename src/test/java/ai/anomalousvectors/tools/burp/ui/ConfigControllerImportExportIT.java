@@ -32,7 +32,7 @@ class ConfigControllerImportExportIT {
         }
 
         @Override public void onFileStatus(String message) { /* not used */ }
-        @Override public void onOpenSearchStatus(String message) { /* not used */ }
+        @Override public void onDatabaseStatus(String message) { /* not used */ }
         @Override public void onControlStatus(String message) {
             this.control = message;
             if (message == null) {
@@ -108,9 +108,8 @@ class ConfigControllerImportExportIT {
         cc.importConfigAsync(tmp);
         assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
         assertThat(ui.control).contains("Import failed:");
-        assertThat(ui.control).contains("sinks.files");
-        assertThat(ui.control).contains("sinks.openSearch");
-        assertThat(ui.control).contains("sinks.files.limits.totalEnabled");
+        assertThat(ui.control).contains("sinks.database");
+        assertThat(ui.control).contains("sinks.database.openSearch.url");
     }
 
     @Test

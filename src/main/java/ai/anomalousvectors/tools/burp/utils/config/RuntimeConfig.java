@@ -268,20 +268,31 @@ public final class RuntimeConfig {
         }
     }
 
-    /** True when OpenSearch export is enabled and a non-blank runtime URL is available. */
+    /** True when the selected wired database export destination has a non-blank runtime URL. */
     public static boolean isOpenSearchExportEnabled() {
+        return isSearchExportEnabled();
+    }
+
+    /** True when the selected database destination is enabled and has a non-blank runtime URL. */
+    public static boolean isSearchExportEnabled() {
         ConfigState.State current = state;
         return current != null
                 && current.sinks() != null
                 && current.sinks().osEnabled()
-                && !safe(current.sinks().openSearchUrl()).isBlank();
+                && isSearchDestinationExportWired(current.sinks().searchDestinationKind())
+                && !safe(current.sinks().selectedSearchUrl()).isBlank();
     }
 
-    /** True when OpenSearch export is enabled for the traffic source and at least one tool type is selected. */
+    /** True when wired database export is enabled for traffic and at least one tool type is selected. */
     public static boolean isOpenSearchTrafficEnabled() {
+        return isSearchTrafficEnabled();
+    }
+
+    /** True when database export is enabled for the traffic source and at least one tool type is selected. */
+    public static boolean isSearchTrafficEnabled() {
         ConfigState.State current = state;
         return current != null
-                && isOpenSearchExportEnabled()
+                && isSearchExportEnabled()
                 && isDataSourceEnabled(ConfigKeys.SRC_TRAFFIC)
                 && current.trafficToolTypes() != null
                 && !current.trafficToolTypes().isEmpty();
@@ -293,7 +304,7 @@ public final class RuntimeConfig {
         if (current == null || current.sinks() == null) {
             return false;
         }
-        return isAnyFileExportEnabled() || isOpenSearchExportEnabled();
+        return isAnyFileExportEnabled() || isSearchExportEnabled();
     }
 
     /**
@@ -301,21 +312,21 @@ public final class RuntimeConfig {
      *
      * <p>The result is intended for UI and log messages such as start/stop status updates. It
      * reflects the current runtime sink selection and returns {@code "no destinations"} when
-     * neither Files nor OpenSearch is enabled.</p>
+     * neither Files nor a database destination is enabled.</p>
      *
      * @return destination summary suitable for operator-facing status text
      */
     public static String activeSinkSummary() {
         boolean files = isAnyFileExportEnabled();
-        boolean openSearch = isOpenSearchExportEnabled();
-        if (files && openSearch) {
-            return "Files and OpenSearch";
+        boolean search = isSearchExportEnabled();
+        if (files && search) {
+            return "Files and " + searchDestinationDisplayName();
         }
         if (files) {
             return "Files";
         }
-        if (openSearch) {
-            return "OpenSearch";
+        if (search) {
+            return searchDestinationDisplayName();
         }
         return "no destinations";
     }
@@ -327,7 +338,7 @@ public final class RuntimeConfig {
                 && isDataSourceEnabled(ConfigKeys.SRC_TRAFFIC)
                 && current.trafficToolTypes() != null
                 && !current.trafficToolTypes().isEmpty()
-                && (isOpenSearchTrafficEnabled() || isAnyFileExportEnabled());
+                && (isSearchTrafficEnabled() || isAnyFileExportEnabled());
     }
 
     /** Returns whether the exporter source is enabled with at least one sub-option selected. */
@@ -337,7 +348,7 @@ public final class RuntimeConfig {
                 && isDataSourceEnabled(ConfigKeys.SRC_EXPORTER)
                 && current.exporterSubOptions() != null
                 && !current.exporterSubOptions().isEmpty()
-                && (isOpenSearchExportEnabled() || isAnyFileExportEnabled());
+                && (isSearchExportEnabled() || isAnyFileExportEnabled());
     }
 
     /** Returns whether the named data source is currently enabled after edition normalization. */
@@ -457,23 +468,57 @@ public final class RuntimeConfig {
         return resolvedIndexNamesAt;
     }
 
-    /** Current OpenSearch URL for runtime exports; blank when OpenSearch export is disabled. */
+    /** Current selected database URL for runtime exports; blank when database export is disabled. */
     public static String openSearchUrl() {
-        if (!isOpenSearchExportEnabled()) {
+        return searchBaseUrl();
+    }
+
+    /** Current selected database URL for runtime exports; blank when database export is disabled. */
+    public static String searchBaseUrl() {
+        if (!isSearchExportEnabled()) {
             return "";
         }
         ConfigState.State current = state;
-        return current == null ? "" : safe(current.sinks().openSearchUrl());
+        return current == null || current.sinks() == null ? "" : safe(current.sinks().selectedSearchUrl());
     }
 
     /**
-     * Returns {@code true} when OpenSearch export is currently active, i.e. enabled and resolved
-     * to a non-blank base URL. Convenience over inline {@code baseUrl != null && !baseUrl.isBlank()}
-     * checks scattered across reporters.
+     * Returns {@code true} when selected database export is enabled and resolved to a non-blank base URL.
      */
     public static boolean isOpenSearchActive() {
-        String baseUrl = openSearchUrl();
+        return isSearchActive();
+    }
+
+    /**
+     * Returns whether selected database writes should be attempted now.
+     *
+     * @return {@code true} when a configured database destination has a non-blank URL
+     */
+    public static boolean isSearchActive() {
+        String baseUrl = searchBaseUrl();
         return baseUrl != null && !baseUrl.isBlank();
+    }
+
+    /** Returns the currently selected database destination. */
+    public static ConfigState.SearchDestination searchDestinationKind() {
+        ConfigState.State current = state;
+        return current == null || current.sinks() == null
+                ? ConfigState.SearchDestination.OPEN_SEARCH
+                : current.sinks().searchDestinationKind();
+    }
+
+    /** Returns the operator-facing name of the selected database destination. */
+    public static String searchDestinationDisplayName() {
+        return searchDestinationKind().displayName();
+    }
+
+    /** Returns whether Start/export is currently implemented for the selected database destination. */
+    public static boolean isSearchDestinationExportWired(ConfigState.SearchDestination destination) {
+        ConfigState.SearchDestination normalized = destination == null
+                ? ConfigState.SearchDestination.OPEN_SEARCH
+                : destination;
+        return normalized == ConfigState.SearchDestination.OPEN_SEARCH
+                || normalized == ConfigState.SearchDestination.ELASTICSEARCH;
     }
 
     /** Optional OpenSearch username for basic auth (empty = no auth). */
@@ -494,6 +539,14 @@ public final class RuntimeConfig {
         return current == null || current.sinks() == null
                 ? ConfigState.OPEN_SEARCH_TLS_VERIFY
                 : ConfigState.normalizeOpenSearchTlsMode(current.sinks().openSearchTlsMode());
+    }
+
+    /** Current selected database TLS mode. */
+    public static String searchTlsMode() {
+        ConfigState.State current = state;
+        return current == null || current.sinks() == null
+                ? ConfigState.OPEN_SEARCH_TLS_VERIFY
+                : ConfigState.normalizeOpenSearchTlsMode(current.sinks().selectedSearchTlsMode());
     }
 
     /** Returns the persisted UI preferences currently attached to runtime config. */
@@ -577,7 +630,13 @@ public final class RuntimeConfig {
                         safe(sinks.openSearchUrl()),
                         safe(sinks.openSearchUser()),
                         safe(sinks.openSearchPassword()),
-                        sinks.openSearchTlsMode()
+                        sinks.openSearchTlsMode(),
+                        sinks.openSearchOptions(),
+                        sinks.searchDestination(),
+                        safe(sinks.openSearchAmazonUrl()),
+                        sinks.openSearchAmazonOptions(),
+                        safe(sinks.elasticSearchUrl()),
+                        sinks.elasticSearchOptions()
                 );
 
         String scopeType = ConfigState.normalizeScopeType(incoming.scopeType());
@@ -748,23 +807,23 @@ public final class RuntimeConfig {
                 && current.dataSources().contains(ConfigKeys.SRC_TRAFFIC)
                 && current.trafficToolTypes() != null
                 && !current.trafficToolTypes().isEmpty()
-                && (isOpenSearchTrafficEnabledForState(current) || isAnyFileExportEnabledForState(current));
+                && (isSearchTrafficEnabledForState(current) || isAnyFileExportEnabledForState(current));
     }
 
-    private static boolean isOpenSearchTrafficEnabledForState(ConfigState.State current) {
+    private static boolean isSearchTrafficEnabledForState(ConfigState.State current) {
         return current != null
                 && current.dataSources() != null
                 && current.dataSources().contains(ConfigKeys.SRC_TRAFFIC)
                 && current.trafficToolTypes() != null
                 && !current.trafficToolTypes().isEmpty()
-                && isOpenSearchExportEnabledForState(current);
+                && isSearchExportEnabledForState(current);
     }
 
-    private static boolean isOpenSearchExportEnabledForState(ConfigState.State current) {
+    private static boolean isSearchExportEnabledForState(ConfigState.State current) {
         return current != null
                 && current.sinks() != null
                 && current.sinks().osEnabled()
-                && !safe(current.sinks().openSearchUrl()).isBlank();
+                && !safe(current.sinks().selectedSearchUrl()).isBlank();
     }
 
     private static boolean isAnyFileExportEnabledForState(ConfigState.State current) {
@@ -799,7 +858,13 @@ public final class RuntimeConfig {
                         sinks.openSearchUrl(),
                         sinks.openSearchUser(),
                         sinks.openSearchPassword(),
-                        sinks.openSearchTlsMode()),
+                        sinks.openSearchTlsMode(),
+                        sinks.openSearchOptions(),
+                        sinks.searchDestination(),
+                        sinks.openSearchAmazonUrl(),
+                        sinks.openSearchAmazonOptions(),
+                        sinks.elasticSearchUrl(),
+                        sinks.elasticSearchOptions()),
                 current.settingsSub(),
                 current.trafficToolTypes(),
                 current.findingsSeverities(),
@@ -832,7 +897,13 @@ public final class RuntimeConfig {
                         sinks.openSearchUrl(),
                         sinks.openSearchUser(),
                         sinks.openSearchPassword(),
-                        sinks.openSearchTlsMode()),
+                        sinks.openSearchTlsMode(),
+                        sinks.openSearchOptions(),
+                        sinks.searchDestination(),
+                        sinks.openSearchAmazonUrl(),
+                        sinks.openSearchAmazonOptions(),
+                        sinks.elasticSearchUrl(),
+                        sinks.elasticSearchOptions()),
                 current.settingsSub(),
                 current.trafficToolTypes(),
                 current.findingsSeverities(),

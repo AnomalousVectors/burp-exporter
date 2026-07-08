@@ -65,7 +65,7 @@ class ConfigPanelStartCreatesIndexesBeforePushIT {
 
     private static final class TestUi implements ConfigController.Ui {
         @Override public void onFileStatus(String m) { }
-        @Override public void onOpenSearchStatus(String m) { }
+        @Override public void onDatabaseStatus(String m) { }
         @Override public void onControlStatus(String m) { }
     }
 
@@ -99,14 +99,14 @@ class ConfigPanelStartCreatesIndexesBeforePushIT {
             p.doLayout();
             JTextField urlField = JTextField.class.cast(get(p, "openSearchUrlField"));
             urlField.setText(BASE_URL);
-            JCheckBox osCheckbox = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
+            javax.swing.AbstractButton osCheckbox = javax.swing.AbstractButton.class.cast(get(p, "openSearchSinkCheckbox"));
             if (!osCheckbox.isSelected()) osCheckbox.doClick();
             JCheckBox issuesCheckbox = JCheckBox.class.cast(get(p, "issuesCheckbox"));
             issuesCheckbox.setEnabled(true);
             if (!issuesCheckbox.isSelected()) issuesCheckbox.doClick();
             javax.swing.JComboBox<?> authCombo = getComboBox(p, "openSearchAuthTypeCombo");
             if (authCombo != null && config.username() != null && !config.username().isBlank()) {
-                authCombo.setSelectedIndex(1);
+                authCombo.setSelectedItem("Basic");
                 JTextField userField = JTextField.class.cast(get(p, "openSearchUserField"));
                 JTextField passField = JTextField.class.cast(get(p, "openSearchPasswordField"));
                 if (userField != null) userField.setText(config.username());

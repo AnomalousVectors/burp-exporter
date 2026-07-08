@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 
 /**
  * Unit tests for {@link ChunkedBulkSender}: URL building, response parsing, and push with
@@ -152,13 +153,13 @@ class ChunkedBulkSenderTest {
     }
 
     @Test
-    void addPreemptiveBasicAuthHeader_setsHeader_whenCredentialsConfigured() {
+    void addPreemptiveAuthHeader_setsBasicHeader_whenCredentialsConfigured() {
         ConfigState.State previous = RuntimeConfig.getState();
         try {
             RuntimeConfig.updateState(stateWithOpenSearchCreds("alice", "s3cr3t"));
             HttpPost post = new HttpPost("https://opensearch.url:9200/_bulk");
 
-            ChunkedBulkSender.addPreemptiveBasicAuthHeader(post);
+            ChunkedBulkSender.addPreemptiveAuthHeader(post);
 
             String expected = "Basic "
                     + Base64.getEncoder().encodeToString("alice:s3cr3t".getBytes(StandardCharsets.UTF_8));
@@ -170,17 +171,53 @@ class ChunkedBulkSenderTest {
     }
 
     @Test
-    void addPreemptiveBasicAuthHeader_doesNothing_whenCredentialsMissing() {
+    void addPreemptiveAuthHeader_doesNothing_whenCredentialsMissing() {
         ConfigState.State previous = RuntimeConfig.getState();
         try {
             RuntimeConfig.updateState(stateWithOpenSearchCreds("", ""));
             HttpPost post = new HttpPost("https://opensearch.url:9200/_bulk");
 
-            ChunkedBulkSender.addPreemptiveBasicAuthHeader(post);
+            ChunkedBulkSender.addPreemptiveAuthHeader(post);
 
             assertThat(post.getFirstHeader("Authorization")).isNull();
         } finally {
             RuntimeConfig.updateState(previous);
+        }
+    }
+
+    @Test
+    void addPreemptiveAuthHeader_setsApiKeyHeader_whenTokenConfigured() {
+        ConfigState.State previous = RuntimeConfig.getState();
+        try {
+            SecureCredentialStore.saveApiKeyCredentials("os_api_token");
+            RuntimeConfig.updateState(stateWithOpenSearchAuth("API key"));
+            HttpPost post = new HttpPost("https://opensearch.url:9200/_bulk");
+
+            ChunkedBulkSender.addPreemptiveAuthHeader(post);
+
+            assertThat(post.getFirstHeader("Authorization")).isNotNull();
+            assertThat(post.getFirstHeader("Authorization").getValue()).isEqualTo("ApiKey os_api_token");
+        } finally {
+            RuntimeConfig.updateState(previous);
+            SecureCredentialStore.clearAll();
+        }
+    }
+
+    @Test
+    void addPreemptiveAuthHeader_setsBearerHeader_whenJwtConfigured() {
+        ConfigState.State previous = RuntimeConfig.getState();
+        try {
+            SecureCredentialStore.saveJwtCredentials("jwt-token");
+            RuntimeConfig.updateState(stateWithOpenSearchAuth("Bearer token"));
+            HttpPost post = new HttpPost("https://opensearch.url:9200/_bulk");
+
+            ChunkedBulkSender.addPreemptiveAuthHeader(post);
+
+            assertThat(post.getFirstHeader("Authorization")).isNotNull();
+            assertThat(post.getFirstHeader("Authorization").getValue()).isEqualTo("Bearer jwt-token");
+        } finally {
+            RuntimeConfig.updateState(previous);
+            SecureCredentialStore.clearAll();
         }
     }
 
@@ -190,6 +227,33 @@ class ChunkedBulkSenderTest {
                 ConfigKeys.SCOPE_ALL,
                 List.of(),
                 new ConfigState.Sinks(false, "", true, "https://opensearch.url:9200", user, pass, false),
+                ConfigState.DEFAULT_SETTINGS_SUB,
+                ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                null
+        );
+    }
+
+    private static ConfigState.State stateWithOpenSearchAuth(String authType) {
+        return new ConfigState.State(
+                List.of(ConfigKeys.SRC_TRAFFIC),
+                ConfigKeys.SCOPE_ALL,
+                List.of(),
+                new ConfigState.Sinks(
+                        false,
+                        "",
+                        false,
+                        false,
+                        true,
+                        ConfigState.DEFAULT_FILE_TOTAL_CAP_GB,
+                        true,
+                        ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT,
+                        true,
+                        "https://opensearch.url:9200",
+                        "",
+                        "",
+                        ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                        new ConfigState.OpenSearchOptions(authType, "", "", "", "", "", "")),
                 ConfigState.DEFAULT_SETTINGS_SUB,
                 ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
                 ConfigState.DEFAULT_FINDINGS_SEVERITIES,

@@ -51,7 +51,7 @@ class ConfigPanelStartFailureAuthIT {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
+                javax.swing.AbstractButton openSearchEnabled = javax.swing.AbstractButton.class.cast(get(p, "openSearchSinkCheckbox"));
                 if (!openSearchEnabled.isSelected()) {
                     openSearchEnabled.doClick();
                 }
@@ -127,7 +127,7 @@ class ConfigPanelStartFailureAuthIT {
                 JTextField filePathField = JTextField.class.cast(get(p, "filePathField"));
                 filePathField.setText(invalidFileRoot.toAbsolutePath().normalize().toString());
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
+                javax.swing.AbstractButton openSearchEnabled = javax.swing.AbstractButton.class.cast(get(p, "openSearchSinkCheckbox"));
                 if (!openSearchEnabled.isSelected()) {
                     openSearchEnabled.doClick();
                 }

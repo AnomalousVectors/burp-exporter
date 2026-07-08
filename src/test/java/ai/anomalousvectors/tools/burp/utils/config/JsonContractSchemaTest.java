@@ -26,11 +26,14 @@ class JsonContractSchemaTest {
     @Test
     void build_outputs_sink_contract_for_each_auth_type() throws IOException {
         JsonNode contract = readJsonResource("/contracts/exported-config-contract.json");
-        for (String authType : stringList(contract.path("sinks").path("openSearch").path("auth").path("allowedTypes"))) {
+        JsonNode databaseContract = contract.path("sinks").path("database");
+        JsonNode openSearchContract = databaseContract.path("openSearch");
+        for (String authType : stringList(openSearchContract.path("auth").path("allowedTypes"))) {
             String json = ConfigJsonMapper.build(stateForAuthType(authType));
             JsonNode root = Json.MAPPER.readTree(json);
             assertConformsToContract(root, contract);
-            assertThat(root.path("sinks").path("openSearch").path("auth").path("type").asText()).isEqualTo(authType);
+            assertThat(root.path("sinks").path("database").path("openSearch").path("auth").path("type").asText())
+                    .isEqualTo(authType);
         }
     }
 
@@ -49,26 +52,46 @@ class JsonContractSchemaTest {
         assertThat(stringList(files.path("formats")))
                 .allMatch(stringList(contract.path("sinks").path("files").path("allowedFormats"))::contains);
 
-        JsonNode openSearch = sinks.path("openSearch");
-        assertAllowedKeys(openSearch, stringList(contract.path("sinks").path("openSearch").path("allowedKeys")));
-        JsonNode auth = openSearch.path("auth");
-        assertAllowedKeys(auth, stringList(contract.path("sinks").path("openSearch").path("auth").path("allowedKeys")));
+        JsonNode database = sinks.path("database");
+        JsonNode databaseContract = contract.path("sinks").path("database");
+        assertAllowedKeys(database, stringList(databaseContract.path("allowedKeys")));
+        assertThat(stringList(databaseContract.path("allowedTypes"))).contains(database.path("type").asText());
+
+        JsonNode openSearch = database.path("openSearch");
+        JsonNode openSearchContract = databaseContract.path("openSearch");
+        assertSearchDestinationConforms(openSearch, openSearchContract);
+
+        JsonNode openSearchAmazon = database.path("openSearchAmazon");
+        JsonNode openSearchAmazonContract = databaseContract.path("openSearchAmazon");
+        assertSearchDestinationConforms(openSearchAmazon, openSearchAmazonContract);
+
+        JsonNode elasticsearch = database.path("elasticsearch");
+        JsonNode elasticsearchContract = databaseContract.path("elasticsearch");
+        assertSearchDestinationConforms(elasticsearch, elasticsearchContract);
+    }
+
+    private static void assertSearchDestinationConforms(JsonNode destination, JsonNode destinationContract) {
+        assertAllowedKeys(destination, stringList(destinationContract.path("allowedKeys")));
+        JsonNode auth = destination.path("auth");
+        assertAllowedKeys(auth, stringList(destinationContract.path("auth").path("allowedKeys")));
 
         String authType = auth.path("type").asText(ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE);
-        List<String> allowedTypes = stringList(contract.path("sinks").path("openSearch").path("auth").path("allowedTypes"));
-        assertThat(allowedTypes).contains(authType);
+        assertThat(stringList(destinationContract.path("auth").path("allowedTypes"))).contains(authType);
 
-        List<String> allowedFieldsForType = stringList(contract.path("sinks").path("openSearch").path("auth")
-                .path("allowedFieldsByType").path(authType));
-        for (String field : List.of("username", "apiKeyId", "certPath", "certKeyPath")) {
-            if (auth.has(field)) {
-                assertThat(allowedFieldsForType).contains(field);
+        JsonNode allowedFieldsByType = destinationContract.path("auth").path("allowedFieldsByType");
+        if (allowedFieldsByType.isObject()) {
+            List<String> allowedFieldsForType = stringList(allowedFieldsByType.path(authType));
+            for (String field : List.of("username", "apiKeyId", "certPath", "certKeyPath")) {
+                if (auth.has(field)) {
+                    assertThat(allowedFieldsForType).contains(field);
+                }
             }
         }
 
-        JsonNode pinned = openSearch.path("pinnedTlsCertificate");
-        assertAllowedKeys(pinned, stringList(contract.path("sinks").path("openSearch").path("pinnedTlsCertificate")
-                .path("allowedKeys")));
+        JsonNode pinned = destination.path("pinnedTlsCertificate");
+        if (!pinned.isMissingNode()) {
+            assertAllowedKeys(pinned, stringList(destinationContract.path("pinnedTlsCertificate").path("allowedKeys")));
+        }
     }
 
     private static void assertAllowedKeys(JsonNode node, List<String> allowedKeys) {

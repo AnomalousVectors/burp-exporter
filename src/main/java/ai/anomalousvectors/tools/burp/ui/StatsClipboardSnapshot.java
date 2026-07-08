@@ -9,7 +9,13 @@ import java.util.Locale;
 import java.util.Map;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.hc.client5.http.classic.methods.HttpGet;
+import org.apache.hc.client5.http.classic.methods.HttpPost;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.ParseException;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.core.CountResponse;
 import org.opensearch.client.opensearch.indices.RefreshResponse;
@@ -22,9 +28,12 @@ import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.SystemMetrics;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClassicHttpSupport;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
+import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
 
 /**
  * Builds the Stats panel clipboard text from live counters (no Swing table state).
@@ -276,10 +285,12 @@ public final class StatsClipboardSnapshot {
     }
 
     private static Map<String, Long> resolveOpenSearchIndexCounts(List<String> indexKeys) {
+        if (RuntimeConfig.searchDestinationKind() == ConfigState.SearchDestination.ELASTICSEARCH) {
+            return resolveSearchIndexCountsOverHttp(indexKeys);
+        }
         OpenSearchClient client = OpenSearchConnector.getClient(
                 RuntimeConfig.openSearchUrl(),
-                RuntimeConfig.openSearchUser(),
-                RuntimeConfig.openSearchPassword());
+                OpenSearchAuth.fromRuntime());
         Map<String, Long> counts = new LinkedHashMap<>();
         for (String indexKey : indexKeys) {
             String indexName = RuntimeConfig.indexNameForKey(indexKey);
@@ -294,6 +305,72 @@ public final class StatsClipboardSnapshot {
             counts.put(indexKey, count.count());
         }
         return counts;
+    }
+
+    private static Map<String, Long> resolveSearchIndexCountsOverHttp(List<String> indexKeys) {
+        String baseUrl = RuntimeConfig.searchBaseUrl();
+        OpenSearchAuth auth = OpenSearchAuth.fromRuntime(RuntimeConfig.searchDestinationKind());
+        var client = OpenSearchConnector.getClassicHttpClient(baseUrl, auth);
+        HttpHost host = OpenSearchClassicHttpSupport.hostForBaseUrl(baseUrl);
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (String indexKey : indexKeys) {
+            String indexName = RuntimeConfig.indexNameForKey(indexKey);
+            if (indexName == null || indexName.isBlank()) {
+                indexName = IndexNaming.indexNameForShortName(indexKey);
+            }
+            refreshIndexOverHttp(client, host, auth, indexName);
+            counts.put(indexKey, countIndexOverHttp(client, host, auth, indexName));
+        }
+        return counts;
+    }
+
+    private static void refreshIndexOverHttp(
+            org.apache.hc.client5.http.impl.classic.CloseableHttpClient client,
+            HttpHost host,
+            OpenSearchAuth auth,
+            String indexName) {
+        try {
+            HttpPost refresh = new HttpPost("/" + indexName + "/_refresh");
+            auth.applyTo(refresh);
+            client.execute(host, refresh, response -> {
+                int status = response.getCode();
+                if (status < 200 || status >= 300) {
+                    throw new IllegalStateException("refresh failed for " + indexName + ": HTTP " + status);
+                }
+                return null;
+            });
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("refresh failed for " + indexName + ": " + ex.getMessage(), ex);
+        }
+    }
+
+    private static long countIndexOverHttp(
+            org.apache.hc.client5.http.impl.classic.CloseableHttpClient client,
+            HttpHost host,
+            OpenSearchAuth auth,
+            String indexName) {
+        try {
+            HttpGet count = new HttpGet("/" + indexName + "/_count");
+            auth.applyTo(count);
+            return client.execute(host, count, response -> {
+                int status = response.getCode();
+                String body;
+                try {
+                    body = response.getEntity() == null
+                            ? ""
+                            : EntityUtils.toString(response.getEntity(), java.nio.charset.StandardCharsets.UTF_8);
+                } catch (ParseException e) {
+                    throw new java.io.IOException("Failed to parse count response for " + indexName, e);
+                }
+                if (status < 200 || status >= 300) {
+                    throw new IllegalStateException("count failed for " + indexName + ": HTTP " + status);
+                }
+                JsonNode root = COMPACT_JSON.readTree(body);
+                return root.path("count").asLong();
+            });
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("count failed for " + indexName + ": " + ex.getMessage(), ex);
+        }
     }
 
     private static String formatIndexNamesForLog(List<String> indexKeys) {

@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.ui;
 
 import java.awt.event.KeyEvent;
 import java.lang.reflect.InvocationTargetException;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.swing.JComponent;
@@ -70,16 +71,26 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         JComponent formatsSeparator = findByName(panel, "files.format.separator");
 
         // OpenSearch row
-        JCheckBox osEnable = JCheckBox.class.cast(get(panel, "openSearchSinkCheckbox"));
+        JCheckBox databaseEnable = JCheckBox.class.cast(get(panel, "databaseSinkCheckbox"));
+        JRadioButton osDestination = JRadioButton.class.cast(get(panel, "openSearchSinkCheckbox"));
+        JRadioButton awsDestination = JRadioButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
+        JRadioButton elasticDestination = JRadioButton.class.cast(get(panel, "elasticSearchDestinationRadio"));
         JTextField osUrl = JTextField.class.cast(get(panel, "openSearchUrlField"));
+        JTextField awsUrl = JTextField.class.cast(get(panel, "openSearchAmazonUrlField"));
+        JTextField elasticUrl = JTextField.class.cast(get(panel, "elasticSearchUrlField"));
         JComboBox<?> osAuthType = getComboBox(panel, "openSearchAuthTypeCombo");
+        JComboBox<?> awsAuthType = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+        JComboBox<?> elasticAuthType = getComboBox(panel, "elasticSearchAuthTypeCombo");
         JComboBox<?> osTlsMode = getComboBox(panel, "openSearchTlsModeCombo");
+        JComboBox<?> awsTlsMode = getComboBox(panel, "openSearchAmazonTlsModeCombo");
+        JComboBox<?> elasticTlsMode = getComboBox(panel, "elasticSearchTlsModeCombo");
         JButton osTest = JButton.class.cast(get(panel, "testConnectionButton"));
 
         // Ensure both destinations are enabled
         if (!filesEnable.isSelected()) filesEnable.doClick();
         if (!bulkNdjsonEnable.isSelected()) bulkNdjsonEnable.doClick();
-        if (!osEnable.isSelected()) osEnable.doClick();
+        if (!databaseEnable.isSelected()) databaseEnable.doClick();
+        if (!osDestination.isSelected()) osDestination.doClick();
 
         // Enabled assertions
         assertThat(filesPath.isEnabled()).isTrue();
@@ -92,14 +103,23 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(formatsLabel.isEnabled()).isTrue();
         assertThat(limitsLabel.isEnabled()).isTrue();
         assertThat(formatsSeparator.isEnabled()).isTrue();
+        assertThat(databaseEnable.isEnabled()).isTrue();
+        assertThat(osDestination.isEnabled()).isTrue();
+        assertThat(awsDestination.isEnabled()).isTrue();
+        assertThat(elasticDestination.isEnabled()).isTrue();
         assertThat(osUrl.isEnabled()).isTrue();
+        assertThat(awsUrl.isEnabled()).isFalse();
+        assertThat(elasticUrl.isEnabled()).isFalse();
         assertThat(osAuthType.isEnabled()).isTrue();
+        assertThat(awsAuthType.isEnabled()).isFalse();
+        assertThat(elasticAuthType.isEnabled()).isFalse();
         assertThat(osTlsMode.isEnabled()).isTrue();
+        assertThat(awsTlsMode.isEnabled()).isFalse();
+        assertThat(elasticTlsMode.isEnabled()).isFalse();
         assertThat(osTest.isEnabled()).isTrue();
 
-        // Disable both destinations
+        // Disable Files; search destinations remain mutually exclusive radios.
         if (filesEnable.isSelected()) filesEnable.doClick();
-        if (osEnable.isSelected()) osEnable.doClick();
 
         // Disabled assertions
         assertThat(filesPath.isEnabled()).isFalse();
@@ -112,10 +132,93 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(formatsLabel.isEnabled()).isFalse();
         assertThat(limitsLabel.isEnabled()).isFalse();
         assertThat(formatsSeparator.isEnabled()).isFalse();
+        assertThat(databaseEnable.isEnabled()).isTrue();
+        assertThat(osDestination.isEnabled()).isTrue();
+        assertThat(awsDestination.isEnabled()).isTrue();
+        assertThat(elasticDestination.isEnabled()).isTrue();
+        assertThat(osUrl.isEnabled()).isTrue();
+        assertThat(awsUrl.isEnabled()).isFalse();
+        assertThat(elasticUrl.isEnabled()).isFalse();
+        assertThat(osAuthType.isEnabled()).isTrue();
+        assertThat(awsAuthType.isEnabled()).isFalse();
+        assertThat(elasticAuthType.isEnabled()).isFalse();
+        assertThat(osTlsMode.isEnabled()).isTrue();
+        assertThat(awsTlsMode.isEnabled()).isFalse();
+        assertThat(elasticTlsMode.isEnabled()).isFalse();
+        assertThat(osTest.isEnabled()).isTrue();
+
+        if (databaseEnable.isSelected()) databaseEnable.doClick();
+        assertThat(osDestination.isEnabled()).isFalse();
+        assertThat(awsDestination.isEnabled()).isFalse();
+        assertThat(elasticDestination.isEnabled()).isFalse();
         assertThat(osUrl.isEnabled()).isFalse();
         assertThat(osAuthType.isEnabled()).isFalse();
         assertThat(osTlsMode.isEnabled()).isFalse();
+        assertThat(awsTlsMode.isEnabled()).isFalse();
+        assertThat(elasticTlsMode.isEnabled()).isFalse();
         assertThat(osTest.isEnabled()).isFalse();
+    }
+
+    @Test
+    void search_destination_radios_default_to_opensearch_and_enable_one_row_at_a_time() {
+        JRadioButton openSearch = JRadioButton.class.cast(get(panel, "openSearchSinkCheckbox"));
+        JCheckBox database = JCheckBox.class.cast(get(panel, "databaseSinkCheckbox"));
+        JRadioButton aws = JRadioButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
+        JRadioButton elastic = JRadioButton.class.cast(get(panel, "elasticSearchDestinationRadio"));
+        JTextField url = JTextField.class.cast(get(panel, "openSearchUrlField"));
+        JTextField awsUrl = JTextField.class.cast(get(panel, "openSearchAmazonUrlField"));
+        JTextField elasticUrl = JTextField.class.cast(get(panel, "elasticSearchUrlField"));
+        JComboBox<?> authType = getComboBox(panel, "openSearchAuthTypeCombo");
+        JComboBox<?> awsAuthType = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+        JComboBox<?> elasticAuthType = getComboBox(panel, "elasticSearchAuthTypeCombo");
+        JComboBox<?> awsTlsMode = getComboBox(panel, "openSearchAmazonTlsModeCombo");
+        JComboBox<?> elasticTlsMode = getComboBox(panel, "elasticSearchTlsModeCombo");
+        JButton testConnection = JButton.class.cast(get(panel, "testConnectionButton"));
+
+        assertThat(database.isSelected()).isTrue();
+        assertThat(openSearch.isSelected()).isTrue();
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.openSearch.testSlot");
+        assertThat(url.getText()).isEqualTo("https://opensearch.url:9200");
+        assertThat(awsUrl.getText()).isEqualTo("https://opensearch.url:9200");
+        assertThat(elasticUrl.getText()).isEqualTo("https://elasticsearch.url:443");
+        assertThat(comboItems(authType)).containsExactly("API key", "Bearer token", "Certificate", "Basic", "None");
+        assertThat(testConnection.isEnabled()).isTrue();
+
+        elastic.doClick();
+        assertThat(openSearch.isSelected()).isFalse();
+        assertThat(aws.isSelected()).isFalse();
+        assertThat(elastic.isSelected()).isTrue();
+        assertThat(url.isEnabled()).isFalse();
+        assertThat(elasticUrl.isEnabled()).isTrue();
+        assertThat(comboItems(elasticAuthType)).containsExactly("API key", "Bearer token", "Certificate", "Basic", "None");
+        assertThat(elasticTlsMode.isEnabled()).isTrue();
+        assertThat(awsTlsMode.isEnabled()).isFalse();
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.elasticsearch.testSlot");
+        assertThat(testConnection.isEnabled()).isTrue();
+
+        aws.doClick();
+        assertThat(openSearch.isSelected()).isFalse();
+        assertThat(aws.isSelected()).isTrue();
+        assertThat(elastic.isSelected()).isFalse();
+        assertThat(awsUrl.isEnabled()).isTrue();
+        assertThat(elasticUrl.isEnabled()).isFalse();
+        assertThat(comboItems(awsAuthType)).containsExactly("IAM (sigV4)", "Basic", "None");
+        assertThat(awsTlsMode.isEnabled()).isTrue();
+        assertThat(elasticTlsMode.isEnabled()).isFalse();
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.amazon.testSlot");
+        assertThat(testConnection.isEnabled()).isTrue();
+
+        openSearch.doClick();
+        assertThat(openSearch.isSelected()).isTrue();
+        assertThat(url.getText()).isEqualTo("https://opensearch.url:9200");
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.openSearch.testSlot");
+        assertThat(testConnection.isEnabled()).isTrue();
+
+        database.doClick();
+        assertThat(openSearch.isSelected()).isTrue();
+        assertThat(openSearch.isEnabled()).isFalse();
+        assertThat(url.isEnabled()).isFalse();
+        assertThat(testConnection.isEnabled()).isFalse();
     }
 
     @Test
@@ -216,6 +319,93 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(importButton.isVisible()).isFalse();
     }
 
+    @Test
+    void destination_pinned_tls_modes_show_destination_import_buttons() {
+        JComboBox<?> amazonTlsMode = getComboBox(panel, "openSearchAmazonTlsModeCombo");
+        JComboBox<?> elasticTlsMode = getComboBox(panel, "elasticSearchTlsModeCombo");
+        JComponent amazonImportButton = findByName(panel, "os.amazon.tls.import");
+        JComponent elasticImportButton = findByName(panel, "os.elasticsearch.tls.import");
+
+        assertThat(amazonImportButton).isNotNull();
+        assertThat(elasticImportButton).isNotNull();
+        assertThat(amazonImportButton.isVisible()).isFalse();
+        assertThat(elasticImportButton.isVisible()).isFalse();
+
+        amazonTlsMode.setSelectedItem("Trust pinned certificate");
+        elasticTlsMode.setSelectedItem("Trust pinned certificate");
+        assertThat(amazonImportButton.isVisible()).isTrue();
+        assertThat(elasticImportButton.isVisible()).isTrue();
+
+        amazonTlsMode.setSelectedItem("Verify");
+        elasticTlsMode.setSelectedItem("Verify");
+        assertThat(amazonImportButton.isVisible()).isFalse();
+        assertThat(elasticImportButton.isVisible()).isFalse();
+    }
+
+    @Test
+    void amazon_and_elasticsearch_auth_panels_show_only_selected_auth_card() {
+        JComboBox<?> amazonAuthType = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+        JComboBox<?> elasticAuthType = getComboBox(panel, "elasticSearchAuthTypeCombo");
+        JComponent amazonIam = findByName(panel, "os.amazon.authCard.iam");
+        JComponent amazonBasic = findByName(panel, "os.amazon.authCard.basic");
+        JComponent amazonNone = findByName(panel, "os.amazon.authCard.none");
+        JComponent elasticApiKey = findByName(panel, "os.elasticsearch.authCard.apikey");
+        JComponent elasticBearer = findByName(panel, "os.elasticsearch.authCard.bearer");
+        JComponent elasticCertificate = findByName(panel, "os.elasticsearch.authCard.certificate");
+        JComponent elasticBasic = findByName(panel, "os.elasticsearch.authCard.basic");
+        JComponent elasticNone = findByName(panel, "os.elasticsearch.authCard.none");
+
+        amazonAuthType.setSelectedItem("IAM (sigV4)");
+        assertThat(amazonIam.isVisible()).isTrue();
+        assertThat(amazonBasic.isVisible()).isFalse();
+        assertThat(amazonNone.isVisible()).isFalse();
+
+        amazonAuthType.setSelectedItem("Basic");
+        assertThat(amazonIam.isVisible()).isFalse();
+        assertThat(amazonBasic.isVisible()).isTrue();
+        assertThat(amazonNone.isVisible()).isFalse();
+
+        amazonAuthType.setSelectedItem("None");
+        assertThat(amazonIam.isVisible()).isFalse();
+        assertThat(amazonBasic.isVisible()).isFalse();
+        assertThat(amazonNone.isVisible()).isTrue();
+
+        elasticAuthType.setSelectedItem("API key");
+        assertThat(elasticApiKey.isVisible()).isTrue();
+        assertThat(elasticBearer.isVisible()).isFalse();
+        assertThat(elasticCertificate.isVisible()).isFalse();
+        assertThat(elasticBasic.isVisible()).isFalse();
+        assertThat(elasticNone.isVisible()).isFalse();
+
+        elasticAuthType.setSelectedItem("Bearer token");
+        assertThat(elasticApiKey.isVisible()).isFalse();
+        assertThat(elasticBearer.isVisible()).isTrue();
+        assertThat(elasticCertificate.isVisible()).isFalse();
+        assertThat(elasticBasic.isVisible()).isFalse();
+        assertThat(elasticNone.isVisible()).isFalse();
+
+        elasticAuthType.setSelectedItem("Certificate");
+        assertThat(elasticApiKey.isVisible()).isFalse();
+        assertThat(elasticBearer.isVisible()).isFalse();
+        assertThat(elasticCertificate.isVisible()).isTrue();
+        assertThat(elasticBasic.isVisible()).isFalse();
+        assertThat(elasticNone.isVisible()).isFalse();
+
+        elasticAuthType.setSelectedItem("Basic");
+        assertThat(elasticApiKey.isVisible()).isFalse();
+        assertThat(elasticBearer.isVisible()).isFalse();
+        assertThat(elasticCertificate.isVisible()).isFalse();
+        assertThat(elasticBasic.isVisible()).isTrue();
+        assertThat(elasticNone.isVisible()).isFalse();
+
+        elasticAuthType.setSelectedItem("None");
+        assertThat(elasticApiKey.isVisible()).isFalse();
+        assertThat(elasticBearer.isVisible()).isFalse();
+        assertThat(elasticCertificate.isVisible()).isFalse();
+        assertThat(elasticBasic.isVisible()).isFalse();
+        assertThat(elasticNone.isVisible()).isTrue();
+    }
+
     private static JComponent findByName(JComponent root, String name) {
         String componentName = root.getName();
         if (componentName != null && componentName.equals(name)) {
@@ -232,12 +422,20 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         return null;
     }
 
+    private static List<String> comboItems(JComboBox<?> comboBox) {
+        java.util.ArrayList<String> items = new java.util.ArrayList<>();
+        for (int i = 0; i < comboBox.getItemCount(); i++) {
+            items.add(String.valueOf(comboBox.getItemAt(i)));
+        }
+        return items;
+    }
+
     private static final class NoopUi implements ConfigController.Ui {
         @Override public void onFileStatus(String message) {
             // File status is not observed in this test; required by ConfigController.Ui
         }
-        @Override public void onOpenSearchStatus(String message) {
-            // OpenSearch status is not observed in this test; required by ConfigController.Ui
+        @Override public void onDatabaseStatus(String message) {
+            // Database status is not observed in this test; required by ConfigController.Ui
         }
         @Override public void onControlStatus(String message) {
             // Control status is not observed in this test; required by ConfigController.Ui

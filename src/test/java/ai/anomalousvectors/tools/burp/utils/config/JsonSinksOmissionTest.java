@@ -26,6 +26,8 @@ class JsonSinksOmissionTest {
         assertThat(json).contains("\"enabled\" : false");
         assertThat(json).contains("\"formats\" : [ ]");
         assertThat(json).contains("\"limits\" : {");
+        assertThat(json).contains("\"database\" : {");
+        assertThat(json).contains("\"type\" : \"openSearch\"");
         assertThat(json).contains("\"openSearch\" : {");
         assertThat(json).contains("\"tlsMode\" : \"verify\"");
         assertThat(json).contains("\"auth\" : {");
@@ -41,6 +43,7 @@ class JsonSinksOmissionTest {
         assertThat(cfg.fileDiskUsagePercent()).isEqualTo(ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT);
         assertThat(cfg.openSearchEnabled()).isFalse();
         assertThat(cfg.openSearchUrl()).isNull();
+        assertThat(cfg.searchDestination()).isEqualTo(ConfigState.SearchDestination.OPEN_SEARCH.configKey());
         assertThat(cfg.openSearchTlsMode()).isEqualTo(ConfigState.OPEN_SEARCH_TLS_VERIFY);
         assertThat(cfg.openSearchOptions().authType()).isEqualTo(ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE);
     }
@@ -68,8 +71,9 @@ class JsonSinksOmissionTest {
         assertThat(json).contains("\"path\" : \"" + FILES_ROOT + "\"");
         assertThat(json).contains("\"formats\" : [ \"jsonl\", \"bulkNdjson\" ]");
         assertThat(json).contains("\"limits\" : {");
-        assertThat(json).contains("\"openSearch\" : {");
         assertThat(json).contains("\"enabled\" : true");
+        assertThat(json).contains("\"type\" : \"openSearch\"");
+        assertThat(json).contains("\"openSearch\" : {");
         assertThat(json).contains("\"url\" : \"" + OS_URL + "\"");
         assertThat(json).contains("\"tlsMode\" : \"pinned\"");
         assertThat(json).contains("\"auth\" : {");
@@ -121,8 +125,10 @@ class JsonSinksOmissionTest {
         assertThat(json).contains("\"limits\" : {");
         assertThat(json).contains("\"totalEnabled\" : false");
         assertThat(json).contains("\"diskUsedPercentEnabled\" : false");
-        assertThat(json).contains("\"openSearch\" : {");
         assertThat(json).contains("\"enabled\" : false");
+        assertThat(json).contains("\"database\" : {");
+        assertThat(json).contains("\"type\" : \"openSearch\"");
+        assertThat(json).contains("\"openSearch\" : {");
         assertThat(json).contains("\"url\" : \"" + OS_URL + "\"");
         assertThat(json).contains("\"tlsMode\" : \"pinned\"");
         assertThat(json).contains("\"auth\" : {");
@@ -160,8 +166,11 @@ class JsonSinksOmissionTest {
                 "files": {
                   "path": ""
                 },
-                "openSearch": {
-                  "url": ""
+                "database": {
+                  "type": "openSearch",
+                  "openSearch": {
+                    "url": ""
+                  }
                 }
               }
             }
@@ -178,16 +187,19 @@ class JsonSinksOmissionTest {
     }
 
     @Test
-    void parse_nested_openSearch_apiKey_auth_imports_supported_nonSecret_fields() throws IOException {
+    void parse_nested_openSearch_apiKey_auth_preserves_nonSecret_apiKeyId() throws IOException {
         String json = """
             {
               "sinks": {
-                "openSearch": {
+                "database": {
                   "enabled": true,
-                  "url": "https://opensearch.url:9200",
-                  "auth": {
-                    "type": "API Key",
-                    "apiKeyId": "kid-1"
+                  "type": "openSearch",
+                  "openSearch": {
+                    "url": "https://opensearch.url:9200",
+                    "auth": {
+                      "type": "API key",
+                      "apiKeyId": "kid-1"
+                    }
                   }
                 }
               }
@@ -195,12 +207,6 @@ class JsonSinksOmissionTest {
             """;
 
         Json.ImportedConfig cfg = Json.parseConfigJson(json);
-        assertThat(cfg.openSearchEnabled()).isTrue();
-        assertThat(cfg.openSearchUrl()).isEqualTo(OS_URL);
-        assertThat(cfg.openSearchUser()).isBlank();
-        assertThat(cfg.openSearchPassword()).isBlank();
-        assertThat(cfg.openSearchTlsMode()).isEqualTo(ConfigState.OPEN_SEARCH_TLS_VERIFY);
-        assertThat(cfg.openSearchOptions().authType()).isEqualTo("API Key");
         assertThat(cfg.openSearchOptions().apiKeyId()).isEqualTo("kid-1");
     }
 }

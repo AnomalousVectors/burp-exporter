@@ -23,7 +23,11 @@ class ConfigImportResilienceTest {
                   "scope": ["all"],
                   "sinks": {
                     "files": { "enabled": false },
-                    "openSearch": { "enabled": false, "auth": { "type": "None" } },
+                    "database": {
+                      "enabled": false,
+                      "type": "openSearch",
+                      "openSearch": { "auth": { "type": "None" } }
+                    },
                     "legacySinkFlag": true
                   },
                   "exportFields": {
@@ -72,7 +76,7 @@ class ConfigImportResilienceTest {
 
         assertThatThrownBy(() -> ConfigJsonMapper.parse(json))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("nested 'sinks.files'");
+                .hasMessageContaining("sinks.database");
     }
 
     @Test
@@ -81,10 +85,13 @@ class ConfigImportResilienceTest {
                 {
                   "dataSources": ["exporter"],
                   "sinks": {
-                    "openSearch": {
+                    "database": {
                       "enabled": true,
-                      "url": "https://example:9200",
-                      "auth": { "type": "NotARealAuth" }
+                      "type": "openSearch",
+                      "openSearch": {
+                        "url": "https://example:9200",
+                        "auth": { "type": "NotARealAuth" }
+                      }
                     }
                   }
                 }
@@ -92,7 +99,7 @@ class ConfigImportResilienceTest {
 
         assertThatThrownBy(() -> ConfigJsonMapper.parse(json))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("sinks.openSearch.auth.type");
+                .hasMessageContaining("sinks.database.openSearch.auth.type");
     }
 
     @Test
@@ -106,7 +113,11 @@ class ConfigImportResilienceTest {
                       "path": "/tmp",
                       "formats": ["bulkNdjson", "xml"]
                     },
-                    "openSearch": { "enabled": false, "auth": { "type": "None" } }
+                    "database": {
+                      "enabled": false,
+                      "type": "openSearch",
+                      "openSearch": { "auth": { "type": "None" } }
+                    }
                   }
                 }
                 """;
@@ -127,7 +138,11 @@ class ConfigImportResilienceTest {
                   "dataSources": ["exporter"],
                   "scope": ["custom_only"],
                   "sinks": {
-                    "openSearch": { "enabled": false, "auth": { "type": "None" } }
+                    "database": {
+                      "enabled": false,
+                      "type": "openSearch",
+                      "openSearch": { "auth": { "type": "None" } }
+                    }
                   }
                 }
                 """;

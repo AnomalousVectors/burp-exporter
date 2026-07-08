@@ -36,12 +36,20 @@ public final class Json {
     private static final String LIT_REGEX  = "regex";
     private static final String LIT_STRING = "string";
     private static final List<String> ALLOWED_OPEN_SEARCH_AUTH_TYPES = List.of(
-            "API Key",
-            "Basic",
+            "API key",
+            "Bearer token",
             "Certificate",
-            "JWT",
+            "Basic",
             "None");
-    private static final List<String> SINKS_KEYS = List.of("files", "openSearch");
+    private static final List<String> ALLOWED_OPEN_SEARCH_AMAZON_AUTH_TYPES = List.of(
+            "IAM (sigV4)",
+            "Basic",
+            "None");
+    private static final List<String> ALLOWED_SEARCH_DESTINATIONS = List.of(
+            ConfigState.SearchDestination.OPEN_SEARCH.configKey(),
+            ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(),
+            ConfigState.SearchDestination.ELASTICSEARCH.configKey());
+    private static final List<String> SINKS_KEYS = List.of("files", "database");
     private static final List<String> FILES_KEYS = List.of("enabled", "path", "formats", "limits");
     private static final List<String> FILE_LIMITS_KEYS = List.of(
             "totalEnabled",
@@ -49,7 +57,24 @@ public final class Json {
             "diskUsedPercentEnabled",
             "maxDiskUsedPercent");
     private static final List<String> OPEN_SEARCH_KEYS = List.of(
+            "url",
+            "tlsMode",
+            "auth",
+            "pinnedTlsCertificate");
+    private static final List<String> DATABASE_KEYS = List.of(
             "enabled",
+            "type",
+            "openSearch",
+            "openSearchAmazon",
+            "elasticsearch");
+    private static final List<String> OPEN_SEARCH_AMAZON_KEYS = List.of(
+            "url",
+            "region",
+            "profile",
+            "tlsMode",
+            "auth",
+            "pinnedTlsCertificate");
+    private static final List<String> ELASTICSEARCH_KEYS = List.of(
             "url",
             "tlsMode",
             "auth",
@@ -60,6 +85,14 @@ public final class Json {
             "apiKeyId",
             "certPath",
             "certKeyPath");
+    private static final List<String> ELASTICSEARCH_AUTH_KEYS = List.of(
+            "type",
+            "username",
+            "certPath",
+            "certKeyPath");
+    private static final List<String> OPEN_SEARCH_AMAZON_AUTH_KEYS = List.of(
+            "type",
+            "username");
     private static final List<String> PINNED_TLS_KEYS = List.of(
             "sourcePath",
             "fingerprintSha256",
@@ -95,6 +128,11 @@ public final class Json {
             String openSearchPassword,
             String openSearchTlsMode,
             ConfigState.OpenSearchOptions openSearchOptions,
+            String searchDestination,
+            String openSearchAmazonUrl,
+            ConfigState.OpenSearchAmazonOptions openSearchAmazonOptions,
+            String elasticSearchUrl,
+            ConfigState.ElasticsearchOptions elasticSearchOptions,
             List<String> settingsSub,
             List<String> trafficToolTypes,
             List<String> findingsSeverities,
@@ -124,6 +162,11 @@ public final class Json {
                 String openSearchPassword,
                 String openSearchTlsMode,
                 ConfigState.OpenSearchOptions openSearchOptions,
+                String searchDestination,
+                String openSearchAmazonUrl,
+                ConfigState.OpenSearchAmazonOptions openSearchAmazonOptions,
+                String elasticSearchUrl,
+                ConfigState.ElasticsearchOptions elasticSearchOptions,
                 List<String> settingsSub,
                 List<String> trafficToolTypes,
                 List<String> findingsSeverities,
@@ -152,6 +195,15 @@ public final class Json {
             this.openSearchPassword = openSearchPassword != null ? openSearchPassword : "";
             this.openSearchTlsMode = ConfigState.normalizeOpenSearchTlsMode(openSearchTlsMode);
             this.openSearchOptions = openSearchOptions == null ? ConfigState.defaultOpenSearchOptions() : openSearchOptions;
+            this.searchDestination = ConfigState.normalizeSearchDestination(searchDestination).configKey();
+            this.openSearchAmazonUrl = openSearchAmazonUrl != null ? openSearchAmazonUrl : "";
+            this.openSearchAmazonOptions = openSearchAmazonOptions == null
+                    ? ConfigState.defaultOpenSearchAmazonOptions()
+                    : openSearchAmazonOptions;
+            this.elasticSearchUrl = elasticSearchUrl != null ? elasticSearchUrl : "";
+            this.elasticSearchOptions = elasticSearchOptions == null
+                    ? ConfigState.defaultElasticsearchOptions()
+                    : elasticSearchOptions;
             this.settingsSub = ConfigState.normalizeSettingsSub(settingsSub);
             this.trafficToolTypes = ConfigState.normalizeTrafficToolTypes(trafficToolTypes);
             this.findingsSeverities = ConfigState.normalizeFindingsSeverities(findingsSeverities);
@@ -322,18 +374,25 @@ public final class Json {
         fileLimits.put("diskUsedPercentEnabled", sinks.fileDiskUsagePercentEnabled());
         fileLimits.put("maxDiskUsedPercent", sinks.fileDiskUsagePercent());
 
-        ObjectNode openSearchNode = sinksNode.putObject("openSearch");
-        openSearchNode.put("enabled", sinks.osEnabled());
+        ObjectNode databaseNode = sinksNode.putObject("database");
+        databaseNode.put("enabled", sinks.osEnabled());
+        databaseNode.put("type", sinks.searchDestinationKind().configKey());
+        buildOpenSearchDestination(databaseNode.putObject("openSearch"), sinks);
+        buildOpenSearchAmazonDestination(databaseNode.putObject("openSearchAmazon"), sinks);
+        buildElasticsearchDestination(databaseNode.putObject("elasticsearch"), sinks);
+    }
+
+    private static void buildOpenSearchDestination(ObjectNode node, ConfigState.Sinks sinks) {
         String os = sinks.openSearchUrl();
         if (os != null && !os.isBlank()) {
-            openSearchNode.put("url", os);
+            node.put("url", os);
         }
-        openSearchNode.put("tlsMode", ConfigState.normalizeOpenSearchTlsMode(sinks.openSearchTlsMode()));
-        ObjectNode auth = openSearchNode.putObject("auth");
-        ConfigState.OpenSearchOptions openSearchOptions = sinks.openSearchOptions() == null
+        node.put("tlsMode", ConfigState.normalizeOpenSearchTlsMode(sinks.openSearchTlsMode()));
+        ObjectNode auth = node.putObject("auth");
+        ConfigState.OpenSearchOptions options = sinks.openSearchOptions() == null
                 ? ConfigState.defaultOpenSearchOptions()
                 : sinks.openSearchOptions();
-        String authType = openSearchOptions.authType();
+        String authType = options.authType();
         auth.put("type", authType);
         switch (authType) {
             case "Basic" -> {
@@ -341,37 +400,100 @@ public final class Json {
                     auth.put("username", sinks.openSearchUser());
                 }
             }
-            case "API Key" -> {
-                if (!openSearchOptions.apiKeyId().isBlank()) {
-                    auth.put("apiKeyId", openSearchOptions.apiKeyId());
-                }
-            }
+            case "API key" -> { }
             case "Certificate" -> {
-                if (!openSearchOptions.certPath().isBlank()) {
-                    auth.put("certPath", openSearchOptions.certPath());
+                if (!options.certPath().isBlank()) {
+                    auth.put("certPath", options.certPath());
                 }
-                if (!openSearchOptions.certKeyPath().isBlank()) {
-                    auth.put("certKeyPath", openSearchOptions.certKeyPath());
+                if (!options.certKeyPath().isBlank()) {
+                    auth.put("certKeyPath", options.certKeyPath());
                 }
             }
-            case "JWT", "None" -> {
-                // Persist no additional non-secret auth fields for these modes.
-            }
+            case "Bearer token", "None" -> { }
             default -> throw new IllegalStateException("Unexpected OpenSearch auth type: " + authType);
         }
-        if (!openSearchOptions.pinnedTlsCertificateSourcePath().isBlank()
-                || !openSearchOptions.pinnedTlsCertificateFingerprintSha256().isBlank()
-                || !openSearchOptions.pinnedTlsCertificateEncodedBase64().isBlank()) {
-            ObjectNode pinned = openSearchNode.putObject("pinnedTlsCertificate");
-            if (!openSearchOptions.pinnedTlsCertificateSourcePath().isBlank()) {
-                pinned.put("sourcePath", openSearchOptions.pinnedTlsCertificateSourcePath());
+        buildPinnedTls(node, options.pinnedTlsCertificateSourcePath(),
+                options.pinnedTlsCertificateFingerprintSha256(),
+                options.pinnedTlsCertificateEncodedBase64());
+    }
+
+    private static void buildOpenSearchAmazonDestination(ObjectNode node, ConfigState.Sinks sinks) {
+        String url = sinks.openSearchAmazonUrl();
+        if (url != null && !url.isBlank()) {
+            node.put("url", url);
+        }
+        ConfigState.OpenSearchAmazonOptions options = sinks.openSearchAmazonOptions() == null
+                ? ConfigState.defaultOpenSearchAmazonOptions()
+                : sinks.openSearchAmazonOptions();
+        if (!options.region().isBlank()) {
+            node.put("region", options.region());
+        }
+        if (!options.profile().isBlank()) {
+            node.put("profile", options.profile());
+        }
+        node.put("tlsMode", ConfigState.normalizeOpenSearchTlsMode(options.tlsMode()));
+        ObjectNode auth = node.putObject("auth");
+        auth.put("type", options.authType());
+        if ("Basic".equals(options.authType()) && !options.username().isBlank()) {
+            auth.put("username", options.username());
+        }
+        buildPinnedTls(node, options.pinnedTlsCertificateSourcePath(),
+                options.pinnedTlsCertificateFingerprintSha256(),
+                options.pinnedTlsCertificateEncodedBase64());
+    }
+
+    private static void buildElasticsearchDestination(ObjectNode node, ConfigState.Sinks sinks) {
+        String url = sinks.elasticSearchUrl();
+        if (url != null && !url.isBlank()) {
+            node.put("url", url);
+        }
+        ConfigState.ElasticsearchOptions options = sinks.elasticSearchOptions() == null
+                ? ConfigState.defaultElasticsearchOptions()
+                : sinks.elasticSearchOptions();
+        node.put("tlsMode", ConfigState.normalizeOpenSearchTlsMode(options.tlsMode()));
+        ObjectNode auth = node.putObject("auth");
+        String authType = options.authType();
+        auth.put("type", authType);
+        switch (authType) {
+            case "Basic" -> {
+                if (!options.username().isBlank()) {
+                    auth.put("username", options.username());
+                }
             }
-            if (!openSearchOptions.pinnedTlsCertificateFingerprintSha256().isBlank()) {
-                pinned.put("fingerprintSha256", openSearchOptions.pinnedTlsCertificateFingerprintSha256());
+            case "API key" -> { }
+            case "Certificate" -> {
+                if (!options.certPath().isBlank()) {
+                    auth.put("certPath", options.certPath());
+                }
+                if (!options.certKeyPath().isBlank()) {
+                    auth.put("certKeyPath", options.certKeyPath());
+                }
             }
-            if (!openSearchOptions.pinnedTlsCertificateEncodedBase64().isBlank()) {
-                pinned.put("encodedBase64", openSearchOptions.pinnedTlsCertificateEncodedBase64());
-            }
+            case "Bearer token", "None" -> { }
+            default -> throw new IllegalStateException("Unexpected Elasticsearch auth type: " + authType);
+        }
+        buildPinnedTls(node, options.pinnedTlsCertificateSourcePath(),
+                options.pinnedTlsCertificateFingerprintSha256(),
+                options.pinnedTlsCertificateEncodedBase64());
+    }
+
+    private static void buildPinnedTls(
+            ObjectNode node,
+            String sourcePath,
+            String fingerprintSha256,
+            String encodedBase64) {
+        if (isBlank(sourcePath) && isBlank(fingerprintSha256) && isBlank(encodedBase64)) {
+            return;
+        }
+        ObjectNode pinned = node.putObject("pinnedTlsCertificate");
+        if (!isBlank(sourcePath)) {
+            pinned.put("sourcePath", sourcePath);
+        }
+        if (!isBlank(fingerprintSha256)) {
+            pinned.put("fingerprintSha256", fingerprintSha256);
+        }
+        if (!isBlank(encodedBase64)) {
+            pinned.put("encodedBase64", encodedBase64);
         }
     }
 
@@ -467,6 +589,11 @@ public final class Json {
                 sinks.osPass(),
                 sinks.openSearchTlsMode(),
                 sinks.openSearchOptions(),
+                sinks.searchDestination(),
+                sinks.openSearchAmazonUrl(),
+                sinks.openSearchAmazonOptions(),
+                sinks.elasticSearchUrl(),
+                sinks.elasticSearchOptions(),
                 opts.settingsSub(),
                 opts.trafficToolTypes(),
                 opts.findingsSeverities(),
@@ -699,7 +826,7 @@ public final class Json {
         JsonNode sinks = root.path("sinks");
         validateSinksShape(sinks, report);
         JsonNode filesNode = sinks.path("files");
-        JsonNode openSearchNode = sinks.path("openSearch");
+        JsonNode databaseNode = sinks.path("database");
 
         String files = null;
         boolean fileJsonlEnabled = false;
@@ -746,17 +873,14 @@ public final class Json {
             }
         }
 
-        String os = null;
-        JsonNode osUrlNode = openSearchNode.get("url");
-        if (osUrlNode != null && osUrlNode.isTextual()) {
-            String v = osUrlNode.asText();
-            if (!v.isBlank()) os = v;
-        }
-        boolean openSearchEnabled = bool(openSearchNode.get("enabled"), os != null);
+        boolean databaseEnabled = bool(databaseNode.get("enabled"), false);
+        String searchDestination = validateAndResolveSearchDestination(databaseNode);
 
+        JsonNode openSearchNode = databaseNode.path("openSearch");
+        String os = textIfNotBlank(openSearchNode.get("url"));
         String tlsMode = ConfigState.normalizeOpenSearchTlsMode(textOrNull(openSearchNode.get("tlsMode")));
         JsonNode authNode = openSearchNode.path("auth");
-        String authType = validateAndResolveOpenSearchAuthType(authNode);
+        String authType = validateAndResolveOpenSearchAuthType(authNode, "sinks.database.openSearch.auth.type");
         String username = textOrNull(authNode.get("username"));
         JsonNode pinnedTlsNode = openSearchNode.path("pinnedTlsCertificate");
         ConfigState.OpenSearchOptions openSearchOptions = new ConfigState.OpenSearchOptions(
@@ -767,12 +891,52 @@ public final class Json {
                 textOrNull(pinnedTlsNode.get("sourcePath")),
                 textOrNull(pinnedTlsNode.get("fingerprintSha256")),
                 textOrNull(pinnedTlsNode.get("encodedBase64")));
-        validateAuthFieldCombination(authType, username, openSearchOptions);
+        validateOpenSearchAuthFieldCombination(
+                "sinks.database.openSearch.auth", authType, username, openSearchOptions);
+
+        JsonNode awsNode = databaseNode.path("openSearchAmazon");
+        JsonNode awsAuthNode = awsNode.path("auth");
+        String awsAuthType = validateAndResolveOpenSearchAmazonAuthType(awsAuthNode);
+        String awsUsername = textOrNull(awsAuthNode.get("username"));
+        JsonNode awsPinnedTlsNode = awsNode.path("pinnedTlsCertificate");
+        ConfigState.OpenSearchAmazonOptions awsOptions = new ConfigState.OpenSearchAmazonOptions(
+                awsAuthType,
+                awsUsername,
+                textOrNull(awsNode.get("region")),
+                textOrNull(awsNode.get("profile")),
+                textOrNull(awsNode.get("tlsMode")),
+                textOrNull(awsPinnedTlsNode.get("sourcePath")),
+                textOrNull(awsPinnedTlsNode.get("fingerprintSha256")),
+                textOrNull(awsPinnedTlsNode.get("encodedBase64")));
+        validateOpenSearchAmazonAuthFieldCombination(awsAuthType, awsUsername);
+
+        JsonNode elasticNode = databaseNode.path("elasticsearch");
+        JsonNode elasticAuthNode = elasticNode.path("auth");
+        String elasticAuthType = validateAndResolveOpenSearchAuthType(
+                elasticAuthNode,
+                "sinks.database.elasticsearch.auth.type");
+        String elasticUsername = textOrNull(elasticAuthNode.get("username"));
+        JsonNode elasticPinnedTlsNode = elasticNode.path("pinnedTlsCertificate");
+        ConfigState.ElasticsearchOptions elasticOptions = new ConfigState.ElasticsearchOptions(
+                elasticAuthType,
+                elasticUsername,
+                textOrNull(elasticAuthNode.get("certPath")),
+                textOrNull(elasticAuthNode.get("certKeyPath")),
+                textOrNull(elasticNode.get("tlsMode")),
+                textOrNull(elasticPinnedTlsNode.get("sourcePath")),
+                textOrNull(elasticPinnedTlsNode.get("fingerprintSha256")),
+                textOrNull(elasticPinnedTlsNode.get("encodedBase64")));
+        validateElasticsearchAuthFieldCombination(elasticAuthType, elasticOptions);
 
         return new SinksParts(filesEnabled, files, fileJsonlEnabled, fileBulkNdjsonEnabled,
                 fileTotalCapEnabled, fileTotalCapGb,
                 fileDiskUsagePercentEnabled, fileDiskUsagePercent,
-                openSearchEnabled, os, username == null ? "" : username, "", tlsMode, openSearchOptions);
+                databaseEnabled, os, username == null ? "" : username, "", tlsMode, openSearchOptions,
+                searchDestination,
+                textIfNotBlank(awsNode.get("url")),
+                awsOptions,
+                textIfNotBlank(elasticNode.get("url")),
+                elasticOptions);
     }
 
     private static void validateSinksShape(JsonNode sinks, ConfigImportReport report) throws IOException {
@@ -782,19 +946,55 @@ public final class Json {
         if (!sinks.isObject()) {
             throw new IOException("Invalid config: 'sinks' must be an object.");
         }
-        if (hasLegacyFlatSinksKeys(sinks)) {
-            throw new IOException("Invalid config: sink settings must live under nested 'sinks.files' and "
-                    + "'sinks.openSearch' objects (for example 'sinks.files.limits.totalEnabled').");
+        if (hasLegacyFlatSinksKeys(sinks) || sinks.has("openSearch")) {
+            throw new IOException("Invalid config: database settings must live under nested 'sinks.database' "
+                    + "with destination-specific objects (for example 'sinks.database.openSearch.url').");
         }
         ConfigImportCatalog.collectUnknownObjectKeys(sinks, "sinks", SINKS_KEYS, report);
         validateNestedSinkNode(sinks, "files", FILES_KEYS, report);
-        validateNestedSinkNode(sinks, "openSearch", OPEN_SEARCH_KEYS, report);
+        validateNestedSinkNode(sinks, "database", DATABASE_KEYS, report);
         validateNestedObject(sinks.path("files").path("limits"), "sinks.files.limits", FILE_LIMITS_KEYS, report);
         validateFilesFormatsNode(sinks.path("files").path("formats"));
-        validateNestedObject(sinks.path("openSearch").path("auth"), "sinks.openSearch.auth", OPEN_SEARCH_AUTH_KEYS, report);
+        JsonNode database = sinks.path("database");
+        validateNestedObject(database.path("openSearch"), "sinks.database.openSearch", OPEN_SEARCH_KEYS, report);
         validateNestedObject(
-                sinks.path("openSearch").path("pinnedTlsCertificate"),
-                "sinks.openSearch.pinnedTlsCertificate",
+                database.path("openSearch").path("auth"),
+                "sinks.database.openSearch.auth",
+                OPEN_SEARCH_AUTH_KEYS,
+                report);
+        validateNestedObject(
+                database.path("openSearch").path("pinnedTlsCertificate"),
+                "sinks.database.openSearch.pinnedTlsCertificate",
+                PINNED_TLS_KEYS,
+                report);
+        validateNestedObject(
+                database.path("openSearchAmazon"),
+                "sinks.database.openSearchAmazon",
+                OPEN_SEARCH_AMAZON_KEYS,
+                report);
+        validateNestedObject(
+                database.path("openSearchAmazon").path("auth"),
+                "sinks.database.openSearchAmazon.auth",
+                OPEN_SEARCH_AMAZON_AUTH_KEYS,
+                report);
+        validateNestedObject(
+                database.path("openSearchAmazon").path("pinnedTlsCertificate"),
+                "sinks.database.openSearchAmazon.pinnedTlsCertificate",
+                PINNED_TLS_KEYS,
+                report);
+        validateNestedObject(
+                database.path("elasticsearch"),
+                "sinks.database.elasticsearch",
+                ELASTICSEARCH_KEYS,
+                report);
+        validateNestedObject(
+                database.path("elasticsearch").path("auth"),
+                "sinks.database.elasticsearch.auth",
+                ELASTICSEARCH_AUTH_KEYS,
+                report);
+        validateNestedObject(
+                database.path("elasticsearch").path("pinnedTlsCertificate"),
+                "sinks.database.elasticsearch.pinnedTlsCertificate",
                 PINNED_TLS_KEYS,
                 report);
     }
@@ -846,40 +1046,108 @@ public final class Json {
         }
     }
 
-    private static String validateAndResolveOpenSearchAuthType(JsonNode authNode) throws IOException {
+    private static String validateAndResolveSearchDestination(JsonNode databaseNode) throws IOException {
+        String rawType = textOrNull(databaseNode.get("type"));
+        if (rawType == null || rawType.isBlank()) {
+            return ConfigState.DEFAULT_SEARCH_DESTINATION;
+        }
+        String trimmed = rawType.trim();
+        if (!ALLOWED_SEARCH_DESTINATIONS.contains(trimmed)) {
+            throw new IOException("Invalid config: unsupported value '" + rawType + "' at 'sinks.database.type'. "
+                    + "Allowed values: " + String.join(", ", ALLOWED_SEARCH_DESTINATIONS) + ".");
+        }
+        return trimmed;
+    }
+
+    private static String validateAndResolveOpenSearchAuthType(JsonNode authNode, String path) throws IOException {
         String rawAuthType = textOrNull(authNode.get("type"));
         if (rawAuthType == null || rawAuthType.isBlank()) {
             return ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE;
         }
         if (!ALLOWED_OPEN_SEARCH_AUTH_TYPES.contains(rawAuthType)) {
-            throw new IOException("Invalid config: unsupported value '" + rawAuthType + "' at 'sinks.openSearch.auth.type'. "
+            throw new IOException("Invalid config: unsupported value '" + rawAuthType + "' at '" + path + "'. "
                     + "Allowed values: " + String.join(", ", ALLOWED_OPEN_SEARCH_AUTH_TYPES) + ".");
         }
         return rawAuthType;
     }
 
-    private static void validateAuthFieldCombination(
+    private static String validateAndResolveOpenSearchAmazonAuthType(JsonNode authNode) throws IOException {
+        String rawAuthType = textOrNull(authNode.get("type"));
+        if (rawAuthType == null || rawAuthType.isBlank()) {
+            return "IAM (sigV4)";
+        }
+        if (!ALLOWED_OPEN_SEARCH_AMAZON_AUTH_TYPES.contains(rawAuthType)) {
+            throw new IOException("Invalid config: unsupported value '" + rawAuthType
+                    + "' at 'sinks.database.openSearchAmazon.auth.type'. Allowed values: "
+                    + String.join(", ", ALLOWED_OPEN_SEARCH_AMAZON_AUTH_TYPES) + ".");
+        }
+        return rawAuthType;
+    }
+
+    private static void validateOpenSearchAuthFieldCombination(
+            String authPath,
             String authType,
             String username,
             ConfigState.OpenSearchOptions openSearchOptions) throws IOException {
         List<String> allowedFields = allowedAuthFieldsFor(authType);
-        requireAllowedAuthField(authType, "username", username, allowedFields);
-        requireAllowedAuthField(authType, "apiKeyId", openSearchOptions.apiKeyId(), allowedFields);
-        requireAllowedAuthField(authType, "certPath", openSearchOptions.certPath(), allowedFields);
-        requireAllowedAuthField(authType, "certKeyPath", openSearchOptions.certKeyPath(), allowedFields);
+        requireAllowedAuthField(authPath, authType, "username", username, allowedFields);
+        requireAllowedAuthField(authPath, authType, "apiKeyId", openSearchOptions.apiKeyId(), allowedFields);
+        requireAllowedAuthField(authPath, authType, "certPath", openSearchOptions.certPath(), allowedFields);
+        requireAllowedAuthField(authPath, authType, "certKeyPath", openSearchOptions.certKeyPath(), allowedFields);
+    }
+
+    private static void validateOpenSearchAmazonAuthFieldCombination(
+            String authType,
+            String username) throws IOException {
+        List<String> allowedFields = switch (authType) {
+            case "Basic" -> List.of("username");
+            case "IAM (sigV4)", "None" -> List.of();
+            default -> throw new IllegalStateException("Unexpected Amazon OpenSearch auth type: " + authType);
+        };
+        requireAllowedAuthField(
+                "sinks.database.openSearchAmazon.auth",
+                authType,
+                "username",
+                username,
+                allowedFields);
+    }
+
+    private static void validateElasticsearchAuthFieldCombination(
+            String authType,
+            ConfigState.ElasticsearchOptions elasticOptions) throws IOException {
+        List<String> allowedFields = allowedAuthFieldsFor(authType);
+        requireAllowedAuthField(
+                "sinks.database.elasticsearch.auth",
+                authType,
+                "username",
+                elasticOptions.username(),
+                allowedFields);
+        requireAllowedAuthField(
+                "sinks.database.elasticsearch.auth",
+                authType,
+                "certPath",
+                elasticOptions.certPath(),
+                allowedFields);
+        requireAllowedAuthField(
+                "sinks.database.elasticsearch.auth",
+                authType,
+                "certKeyPath",
+                elasticOptions.certKeyPath(),
+                allowedFields);
     }
 
     private static List<String> allowedAuthFieldsFor(String authType) {
         return switch (authType) {
             case "Basic" -> List.of("username");
-            case "API Key" -> List.of("apiKeyId");
+            case "API key" -> List.of("apiKeyId");
             case "Certificate" -> List.of("certPath", "certKeyPath");
-            case "JWT", "None" -> List.of();
+            case "Bearer token", "None" -> List.of();
             default -> throw new IllegalStateException("Unexpected OpenSearch auth type: " + authType);
         };
     }
 
     private static void requireAllowedAuthField(
+            String authPath,
             String authType,
             String fieldName,
             String value,
@@ -888,8 +1156,8 @@ public final class Json {
             return;
         }
         String allowed = allowedFields.isEmpty() ? "none" : String.join(", ", allowedFields);
-        throw new IOException("Invalid config: 'sinks.openSearch.auth." + fieldName
-                + "' is not allowed when 'sinks.openSearch.auth.type' is '" + authType
+        throw new IOException("Invalid config: '" + authPath + "." + fieldName
+                + "' is not allowed when '" + authPath + ".type' is '" + authType
                 + "'. Allowed non-secret fields for this auth type: " + allowed + ".");
     }
 
@@ -944,8 +1212,17 @@ public final class Json {
         return node != null && node.isTextual() ? node.asText() : null;
     }
 
+    private static String textIfNotBlank(JsonNode node) {
+        String value = textOrNull(node);
+        return value == null || value.isBlank() ? null : value;
+    }
+
     private static String textOrEmpty(JsonNode node) {
         return node != null && node.isTextual() ? node.asText() : "";
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private static boolean bool(JsonNode node, boolean fallback) {
@@ -964,7 +1241,12 @@ public final class Json {
                               boolean fileDiskUsagePercentEnabled, int fileDiskUsagePercent,
                               boolean openSearchEnabled,
                               String os, String osUser, String osPass, String openSearchTlsMode,
-                              ConfigState.OpenSearchOptions openSearchOptions) { }
+                              ConfigState.OpenSearchOptions openSearchOptions,
+                              String searchDestination,
+                              String openSearchAmazonUrl,
+                              ConfigState.OpenSearchAmazonOptions openSearchAmazonOptions,
+                              String elasticSearchUrl,
+                              ConfigState.ElasticsearchOptions elasticSearchOptions) { }
     private record DataSourceOptionsParts(
             List<String> settingsSub,
             List<String> trafficToolTypes,

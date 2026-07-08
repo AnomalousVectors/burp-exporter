@@ -31,8 +31,7 @@ class JsonParseErrorTest {
             """;
         assertThatThrownBy(() -> Json.parseConfigJson(invalid))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("sinks.files")
-                .hasMessageContaining("sinks.openSearch");
+                .hasMessageContaining("sinks.database");
     }
 
     @Test
@@ -44,9 +43,10 @@ class JsonParseErrorTest {
                 "files": {
                   "enabled": true
                 },
-                "openSearch": {
+                "database": {
                   "enabled": false,
-                  "auth": { "type": "None" }
+                  "type": "openSearch",
+                  "openSearch": { "auth": { "type": "None" } }
                 },
                 "unexpected": {}
               }
@@ -67,7 +67,11 @@ class JsonParseErrorTest {
                 "files": {
                   "formats": [ "ndjson" ]
                 },
-                "openSearch": { "enabled": false, "auth": { "type": "None" } }
+                "database": {
+                  "enabled": false,
+                  "type": "openSearch",
+                  "openSearch": { "auth": { "type": "None" } }
+                }
               }
             }
             """;
@@ -104,7 +108,11 @@ class JsonParseErrorTest {
                     "maxDiskPercent": 90
                   }
                 },
-                "openSearch": { "enabled": false, "auth": { "type": "None" } }
+                "database": {
+                  "enabled": false,
+                  "type": "openSearch",
+                  "openSearch": { "auth": { "type": "None" } }
+                }
               }
             }
             """;
@@ -120,13 +128,16 @@ class JsonParseErrorTest {
             {
               "dataSources": ["exporter"],
               "sinks": {
-                "openSearch": {
+                "database": {
                   "enabled": true,
-                  "url": "https://example:9200",
-                  "auth": {
-                    "type": "Basic",
-                    "username": "admin",
-                    "password": "secret"
+                  "type": "openSearch",
+                  "openSearch": {
+                    "url": "https://example:9200",
+                    "auth": {
+                      "type": "Basic",
+                      "username": "admin",
+                      "password": "secret"
+                    }
                   }
                 }
               }
@@ -135,7 +146,26 @@ class JsonParseErrorTest {
         ConfigParseResult result = ConfigJsonMapper.parse(json);
         assertThat(result.state().sinks().openSearchUser()).isEqualTo("admin");
         assertThat(result.report().warnings())
-                .anyMatch(w -> w.jsonPath().equals("sinks.openSearch.auth.password"));
+                .anyMatch(w -> w.jsonPath().equals("sinks.database.openSearch.auth.password"));
+    }
+
+    @Test
+    void parse_unknown_database_type_throwsIOException() {
+        String invalid = """
+            {
+              "sinks": {
+                "database": {
+                  "enabled": true,
+                  "type": "solr",
+                  "openSearch": { "auth": { "type": "None" } }
+                }
+              }
+            }
+            """;
+        assertThatThrownBy(() -> Json.parseConfigJson(invalid))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("sinks.database.type")
+                .hasMessageContaining("solr");
     }
 
     @Test
@@ -159,12 +189,15 @@ class JsonParseErrorTest {
             {
               "dataSources": ["exporter"],
               "sinks": {
-                "openSearch": {
+                "database": {
                   "enabled": false,
-                  "auth": { "type": "None" },
-                  "pinnedTlsCertificate": {
-                    "sourcePath": "cert.pem",
-                    "sha256": "abc123"
+                  "type": "openSearch",
+                  "openSearch": {
+                    "auth": { "type": "None" },
+                    "pinnedTlsCertificate": {
+                      "sourcePath": "cert.pem",
+                      "sha256": "abc123"
+                    }
                   }
                 }
               }
@@ -173,17 +206,20 @@ class JsonParseErrorTest {
         ConfigParseResult result = ConfigJsonMapper.parse(json);
         assertThat(result.state().sinks().openSearchOptions().pinnedTlsCertificateSourcePath()).isEqualTo("cert.pem");
         assertThat(result.report().warnings())
-                .anyMatch(w -> w.jsonPath().equals("sinks.openSearch.pinnedTlsCertificate.sha256"));
+                .anyMatch(w -> w.jsonPath().equals("sinks.database.openSearch.pinnedTlsCertificate.sha256"));
     }
 
     private static void assertInvalidAuthFieldCombination(String authType, String fieldName, String fieldValue) {
         String invalid = """
             {
               "sinks": {
-                "openSearch": {
-                  "auth": {
-                    "type": "%s",
-                    "%s": "%s"
+                "database": {
+                  "type": "openSearch",
+                  "openSearch": {
+                    "auth": {
+                      "type": "%s",
+                      "%s": "%s"
+                    }
                   }
                 }
               }
@@ -191,8 +227,8 @@ class JsonParseErrorTest {
             """.formatted(authType, fieldName, fieldValue);
         assertThatThrownBy(() -> Json.parseConfigJson(invalid))
                 .isInstanceOf(IOException.class)
-                .hasMessageContaining("sinks.openSearch.auth." + fieldName)
-                .hasMessageContaining("sinks.openSearch.auth.type")
+                .hasMessageContaining("sinks.database.openSearch.auth." + fieldName)
+                .hasMessageContaining("sinks.database.openSearch.auth.type")
                 .hasMessageContaining(authType);
     }
 }

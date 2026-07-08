@@ -19,7 +19,7 @@ class ConfigControllerOpenSearchErrorIT {
         }
 
         @Override public void onFileStatus(String message) { /* not used */ }
-        @Override public void onOpenSearchStatus(String message) {
+        @Override public void onDatabaseStatus(String message) {
             this.osMsg = message;
             done.countDown();
         }

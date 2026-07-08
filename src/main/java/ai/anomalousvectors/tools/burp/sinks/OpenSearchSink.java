@@ -16,6 +16,13 @@ import jakarta.json.JsonReader;
 import jakarta.json.JsonObject;
 import jakarta.json.JsonWriter;
 import jakarta.json.stream.JsonParser;
+import org.apache.hc.client5.http.classic.methods.HttpHead;
+import org.apache.hc.client5.http.classic.methods.HttpPut;
+import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http.ParseException;
+import org.apache.hc.core5.http.io.entity.EntityUtils;
+import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.opensearch.client.json.JsonpMapper;
 import org.opensearch.client.json.jackson.JacksonJsonpMapper;
 import org.opensearch.client.opensearch.OpenSearchClient;
@@ -26,7 +33,9 @@ import org.opensearch.client.opensearch.indices.IndexSettings;
 
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
 
 /**
@@ -55,7 +64,16 @@ public class OpenSearchSink {
      */
     public static IndexResult createIndexFromResource(String baseUrl, String shortName, String mappingsResourceRoot,
             String username, String password) {
-        return createIndexFromResource(baseUrl, shortName, resolvedFullIndexName(shortName), mappingsResourceRoot, username, password);
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return createIndexFromResource(baseUrl, shortName, resolvedFullIndexName(shortName), mappingsResourceRoot, auth);
+    }
+
+    /** Creates an index from the bundled mapping resource for the logical index key with selected auth. */
+    public static IndexResult createIndexFromResource(String baseUrl, String shortName, String mappingsResourceRoot,
+            OpenSearchAuth auth) {
+        return createIndexFromResource(baseUrl, shortName, resolvedFullIndexName(shortName), mappingsResourceRoot, auth);
     }
 
     /**
@@ -64,6 +82,15 @@ public class OpenSearchSink {
      */
     public static IndexResult createIndexFromResource(String baseUrl, String shortName, String fullIndexName, String mappingsResourceRoot,
             String username, String password) {
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return createIndexFromResource(baseUrl, shortName, fullIndexName, mappingsResourceRoot, auth);
+    }
+
+    /** Creates an index from the bundled mapping resource with an explicit full name and selected auth. */
+    public static IndexResult createIndexFromResource(String baseUrl, String shortName, String fullIndexName,
+            String mappingsResourceRoot, OpenSearchAuth auth) {
         final String defaultRoot = System.getProperty("burp.exporter.mappings.root", DEFAULT_MAPPINGS_RESOURCE_ROOT);
         final String resourceRoot = (mappingsResourceRoot == null || mappingsResourceRoot.isBlank())
                 ? defaultRoot
@@ -78,7 +105,7 @@ public class OpenSearchSink {
         String jsonBody = null;
 
         try {
-            OpenSearchClient client = OpenSearchConnector.getClient(baseUrl, username, password);
+            OpenSearchClient client = OpenSearchConnector.getClient(baseUrl, auth);
 
             boolean exists = client.indices().exists(b -> b.index(fullIndexName)).value();
             if (exists) {
@@ -93,6 +120,10 @@ public class OpenSearchSink {
                     return new IndexResult(shortName, fullIndexName, IndexResult.Status.FAILED, reason);
                 }
                 jsonBody = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            }
+
+            if (RuntimeConfig.searchDestinationKind() == ConfigState.SearchDestination.ELASTICSEARCH) {
+                return createIndexWithRawHttp(baseUrl, shortName, fullIndexName, jsonBody, auth);
             }
 
             JsonObject root;
@@ -150,6 +181,62 @@ public class OpenSearchSink {
         }
     }
 
+    private static IndexResult createIndexWithRawHttp(
+            String baseUrl,
+            String shortName,
+            String fullIndexName,
+            String jsonBody,
+            OpenSearchAuth auth) {
+        try {
+            HttpHost host = ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClassicHttpSupport
+                    .hostForBaseUrl(baseUrl);
+            var client = OpenSearchConnector.getClassicHttpClient(baseUrl, auth);
+            HttpHead head = new HttpHead("/" + fullIndexName);
+            auth.applyTo(head);
+            Boolean exists = client.execute(host, head, response -> {
+                int status = response.getCode();
+                if (status == 200) {
+                    return true;
+                }
+                if (status == 404) {
+                    return false;
+                }
+                throw new IOException("Index existence check failed: HTTP " + status);
+            });
+            if (Boolean.TRUE.equals(exists)) {
+                Logger.logDebug("[Elasticsearch] Index already exists: " + fullIndexName);
+                return new IndexResult(shortName, fullIndexName, IndexResult.Status.EXISTS, null);
+            }
+
+            HttpPut put = new HttpPut("/" + fullIndexName);
+            auth.applyTo(put);
+            put.setEntity(new StringEntity(jsonBody, ContentType.APPLICATION_JSON));
+            return client.execute(host, put, response -> {
+                int status = response.getCode();
+                String body;
+                try {
+                    body = response.getEntity() == null
+                            ? ""
+                            : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                } catch (ParseException e) {
+                    throw new IOException("Failed to parse index creation response.", e);
+                }
+                if (status >= 200 && status < 300) {
+                    Logger.logDebug("[Elasticsearch] Create index " + fullIndexName + " returned HTTP " + status);
+                    return new IndexResult(shortName, fullIndexName, IndexResult.Status.CREATED, null);
+                }
+                String reason = body == null || body.isBlank() ? "HTTP " + status : "HTTP " + status + ": " + body;
+                return new IndexResult(shortName, fullIndexName, IndexResult.Status.FAILED, conciseDetail(reason));
+            });
+        } catch (IOException | RuntimeException e) {
+            Logger.logErrorPanelOnly("[Elasticsearch] Exception while creating index: " + fullIndexName);
+            StringWriter sw = new StringWriter();
+            e.printStackTrace(new PrintWriter(sw));
+            Logger.logErrorPanelOnly(sw.toString().stripTrailing());
+            return new IndexResult(shortName, fullIndexName, IndexResult.Status.FAILED, conciseRootCause(e));
+        }
+    }
+
     /**
      * Creates all indices required by the selected sources.
      *
@@ -158,7 +245,7 @@ public class OpenSearchSink {
      * selected.</p>
      */
     public static List<IndexResult> createSelectedIndexes(String baseUrl, List<String> selectedSources) {
-        return createSelectedIndexes(baseUrl, selectedSources, null, null);
+        return createSelectedIndexes(baseUrl, selectedSources, (String) null, null);
     }
 
     /**
@@ -176,6 +263,15 @@ public class OpenSearchSink {
      */
     public static List<IndexResult> createSelectedIndexes(String baseUrl, List<String> selectedSources,
             String username, String password, BooleanSupplier shouldContinue) {
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return createSelectedIndexes(baseUrl, selectedSources, auth, shouldContinue);
+    }
+
+    /** Creates all indices required by the selected sources with selected database auth. */
+    public static List<IndexResult> createSelectedIndexes(String baseUrl, List<String> selectedSources,
+            OpenSearchAuth auth, BooleanSupplier shouldContinue) {
         Logger.logDebug("[OpenSearch] createSelectedIndexes sources=" + selectedSources);
 
         LinkedHashSet<String> shortNames = new LinkedHashSet<>(IndexNaming.computeSelectedIndexKeys(selectedSources));
@@ -192,8 +288,7 @@ public class OpenSearchSink {
                     shortName,
                     RuntimeConfig.indexNameForKey(shortName),
                     null,
-                    username,
-                    password);
+                    auth);
             Logger.logInfoPanelOnly("[OpenSearch] Index result for " + displayName + ": " + result.status() + ".");
             results.add(result);
         }
@@ -219,8 +314,15 @@ public class OpenSearchSink {
         while (c.getCause() != null) c = c.getCause();
         String msg = c.getMessage();
         if (msg == null || msg.isBlank()) msg = c.getClass().getSimpleName();
+        return conciseDetail(msg);
+    }
+
+    private static String conciseDetail(String detail) {
+        String msg = detail == null || detail.isBlank() ? "unknown error" : detail;
         msg = msg.replaceAll("[\\r\\n]+", " ").trim();
-        if (msg.length() > 300) msg = msg.substring(0, 300);
+        if (msg.length() > 300) {
+            msg = msg.substring(0, 300);
+        }
         return msg;
     }
 

@@ -18,6 +18,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionStatus;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionTester;
 
 /**
  * Coordinates OpenSearch retries and bounded fallback queues for failed writes.
@@ -113,7 +115,7 @@ public final class IndexingRetryCoordinator {
 
         if (!outageMode.get()) {
             OpenSearchClientWrapper.SingleDocPushResult result =
-                    OpenSearchClientWrapper.doPushDocument(activeBaseUrl, document.indexName(), document.document());
+                    OpenSearchClientWrapper.doPushPreparedDocument(activeBaseUrl, document);
             if (result.success()) {
                 consecutiveFailures.set(0);
                 ExportStats.recordOpenSearchSuccess();
@@ -170,8 +172,8 @@ public final class IndexingRetryCoordinator {
             return new OpenSearchClientWrapper.SingleDocPushResult(
                     false, BulkOutcomeBreakdown.empty(), "OpenSearch URL not configured");
         }
-        OpenSearchClientWrapper.SingleDocPushResult result = OpenSearchClientWrapper.doPushDocument(
-                activeBaseUrl, document.indexName(), document.document());
+        OpenSearchClientWrapper.SingleDocPushResult result = OpenSearchClientWrapper.doPushPreparedDocument(
+                activeBaseUrl, document);
         if (result.success()) {
             consecutiveFailures.set(0);
             ExportStats.recordOpenSearchSuccess();
@@ -351,7 +353,7 @@ public final class IndexingRetryCoordinator {
             return false;
         }
         Logger.logWarnPanelOnly("[OpenSearch] Repeated push failures detected; testing destination health.");
-        OpenSearchClientWrapper.OpenSearchStatus status = testConnectionWithRuntimeConfig(baseUrl);
+        SearchConnectionStatus status = testConnectionWithRuntimeConfig(baseUrl);
         if (!status.success()) {
             outageMode.set(true);
             logOutageOnce();
@@ -362,7 +364,7 @@ public final class IndexingRetryCoordinator {
         return false;
     }
 
-    private boolean handlePersistentDestinationFailure(OpenSearchClientWrapper.OpenSearchStatus status) {
+    private boolean handlePersistentDestinationFailure(SearchConnectionStatus status) {
         if (!RuntimeConfig.disableOpenSearchDestination()) {
             return false;
         }
@@ -406,7 +408,7 @@ public final class IndexingRetryCoordinator {
     }
 
     private void checkRecoveryAndLog(String baseUrl) {
-        OpenSearchClientWrapper.OpenSearchStatus status = testConnectionWithRuntimeConfig(baseUrl);
+        SearchConnectionStatus status = testConnectionWithRuntimeConfig(baseUrl);
         if (status.success() && queue.allEmpty()) {
             outageMode.set(false);
             consecutiveFailures.set(0);
@@ -512,11 +514,8 @@ public final class IndexingRetryCoordinator {
         return fallbackBaseUrl.trim();
     }
 
-    private static OpenSearchClientWrapper.OpenSearchStatus testConnectionWithRuntimeConfig(String baseUrl) {
-        return OpenSearchClientWrapper.testConnection(
-                baseUrl,
-                RuntimeConfig.openSearchUser(),
-                RuntimeConfig.openSearchPassword());
+    private static SearchConnectionStatus testConnectionWithRuntimeConfig(String baseUrl) {
+        return SearchConnectionTester.safeTestConnection(RuntimeConfig.searchDestinationKind(), baseUrl);
     }
 
     private void maybeLogDestinationChange(String baseUrl) {

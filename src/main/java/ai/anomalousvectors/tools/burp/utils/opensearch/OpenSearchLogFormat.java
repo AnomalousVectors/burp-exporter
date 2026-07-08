@@ -21,6 +21,12 @@ public final class OpenSearchLogFormat {
      * Use for Test Connection so the log reflects what was on the wire (with credentials redacted).
      */
     public static String formatRequestForLog(String method, String path, String baseUrl, String protocol, boolean authUsed) {
+        return formatRequestForLog(method, path, baseUrl, protocol, authUsed ? "Basic ***" : "");
+    }
+
+    /** Builds the actual request as sent for logging with the supplied redacted Authorization value. */
+    public static String formatRequestForLog(
+            String method, String path, String baseUrl, String protocol, String redactedAuthorization) {
         String proto = protocol != null && !protocol.isBlank() ? protocol : PROTOCOL_UNKNOWN;
         try {
             URI uri = URI.create(baseUrl.replaceFirst("^\\s+", "").trim());
@@ -30,15 +36,15 @@ public final class OpenSearchLogFormat {
             }
             StringBuilder sb = new StringBuilder();
             sb.append(method).append(" ").append(path).append(" ").append(proto).append("\nHost: ").append(host);
-            if (authUsed) {
-                sb.append("\nAuthorization: Basic ***");
+            if (redactedAuthorization != null && !redactedAuthorization.isBlank()) {
+                sb.append("\nAuthorization: ").append(redactedAuthorization);
             }
             return sb.toString();
         } catch (Exception e) {
             StringBuilder sb = new StringBuilder();
             sb.append(method).append(" ").append(path).append(" ").append(proto);
-            if (authUsed) {
-                sb.append("\nAuthorization: Basic ***");
+            if (redactedAuthorization != null && !redactedAuthorization.isBlank()) {
+                sb.append("\nAuthorization: ").append(redactedAuthorization);
             }
             return sb.toString();
         }

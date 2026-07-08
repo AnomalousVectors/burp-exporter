@@ -64,14 +64,15 @@ public final class ExportStartupStatus {
     }
 
     private static String destinationLabel(Snapshot snapshot) {
+        String databaseName = RuntimeConfig.searchDestinationDisplayName();
         if (snapshot.filesSelected() && snapshot.openSearchSelected()) {
-            return "Files and OpenSearch";
+            return "Files and " + databaseName;
         }
         if (snapshot.filesSelected()) {
             return "Files";
         }
         if (snapshot.openSearchSelected()) {
-            return "OpenSearch";
+            return databaseName;
         }
         return "export";
     }

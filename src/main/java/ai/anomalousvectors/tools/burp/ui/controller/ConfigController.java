@@ -14,7 +14,7 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigJsonMapper;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigParseResult;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionTester;
 
 /**
  * Coordinates long-running operations for the Config UI.
@@ -28,8 +28,13 @@ public final class ConfigController {
 
     /** UI callback surface implemented by ConfigPanel. */
     public interface Ui {
+        /** Displays file-destination status on the EDT. */
         void onFileStatus(String message);
-        void onOpenSearchStatus(String message);
+
+        /** Displays database-destination status on the EDT. */
+        void onDatabaseStatus(String message);
+
+        /** Displays import/export/control status on the EDT. */
         void onControlStatus(String message);
     }
 
@@ -140,48 +145,62 @@ public final class ConfigController {
     /**
      * Tests connectivity to an OpenSearch cluster asynchronously.
      *
-     * <p>The result message is sent to {@link Ui#onOpenSearchStatus} on the EDT. This method uses
+     * <p>The result message is sent to {@link Ui#onDatabaseStatus} on the EDT. This method uses
      * the current {@link RuntimeConfig} credentials and TLS mode, so callers should update runtime
      * config before invoking it.</p>
      *
      * @param url base URL of the OpenSearch cluster
      */
     public void testConnectionAsync(String url) {
-        Logger.logDebug("[Config] OpenSearch test connection requested: " + url);
-        String user = RuntimeConfig.openSearchUser();
-        String pass = RuntimeConfig.openSearchPassword();
+        testConnectionAsync(ConfigState.SearchDestination.OPEN_SEARCH, url);
+    }
+
+    /**
+     * Tests connectivity to the selected database destination asynchronously.
+     *
+     * @param destination selected database destination
+     * @param url base URL of the selected destination
+     */
+    public void testConnectionAsync(ConfigState.SearchDestination destination, String url) {
+        ConfigState.SearchDestination selected = destination == null
+                ? ConfigState.SearchDestination.OPEN_SEARCH
+                : destination;
+        Logger.logDebug("[Config] " + selected.displayName() + " test connection requested: " + url);
         new SwingWorker<String, Void>() {
             @Override protected String doInBackground() {
                 try {
-                    var s = OpenSearchClientWrapper.safeTestConnection(url, user, pass);
-                    Logger.logDebug("[Config] OpenSearch test result: success=" + s.success()
+                    var s = SearchConnectionTester.safeTestConnection(selected, url);
+                    Logger.logDebug("[Config] " + selected.displayName() + " test result: success=" + s.success()
                             + ", message=" + s.message());
                     return s.formattedStatus();
                 } catch (Exception ex) {
-                    Logger.logError("[Config] OpenSearch test connection failed: " + rootMessage(ex));
-                    return "Connection: Failed\nAuthentication: Not tested\nTrust: Not tested\nOpenSearch version: unknown\nDetails: "
+                    Logger.logError("[Config] " + selected.displayName() + " test connection failed: " + rootMessage(ex));
+                    return "Connection: Failed\nAuthentication: Not tested\nTrust: Not tested\n"
+                            + selected.displayName() + " version: unknown\nDetails: "
                             + rootMessage(ex);
                 }
             }
             @Override protected void done() {
                 try {
                     String status = get();
-                    ui.onOpenSearchStatus(status);
+                    ui.onDatabaseStatus(status);
                     if (status.startsWith("Connection: Success")) {
-                        Logger.logInfoPanelOnly("[OpenSearch] Test connection result\n" + status);
+                        Logger.logInfoPanelOnly("[" + selected.displayName() + "] Test connection result\n" + status);
                     } else {
-                        Logger.logWarnPanelOnly("[OpenSearch] Test connection result\n" + status);
+                        Logger.logWarnPanelOnly("[" + selected.displayName() + "] Test connection result\n" + status);
                     }
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
-                    String status = "Connection: Failed\nAuthentication: Not tested\nTrust: Not tested\nOpenSearch version: unknown\nDetails: interrupted.";
-                    ui.onOpenSearchStatus(status);
-                    Logger.logWarnPanelOnly("[OpenSearch] Test connection interrupted\n" + status);
+                    String status = "Connection: Failed\nAuthentication: Not tested\nTrust: Not tested\n"
+                            + selected.displayName() + " version: unknown\nDetails: interrupted.";
+                    ui.onDatabaseStatus(status);
+                    Logger.logWarnPanelOnly("[" + selected.displayName() + "] Test connection interrupted\n" + status);
                 } catch (ExecutionException ex) {
-                    String status = "Connection: Failed\nAuthentication: Not tested\nTrust: Not tested\nOpenSearch version: unknown\nDetails: "
+                    String status = "Connection: Failed\nAuthentication: Not tested\nTrust: Not tested\n"
+                            + selected.displayName() + " version: unknown\nDetails: "
                             + rootMessage(ex);
-                    ui.onOpenSearchStatus(status);
-                    Logger.logWarnPanelOnly("[OpenSearch] Test connection result\n" + status);
+                    ui.onDatabaseStatus(status);
+                    Logger.logWarnPanelOnly("[" + selected.displayName() + "] Test connection result\n" + status);
                 }
             }
         }.execute();
@@ -206,9 +225,9 @@ public final class ConfigController {
 
     private static String formatImportFailureStatus(Throwable t) {
         String detail = userFacingMessage(t);
-        if (detail.contains("sinks.files") || detail.contains("sinks.openSearch")) {
-            return "Import failed: Sink settings must use nested 'sinks.files' and 'sinks.openSearch' objects "
-                    + "(for example 'sinks.files.limits.totalEnabled'). Details: " + detail;
+        if (detail.contains("sinks.files") || detail.contains("sinks.database")) {
+            return "Import failed: Sink settings must use nested 'sinks.files' and 'sinks.database' objects "
+                    + "(for example 'sinks.database.openSearch.url'). Details: " + detail;
         }
         return "Import failed: " + detail;
     }

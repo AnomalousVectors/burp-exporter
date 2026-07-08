@@ -78,17 +78,16 @@ class ConfigPanelStopLifecycleHeadlessTest {
             ConfigPanel panel = newPanelOnEdt();
             JButton startStop = (JButton) findByName(panel, "control.startStop");
             JTextArea controlStatus = findByName(panel, "control.status", JTextArea.class);
-            JCheckBox openSearchEnabled = findByName(panel, "os.enable", JCheckBox.class);
             JCheckBox filesEnabled = findByName(panel, "files.enable", JCheckBox.class);
-            JTextField openSearchUrlField = JTextField.class.cast(get(panel, "openSearchUrlField"));
+            javax.swing.AbstractButton awsDestination =
+                    javax.swing.AbstractButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
             JTextField filePathField = JTextField.class.cast(get(panel, "filePathField"));
             assertThat(startStop).isNotNull();
             assertThat(controlStatus).isNotNull();
 
             runEdt(() -> {
-                openSearchUrlField.setText("");
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
                 if (!filesEnabled.isSelected()) {
                     filesEnabled.doClick();
@@ -131,7 +130,7 @@ class ConfigPanelStopLifecycleHeadlessTest {
         SwingUtilities.invokeAndWait(() -> {
             ConfigPanel panel = new ConfigPanel(new ConfigController(new ConfigController.Ui() {
                 @Override public void onFileStatus(String message) { }
-                @Override public void onOpenSearchStatus(String message) { }
+                @Override public void onDatabaseStatus(String message) { }
                 @Override public void onControlStatus(String message) { }
             }));
             panel.setSize(1000, 700);

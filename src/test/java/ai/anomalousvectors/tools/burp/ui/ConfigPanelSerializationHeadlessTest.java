@@ -128,7 +128,7 @@ class ConfigPanelSerializationHeadlessTest {
     private static final class SilentUi implements ConfigController.Ui, Serializable {
         @Serial private static final long serialVersionUID = 1L;
         @Override public void onFileStatus(String message) { /* not used */ }
-        @Override public void onOpenSearchStatus(String message) { /* not used */ }
+        @Override public void onDatabaseStatus(String message) { /* not used */ }
         @Override public void onControlStatus(String message) { /* not used */ }
     }
 }

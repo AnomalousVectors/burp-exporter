@@ -469,7 +469,7 @@ class ConfigPanelCommunityEditionHeadlessTest {
 
     private static final class NoopUi implements ConfigController.Ui {
         @Override public void onFileStatus(String message) {}
-        @Override public void onOpenSearchStatus(String message) {}
+        @Override public void onDatabaseStatus(String message) {}
         @Override public void onControlStatus(String message) {}
     }
 }

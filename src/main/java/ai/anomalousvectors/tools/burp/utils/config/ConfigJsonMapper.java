@@ -63,7 +63,12 @@ public final class ConfigJsonMapper {
                 cfg.openSearchEnabled(), cfg.openSearchUrl(),
                 cfg.openSearchUser(), cfg.openSearchPassword(),
                 cfg.openSearchTlsMode(),
-                cfg.openSearchOptions()
+                cfg.openSearchOptions(),
+                cfg.searchDestination(),
+                cfg.openSearchAmazonUrl(),
+                cfg.openSearchAmazonOptions(),
+                cfg.elasticSearchUrl(),
+                cfg.elasticSearchOptions()
         );
 
         return new State(dataSources, cfg.scopeType(), entries, sinks,

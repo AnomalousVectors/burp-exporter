@@ -9,6 +9,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.core.SearchRequest;
 import org.opensearch.client.opensearch.core.SearchResponse;
@@ -47,6 +48,7 @@ import burp.api.montoya.sitemap.SiteMap;
  * siteMap().requestResponses(). Verifies document shape after round-trip.
  */
 @Tag("integration")
+@ResourceLock("sitemap-opensearch-index")
 class SitemapIndexReporterIT {
 
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -223,6 +225,7 @@ class SitemapIndexReporterIT {
     }
 
     private void createSitemapIndex() {
+        cleanupIndex();
         List<OpenSearchSink.IndexResult> results = OpenSearchReachable.createSelectedIndexes(List.of("sitemap"));
         assertThat(results).isNotEmpty();
         boolean sitemapCreated = results.stream()
@@ -242,6 +245,15 @@ class SitemapIndexReporterIT {
                 null);
         RuntimeConfig.updateState(state);
         RuntimeConfig.setExportRunning(true);
+    }
+
+    private void cleanupIndex() {
+        OpenSearchClient client = OpenSearchReachable.getClient();
+        try {
+            client.indices().delete(new DeleteIndexRequest.Builder().index(sitemapIndexName()).build());
+        } catch (java.io.IOException | RuntimeException ignored) {
+            // Missing or concurrently cleaned indexes are acceptable during test setup/teardown.
+        }
     }
 
     private void setMockMontoyaApiWithOneSitemapItem() {

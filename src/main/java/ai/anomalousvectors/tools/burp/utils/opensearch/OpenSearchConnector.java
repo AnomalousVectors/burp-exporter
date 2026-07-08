@@ -6,33 +6,26 @@ import java.io.IOException;
 import java.net.URI;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.net.ssl.SSLContext;
-
-import org.apache.hc.client5.http.auth.AuthScope;
-import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
-import org.apache.hc.client5.http.config.TlsConfig;
-import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.impl.nio.PoolingAsyncClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
-import org.apache.hc.client5.http.ssl.ClientTlsStrategyBuilder;
-import org.apache.hc.client5.http.ssl.NoopHostnameVerifier;
-import org.apache.hc.client5.http.ssl.TrustAllStrategy;
 import org.apache.hc.core5.http.HttpHost;
-import org.apache.hc.core5.http2.HttpVersionPolicy;
-import org.apache.hc.core5.ssl.SSLContextBuilder;
 import org.opensearch.client.json.JsonpMapper;
 import org.opensearch.client.json.jackson.JacksonJsonpMapper;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.transport.OpenSearchTransport;
 import org.opensearch.client.transport.httpclient5.ApacheHttpClient5TransportBuilder;
+
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 
 /**
  * Factory/cache for OpenSearch clients.
@@ -58,7 +51,7 @@ public final class OpenSearchConnector {
      * @throws OpenSearchClientBuildException when the client cannot be constructed
      */
     public static OpenSearchClient getClient(String baseUrl) {
-        return getClient(baseUrl, null, null);
+        return getClient(baseUrl, OpenSearchAuth.none());
     }
 
     /**
@@ -72,10 +65,21 @@ public final class OpenSearchConnector {
      * @throws OpenSearchClientBuildException when the client cannot be constructed
      */
     public static OpenSearchClient getClient(String baseUrl, String username, String password) {
-        boolean insecure = isInsecureEnabled();
-        String key = cacheKey(baseUrl, username, password, insecure,
-                OpenSearchTlsSupport.currentTlsMode(), OpenSearchTlsSupport.pinnedCertificateFingerprint());
-        return clientCache.computeIfAbsent(key, k -> buildClient(baseUrl, username, password, insecure));
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return getClient(baseUrl, auth);
+    }
+
+    /** Returns a cached client for the given base URL and selected auth mode. */
+    public static OpenSearchClient getClient(String baseUrl, OpenSearchAuth auth) {
+        ConfigState.SearchDestination destination = RuntimeConfig.searchDestinationKind();
+        boolean insecure = isInsecureEnabled(destination);
+        OpenSearchAuth resolvedAuth = auth == null ? OpenSearchAuth.none() : auth;
+        String key = cacheKey(baseUrl, resolvedAuth, insecure,
+                OpenSearchTlsSupport.currentTlsMode(destination),
+                OpenSearchTlsSupport.pinnedCertificateFingerprint(destination));
+        return clientCache.computeIfAbsent(key, k -> buildClient(baseUrl, resolvedAuth, insecure, destination));
     }
 
     /**
@@ -85,27 +89,52 @@ public final class OpenSearchConnector {
      * behaviorally aligned with connector/test-connection.</p>
      */
     static CloseableHttpClient getClassicHttpClient(String baseUrl, String username, String password) {
-        boolean insecure = isInsecureEnabled();
-        String key = cacheKey(baseUrl, username, password, insecure,
-                OpenSearchTlsSupport.currentTlsMode(), OpenSearchTlsSupport.pinnedCertificateFingerprint());
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return getClassicHttpClient(baseUrl, auth);
+    }
+
+    /**
+     * Returns a cached classic HTTP client for the selected database destination.
+     *
+     * @param baseUrl configured database base URL
+     * @param auth resolved authentication descriptor
+     * @return pooled classic HTTP client owned by this connector
+     */
+    public static CloseableHttpClient getClassicHttpClient(String baseUrl, OpenSearchAuth auth) {
+        ConfigState.SearchDestination destination = RuntimeConfig.searchDestinationKind();
+        boolean insecure = isInsecureEnabled(destination);
+        OpenSearchAuth resolvedAuth = auth == null ? OpenSearchAuth.none() : auth;
+        String key = cacheKey(baseUrl, resolvedAuth, insecure,
+                OpenSearchTlsSupport.currentTlsMode(destination),
+                OpenSearchTlsSupport.pinnedCertificateFingerprint(destination));
         return classicClientCache.computeIfAbsent(
-                key, k -> buildClassicClient(baseUrl, username, password, insecure));
+                key, k -> buildClassicClient(baseUrl, resolvedAuth, insecure, destination));
     }
 
     private static final String INSECURE_PROP = "OPENSEARCH_INSECURE";
 
     static boolean isInsecureEnabled() {
+        return isInsecureEnabled(ConfigState.SearchDestination.OPEN_SEARCH);
+    }
+
+    static boolean isInsecureEnabled(ConfigState.SearchDestination destination) {
         return "true".equalsIgnoreCase(System.getProperty(INSECURE_PROP, "").trim())
-                || OpenSearchTlsSupport.isInsecureMode();
+                || OpenSearchTlsSupport.isInsecureMode(destination);
     }
 
-    private static String cacheKey(String baseUrl, String username, String password,
+    private static String cacheKey(String baseUrl, OpenSearchAuth auth,
                                    boolean insecure, String tlsMode, String pinnedFingerprint) {
-        String cred = (username == null && password == null) ? "" : "|" + (username != null ? username : "") + "|" + (password != null ? password : "");
-        return baseUrl + cred + "|insecure=" + insecure + "|tls=" + tlsMode + "|pin=" + pinnedFingerprint;
+        String authKey = auth == null ? OpenSearchAuth.none().cacheKey() : auth.cacheKey();
+        return baseUrl + "|" + authKey + "|insecure=" + insecure + "|tls=" + tlsMode + "|pin=" + pinnedFingerprint;
     }
 
-    private static OpenSearchClient buildClient(String baseUrl, String username, String password, boolean insecure) {
+    private static OpenSearchClient buildClient(
+            String baseUrl,
+            OpenSearchAuth auth,
+            boolean insecure,
+            ConfigState.SearchDestination destination) {
         try {
             URI uri = URI.create(baseUrl);
             HttpHost host = new HttpHost(uri.getScheme(), uri.getHost(), uri.getPort());
@@ -114,41 +143,23 @@ public final class OpenSearchConnector {
             ApacheHttpClient5TransportBuilder builder = ApacheHttpClient5TransportBuilder
                     .builder(host)
                     .setMapper(mapper);
+            builder.setDefaultHeaders(auth.defaultHeaders());
 
             boolean useHttps = "https".equalsIgnoreCase(uri.getScheme());
 
             builder.setHttpClientConfigCallback(httpBuilder -> {
                 PoolingAsyncClientConnectionManagerBuilder connManagerBuilder =
-                        PoolingAsyncClientConnectionManagerBuilder.create()
-                                .setDefaultTlsConfig(TlsConfig.custom()
-                                        .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
-                                        .build());
-                if (hasCredentials(username, password)) {
-                    BasicCredentialsProvider credsProvider = new BasicCredentialsProvider();
-                    credsProvider.setCredentials(
-                            new AuthScope(host),
-                            new UsernamePasswordCredentials(username, password.toCharArray()));
-                    httpBuilder.setDefaultCredentialsProvider(credsProvider);
-                }
+                        PoolingAsyncClientConnectionManagerBuilder.create();
                 if (useHttps) {
                     try {
-                        if (insecure) {
-                            SSLContext sslContext = SSLContextBuilder.create()
-                                    .loadTrustMaterial(TrustAllStrategy.INSTANCE)
-                                    .build();
-                            connManagerBuilder.setTlsStrategy(ClientTlsStrategyBuilder.create()
-                                    .setSslContext(sslContext)
-                                    .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                                    .buildAsync());
-                        } else if (OpenSearchTlsSupport.isPinnedMode()) {
-                            SSLContext sslContext = OpenSearchTlsSupport.buildPinnedSslContext();
-                            connManagerBuilder.setTlsStrategy(ClientTlsStrategyBuilder.create()
-                                    .setSslContext(sslContext)
-                                    .buildAsync());
-                        }
-                    } catch (GeneralSecurityException e) {
+                        OpenSearchHttpTlsSupport.configureAsyncTls(connManagerBuilder, auth, insecure, destination);
+                    } catch (IOException | GeneralSecurityException e) {
                         throw new OpenSearchClientBuildException("Failed to build OpenSearch TLS context", e);
                     }
+                } else {
+                    connManagerBuilder.setDefaultTlsConfig(org.apache.hc.client5.http.config.TlsConfig.custom()
+                            .setVersionPolicy(org.apache.hc.core5.http2.HttpVersionPolicy.NEGOTIATE)
+                            .build());
                 }
                 AsyncClientConnectionManager connManager = connManagerBuilder.build();
                 httpBuilder.setConnectionManager(connManager);
@@ -163,53 +174,32 @@ public final class OpenSearchConnector {
     }
 
     private static CloseableHttpClient buildClassicClient(
-            String baseUrl, String username, String password, boolean insecure) {
+            String baseUrl, OpenSearchAuth auth, boolean insecure, ConfigState.SearchDestination destination) {
         try {
             URI uri = URI.create(baseUrl);
-            HttpHost host = new HttpHost(uri.getScheme(), uri.getHost(), uri.getPort());
             boolean useHttps = "https".equalsIgnoreCase(uri.getScheme());
 
             PoolingHttpClientConnectionManagerBuilder connManagerBuilder =
-                    PoolingHttpClientConnectionManagerBuilder.create()
-                            .setDefaultTlsConfig(TlsConfig.custom()
-                                    .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
-                                    .build());
-
+                    PoolingHttpClientConnectionManagerBuilder.create();
             if (useHttps) {
-                if (insecure) {
-                    SSLContext sslContext = SSLContextBuilder.create()
-                            .loadTrustMaterial(TrustAllStrategy.INSTANCE)
-                            .build();
-                    connManagerBuilder.setTlsSocketStrategy(ClientTlsStrategyBuilder.create()
-                            .setSslContext(sslContext)
-                            .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                            .buildClassic());
-                } else if (OpenSearchTlsSupport.isPinnedMode()) {
-                    SSLContext sslContext = OpenSearchTlsSupport.buildPinnedSslContext();
-                    connManagerBuilder.setTlsSocketStrategy(ClientTlsStrategyBuilder.create()
-                            .setSslContext(sslContext)
-                            .buildClassic());
-                }
+                OpenSearchHttpTlsSupport.configureClassicTls(connManagerBuilder, auth, insecure, destination);
+            } else {
+                connManagerBuilder.setDefaultTlsConfig(org.apache.hc.client5.http.config.TlsConfig.custom()
+                        .setVersionPolicy(org.apache.hc.core5.http2.HttpVersionPolicy.NEGOTIATE)
+                        .build());
             }
 
             var httpBuilder = HttpClients.custom()
                     .setConnectionManager(connManagerBuilder.build());
-            if (hasCredentials(username, password)) {
-                BasicCredentialsProvider credsProvider = new BasicCredentialsProvider();
-                credsProvider.setCredentials(
-                        new AuthScope(host),
-                        new UsernamePasswordCredentials(username, password.toCharArray()));
-                httpBuilder.setDefaultCredentialsProvider(credsProvider);
+            org.apache.hc.core5.http.Header[] defaultHeaders = auth.defaultHeaders();
+            if (defaultHeaders.length > 0) {
+                httpBuilder.setDefaultHeaders(Arrays.asList(defaultHeaders));
             }
             return httpBuilder.build();
-        } catch (GeneralSecurityException | RuntimeException e) {
+        } catch (IOException | GeneralSecurityException | RuntimeException e) {
             throw new OpenSearchClientBuildException(
                     "Failed to build classic OpenSearch HTTP client for " + baseUrl, e);
         }
-    }
-
-    private static boolean hasCredentials(String username, String password) {
-        return username != null && !username.isBlank() && password != null && !password.isBlank();
     }
 
     /**

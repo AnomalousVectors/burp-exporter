@@ -134,6 +134,75 @@ class RuntimeConfigDestinationGatingTest {
     }
 
     @Test
+    void searchExportEnabled_supportsElasticsearchDestination() {
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_SETTINGS),
+                    ConfigKeys.SCOPE_ALL,
+                    List.of(),
+                    new ConfigState.Sinks(false, "", false, true,
+                            true, ConfigState.DEFAULT_FILE_TOTAL_CAP_GB,
+                            true, ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT,
+                            true, "https://opensearch.url:9200", "", "",
+                            ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                            ConfigState.defaultOpenSearchOptions(),
+                            ConfigState.SearchDestination.ELASTICSEARCH.configKey(),
+                            "https://opensearch.url:9200",
+                            ConfigState.defaultOpenSearchAmazonOptions(),
+                            "http://localhost:9201",
+                            ConfigState.defaultElasticsearchOptions()),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null
+            ));
+
+            assertThat(RuntimeConfig.searchDestinationKind()).isEqualTo(ConfigState.SearchDestination.ELASTICSEARCH);
+            assertThat(RuntimeConfig.isSearchExportEnabled()).isTrue();
+            assertThat(RuntimeConfig.isOpenSearchExportEnabled()).isTrue();
+            assertThat(RuntimeConfig.searchBaseUrl()).isEqualTo("http://localhost:9201");
+            assertThat(RuntimeConfig.openSearchUrl()).isEqualTo("http://localhost:9201");
+            assertThat(RuntimeConfig.activeSinkSummary()).isEqualTo("Elasticsearch");
+        } finally {
+            restoreRuntimeState();
+        }
+    }
+
+    @Test
+    void searchExportEnabled_keepsAmazonOpenSearchUnwiredForNow() {
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_SETTINGS),
+                    ConfigKeys.SCOPE_ALL,
+                    List.of(),
+                    new ConfigState.Sinks(false, "", false, true,
+                            true, ConfigState.DEFAULT_FILE_TOTAL_CAP_GB,
+                            true, ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT,
+                            true, "https://opensearch.url:9200", "", "",
+                            ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                            ConfigState.defaultOpenSearchOptions(),
+                            ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(),
+                            "https://amazon-opensearch.example:443",
+                            ConfigState.defaultOpenSearchAmazonOptions(),
+                            "http://localhost:9201",
+                            ConfigState.defaultElasticsearchOptions()),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null
+            ));
+
+            assertThat(RuntimeConfig.searchDestinationKind())
+                    .isEqualTo(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON);
+            assertThat(RuntimeConfig.isSearchDestinationExportWired(RuntimeConfig.searchDestinationKind())).isFalse();
+            assertThat(RuntimeConfig.isSearchExportEnabled()).isFalse();
+            assertThat(RuntimeConfig.searchBaseUrl()).isEmpty();
+        } finally {
+            restoreRuntimeState();
+        }
+    }
+
+    @Test
     void activeSinkSummary_reportsEnabledDestinations() {
         try {
             RuntimeConfig.updateState(new ConfigState.State(

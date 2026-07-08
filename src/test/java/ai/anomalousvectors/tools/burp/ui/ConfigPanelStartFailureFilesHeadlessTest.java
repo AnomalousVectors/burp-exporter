@@ -30,7 +30,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 class ConfigPanelStartFailureFilesHeadlessTest {
 
     @Test
-    void start_withNoConfiguredDestinations_revertsUi_and_reportsStatus() throws Exception {
+    void start_withPlaceholderSearchDestinationOnly_revertsUi_and_reportsStatus() throws Exception {
         Logger.resetState();
         List<String> events = new CopyOnWriteArrayList<>();
         Logger.LogListener listener = (level, message) -> events.add(level + "|" + message);
@@ -42,9 +42,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -64,8 +64,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
             assertThat(RuntimeConfig.isExportRunning()).isFalse();
             assertThat(startStop.getText()).isEqualTo("Start");
             assertThat(controlStatus.getText()).contains("Start aborted");
-            assertThat(controlStatus.getText()).contains("configure at least one destination");
-            waitForLogMessage(events, "configure at least one destination");
+            assertThat(controlStatus.getText())
+                    .contains("Amazon OpenSearch is not wired for Start/export yet.");
+            waitForLogMessage(events, "Amazon OpenSearch is not wired for Start/export yet.");
         } finally {
             Logger.unregisterListener(listener);
             ExportReporterLifecycle.resetForTests();
@@ -88,9 +89,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -144,9 +145,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -208,7 +209,7 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 JTextField filePathField = JTextField.class.cast(get(p, "filePathField"));
                 filePathField.setText(exportRootAbs.toString());
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
+                javax.swing.AbstractButton openSearchEnabled = javax.swing.AbstractButton.class.cast(get(p, "openSearchSinkCheckbox"));
                 if (!openSearchEnabled.isSelected()) {
                     openSearchEnabled.doClick();
                 }
@@ -272,7 +273,7 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 JTextField filePathField = JTextField.class.cast(get(p, "filePathField"));
                 filePathField.setText(exportRootAbs.toString());
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
+                javax.swing.AbstractButton openSearchEnabled = javax.swing.AbstractButton.class.cast(get(p, "openSearchSinkCheckbox"));
                 if (!openSearchEnabled.isSelected()) {
                     openSearchEnabled.doClick();
                 }
@@ -326,9 +327,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -375,9 +376,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -422,9 +423,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -467,9 +468,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                JCheckBox openSearchEnabled = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
-                if (openSearchEnabled.isSelected()) {
-                    openSearchEnabled.doClick();
+                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
+                if (!awsDestination.isSelected()) {
+                    awsDestination.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));

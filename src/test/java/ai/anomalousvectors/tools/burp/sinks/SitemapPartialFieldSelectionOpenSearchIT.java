@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import ai.anomalousvectors.tools.burp.testutils.OpenSearchReachable;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
@@ -30,6 +31,7 @@ import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 
 @Tag("integration")
+@ResourceLock("sitemap-opensearch-index")
 class SitemapPartialFieldSelectionOpenSearchIT {
 
     private static final String ITEM_URL = "https://example.com/sitemap-partial";

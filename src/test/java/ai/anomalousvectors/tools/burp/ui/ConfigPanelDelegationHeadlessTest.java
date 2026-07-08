@@ -19,14 +19,14 @@ import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
 
 /**
- * Verifies that the panel delegates to the controller and posts OpenSearch status updates.
+ * Verifies that the panel delegates to the controller and posts Database status updates.
  */
 class ConfigPanelDelegationHeadlessTest {
 
     private static final class TestUi implements ConfigController.Ui {
         volatile String osMsg;
         @Override public void onFileStatus(String m) { }
-        @Override public void onOpenSearchStatus(String m) { osMsg = m; }
+        @Override public void onDatabaseStatus(String m) { osMsg = m; }
         @Override public void onControlStatus(String m) {
             // Control status is not used in this scenario; required by ConfigController.Ui
         }
@@ -51,7 +51,7 @@ class ConfigPanelDelegationHeadlessTest {
             p.doLayout();
 
             // Enable OpenSearch and Files destinations so OS and Files buttons are actionable
-            JCheckBox osEnable = JCheckBox.class.cast(get(p, "openSearchSinkCheckbox"));
+            javax.swing.AbstractButton osEnable = javax.swing.AbstractButton.class.cast(get(p, "openSearchSinkCheckbox"));
             if (!osEnable.isSelected()) osEnable.doClick();
             JCheckBox filesEnable = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
             if (!filesEnable.isSelected()) filesEnable.doClick();

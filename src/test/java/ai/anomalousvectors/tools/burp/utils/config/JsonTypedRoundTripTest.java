@@ -196,13 +196,14 @@ class JsonTypedRoundTripTest {
         assertThat(json).contains("\"path\" : \"/path/to/directory\"");
         assertThat(json).contains("\"formats\" : [ \"jsonl\" ]");
         assertThat(json).contains("\"limits\" : {");
+        assertThat(json).contains("\"database\" : {");
+        assertThat(json).contains("\"type\" : \"openSearch\"");
         assertThat(json).contains("\"openSearch\" : {");
         assertThat(json).contains("\"url\" : \"https://opensearch.url:9200\"");
         assertThat(json).contains("\"tlsMode\" : \"pinned\"");
         assertThat(json).contains("\"auth\" : {");
         assertThat(json).contains("\"type\" : \"Certificate\"");
         assertThat(json).doesNotContain("\"username\" : \"alice\"");
-        assertThat(json).doesNotContain("\"apiKeyId\" : \"kid-1\"");
         assertThat(json).contains("\"certPath\" : \"client-cert.pem\"");
         assertThat(json).contains("\"certKeyPath\" : \"client-key.pem\"");
         assertThat(json).contains("\"pinnedTlsCertificate\" : {");
@@ -347,7 +348,11 @@ class JsonTypedRoundTripTest {
               "version": "1.0",
               "scope": ["all"],
               "sinks": {
-                "openSearch": { "enabled": false, "auth": { "type": "None" } }
+                "database": {
+                  "enabled": false,
+                  "type": "openSearch",
+                  "openSearch": { "auth": { "type": "None" } }
+                }
               }
             }
             """;

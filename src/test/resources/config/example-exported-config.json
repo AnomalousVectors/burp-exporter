@@ -21,19 +21,34 @@
         "maxDiskUsedPercent" : 88
       }
     },
-    "openSearch" : {
+    "database" : {
       "enabled" : true,
-      "url" : "https://opensearch.example:9200",
-      "tlsMode" : "pinned",
-      "auth" : {
-        "type" : "Certificate",
-        "certPath" : "certs/client.pem",
-        "certKeyPath" : "certs/client-key.pem"
+      "type" : "openSearch",
+      "openSearch" : {
+        "url" : "https://opensearch.example:9200",
+        "tlsMode" : "pinned",
+        "auth" : {
+          "type" : "Certificate",
+          "certPath" : "certs/client.pem",
+          "certKeyPath" : "certs/client-key.pem"
+        },
+        "pinnedTlsCertificate" : {
+          "sourcePath" : "certs/opensearch-ca.pem",
+          "fingerprintSha256" : "abcd1234",
+          "encodedBase64" : "QUJDREVGRw=="
+        }
       },
-      "pinnedTlsCertificate" : {
-        "sourcePath" : "certs/opensearch-ca.pem",
-        "fingerprintSha256" : "abcd1234",
-        "encodedBase64" : "QUJDREVGRw=="
+      "openSearchAmazon" : {
+        "tlsMode" : "verify",
+        "auth" : {
+          "type" : "IAM (sigV4)"
+        }
+      },
+      "elasticsearch" : {
+        "tlsMode" : "verify",
+        "auth" : {
+          "type" : "Basic"
+        }
       }
     }
   },

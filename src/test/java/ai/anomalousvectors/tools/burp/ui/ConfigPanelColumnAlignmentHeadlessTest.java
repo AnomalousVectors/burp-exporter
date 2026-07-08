@@ -1,11 +1,14 @@
 package ai.anomalousvectors.tools.burp.ui;
 
+import java.awt.Component;
+import java.awt.Container;
 import java.awt.Rectangle;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JRadioButton;
 import javax.swing.JTextField;
@@ -50,8 +53,47 @@ class ConfigPanelColumnAlignmentHeadlessTest {
 
         JTextField filesPath = findByName(panel, "files.path", JTextField.class);
         JTextField openSearchUrl = findByName(panel, "os.url", JTextField.class);
+        JTextField openSearchAmazonUrl = findByName(panel, "os.amazon.url", JTextField.class);
+        JTextField elasticSearchUrl = findByName(panel, "os.elasticsearch.url", JTextField.class);
+        JCheckBox database = findByName(panel, "database.enable", JCheckBox.class);
+        JRadioButton openSearch = findByName(panel, "os.destination.openSearch", JRadioButton.class);
+        JRadioButton openSearchAmazon = findByName(panel, "os.destination.amazon", JRadioButton.class);
+        JRadioButton elasticSearch = findByName(panel, "os.destination.elasticsearch", JRadioButton.class);
+        assertThat(openSearchAmazon.getParent()).isSameAs(elasticSearch.getParent());
+        assertThat(openSearch.getParent()).isSameAs(openSearchAmazon.getParent());
+        assertThat(openSearchAmazon.getParent().getComponentZOrder(openSearchAmazon))
+                .isLessThan(openSearchAmazon.getParent().getComponentZOrder(elasticSearch));
+        assertThat(elasticSearch.getParent().getComponentZOrder(elasticSearch))
+                .isLessThan(elasticSearch.getParent().getComponentZOrder(openSearch));
 
-        assertThat(bounds(filesPath).x).isEqualTo(bounds(openSearchUrl).x);
+        assertThat(absoluteX(filesPath)).isEqualTo(absoluteX(openSearchUrl));
+        assertThat(openSearchUrl.isVisible()).isTrue();
+        assertThat(openSearchAmazonUrl.isVisible()).isFalse();
+        assertThat(elasticSearchUrl.isVisible()).isFalse();
+
+        int expectedRadioDelta = 42;
+        assertThat(absoluteX(openSearch) - absoluteX(database)).isEqualTo(expectedRadioDelta);
+
+        runEdt(() -> openSearchAmazon.doClick());
+        layoutPanel(panel);
+        assertThat(openSearch.isSelected()).isFalse();
+        assertThat(openSearchAmazon.isSelected()).isTrue();
+        assertThat(absoluteX(filesPath)).isEqualTo(absoluteX(openSearchAmazonUrl));
+        assertThat(absoluteX(openSearchAmazon) - absoluteX(database)).isEqualTo(expectedRadioDelta);
+        assertThat(absoluteRight(openSearchAmazon)).isLessThan(absoluteX(openSearchAmazonUrl));
+        assertThat(openSearchUrl.isVisible()).isFalse();
+        assertThat(openSearchAmazonUrl.isVisible()).isTrue();
+        assertThat(elasticSearchUrl.isVisible()).isFalse();
+
+        runEdt(() -> elasticSearch.doClick());
+        layoutPanel(panel);
+        assertThat(openSearchAmazon.isSelected()).isFalse();
+        assertThat(elasticSearch.isSelected()).isTrue();
+        assertThat(absoluteX(filesPath)).isEqualTo(absoluteX(elasticSearchUrl));
+        assertThat(absoluteX(elasticSearch) - absoluteX(database)).isEqualTo(expectedRadioDelta);
+        assertThat(openSearchUrl.isVisible()).isFalse();
+        assertThat(openSearchAmazonUrl.isVisible()).isFalse();
+        assertThat(elasticSearchUrl.isVisible()).isTrue();
     }
 
     @Test
@@ -88,8 +130,31 @@ class ConfigPanelColumnAlignmentHeadlessTest {
     private static void layoutPanel(ConfigPanel panel) throws Exception {
         runEdt(() -> {
             panel.setSize(1000, 800);
-            panel.doLayout();
+            layoutTree(panel);
         });
+    }
+
+    private static void layoutTree(Container container) {
+        container.doLayout();
+        for (Component component : container.getComponents()) {
+            if (component instanceof Container child) {
+                layoutTree(child);
+            }
+        }
+    }
+
+    private static int absoluteX(Component component) {
+        int x = 0;
+        Component current = component;
+        while (current != null) {
+            x += current.getX();
+            current = current.getParent();
+        }
+        return x;
+    }
+
+    private static int absoluteRight(Component component) {
+        return absoluteX(component) + component.getWidth();
     }
 
     private static List<JTextField> findFieldsSorted(JComponent root) {

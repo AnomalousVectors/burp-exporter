@@ -19,10 +19,9 @@ class SecureCredentialStoreTest {
     @Test
     void apiKey_roundTrip_saveAndLoad() {
         withCleanStore(() -> {
-            SecureCredentialStore.saveApiKeyCredentials("id-1", "key-1");
+            SecureCredentialStore.saveApiKeyCredentials("os_api_token_1");
             SecureCredentialStore.ApiKeyCredentials creds = SecureCredentialStore.loadApiKeyCredentials();
-            assertThat(creds.keyId()).isEqualTo("id-1");
-            assertThat(creds.keySecret()).isEqualTo("key-1");
+            assertThat(creds.token()).isEqualTo("os_api_token_1");
         });
     }
 
@@ -66,22 +65,21 @@ class SecureCredentialStoreTest {
     void blankInput_clearsOnlyTargetAuthType() {
         withCleanStore(() -> {
             SecureCredentialStore.saveOpenSearchCredentials("u", "p");
-            SecureCredentialStore.saveApiKeyCredentials("id", "sec");
+            SecureCredentialStore.saveApiKeyCredentials("os_api_token");
             SecureCredentialStore.saveOpenSearchCredentials("", "");
 
             SecureCredentialStore.BasicCredentials basic = SecureCredentialStore.loadOpenSearchCredentials();
             SecureCredentialStore.ApiKeyCredentials api = SecureCredentialStore.loadApiKeyCredentials();
             assertThat(basic.username()).isBlank();
             assertThat(basic.password()).isBlank();
-            assertThat(api.keyId()).isEqualTo("id");
-            assertThat(api.keySecret()).isEqualTo("sec");
+            assertThat(api.token()).isEqualTo("os_api_token");
         });
     }
 
     @Test
     void clearAll_resets_session_values() {
         withCleanStore(() -> {
-            SecureCredentialStore.saveSelectedAuthType("JWT");
+            SecureCredentialStore.saveSelectedAuthType("Bearer token");
             SecureCredentialStore.saveOpenSearchCredentials("u", "p");
             SecureCredentialStore.saveJwtCredentials("jwt-token");
 
@@ -91,6 +89,20 @@ class SecureCredentialStoreTest {
             assertThat(SecureCredentialStore.loadOpenSearchCredentials().username()).isBlank();
             assertThat(SecureCredentialStore.loadJwtCredentials().token()).isBlank();
             assertThat(SecureCredentialStore.loadPinnedTlsCertificate().fingerprintSha256()).isBlank();
+        });
+    }
+
+    @Test
+    void selectedAuthType_preservesDestinationSpecificIamSelection() {
+        withCleanStore(() -> {
+            String destination = ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey();
+
+            assertThat(SecureCredentialStore.hasSelectedAuthType(destination)).isFalse();
+
+            SecureCredentialStore.saveSelectedAuthType(destination, "IAM (sigV4)");
+
+            assertThat(SecureCredentialStore.hasSelectedAuthType(destination)).isTrue();
+            assertThat(SecureCredentialStore.loadSelectedAuthType(destination)).isEqualTo("IAM (sigV4)");
         });
     }
 

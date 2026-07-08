@@ -3,30 +3,22 @@ package ai.anomalousvectors.tools.burp.utils.opensearch;
 import java.net.URI;
 import java.util.concurrent.Future;
 
-import javax.net.ssl.SSLContext;
-
-import org.apache.hc.client5.http.auth.AuthScope;
-import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
 import org.apache.hc.client5.http.async.methods.SimpleHttpRequest;
 import org.apache.hc.client5.http.async.methods.SimpleHttpResponse;
 import org.apache.hc.client5.http.async.methods.SimpleRequestBuilder;
-import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
 import org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient;
 import org.apache.hc.client5.http.impl.async.HttpAsyncClients;
+import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.config.TlsConfig;
 import org.apache.hc.client5.http.impl.nio.PoolingAsyncClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
-import org.apache.hc.client5.http.ssl.ClientTlsStrategyBuilder;
-import org.apache.hc.client5.http.ssl.NoopHostnameVerifier;
-import org.apache.hc.client5.http.ssl.TrustAllStrategy;
-import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http2.HttpVersionPolicy;
-import org.apache.hc.core5.http.Header;
-import org.apache.hc.core5.ssl.SSLContextBuilder;
 import org.apache.hc.core5.util.Timeout;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 
 /**
  * Performs a raw HTTP GET to the OpenSearch root (/) with the same auth, SSL, and
@@ -51,11 +43,24 @@ public final class OpenSearchRawGet {
      * Returns the actual HTTP version, status code, reason phrase, and response body from the wire.
      */
     public static RawGetResult performRawGet(String baseUrl, String username, String password) {
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return performRawGet(baseUrl, auth);
+    }
+
+    /** Performs GET / against baseUrl with the selected OpenSearch auth mode. */
+    public static RawGetResult performRawGet(String baseUrl, OpenSearchAuth auth) {
+        OpenSearchAuth resolvedAuth = auth == null ? OpenSearchAuth.none() : auth;
         String normalized = baseUrl == null ? "" : baseUrl.replaceFirst("^\\s+", "").trim().replaceAll("/+$", "");
-        boolean credsUsed = username != null && !username.isBlank() && password != null && !password.isBlank();
+        String authForLog = resolvedAuth.redactedAuthorizationForLog();
         if (normalized.isEmpty()) {
-            String reqLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", "/", null, credsUsed);
+            String reqLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", "/", null, authForLog);
             return new RawGetResult(0, null, "Invalid base URL", "", reqLog, java.util.List.of());
+        }
+        if (!resolvedAuth.isComplete()) {
+            String reqLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", normalized + "/", null, authForLog);
+            return new RawGetResult(0, null, resolvedAuth.validationMessage(), "", reqLog, java.util.List.of());
         }
         String requestUri = normalized + "/";
         boolean insecure = OpenSearchConnector.isInsecureEnabled();
@@ -66,19 +71,20 @@ public final class OpenSearchRawGet {
                     && OpenSearchTlsSupport.isPinnedMode()
                     && !OpenSearchTlsSupport.hasPinnedCertificate()) {
                 Logger.logErrorPanelOnly("[OpenSearch] TLS mode requires a pinned certificate, but none is imported.");
-                String reqLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, null, credsUsed);
+                String reqLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, null, authForLog);
                 return new RawGetResult(0, null, "Pinned TLS certificate not imported.", "", reqLog, java.util.List.of());
             }
-            try (CloseableHttpAsyncClient client = buildAsyncClient(host, username, password, insecure)) {
+            try (CloseableHttpAsyncClient client = buildAsyncClient(host, resolvedAuth, insecure)) {
                 client.start();
                 SimpleHttpRequest request = SimpleRequestBuilder.get(requestUri).build();
+                resolvedAuth.applyTo(request);
                 Future<SimpleHttpResponse> future = client.execute(request, null);
                 SimpleHttpResponse response = future.get();
                 String protocol = response.getVersion() != null ? response.getVersion().toString() : null;
                 int code = response.getCode();
                 String reason = response.getReasonPhrase();
                 String body = response.getBodyText() != null ? response.getBodyText() : "";
-                String reqForLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, credsUsed);
+                String reqForLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, authForLog);
                 java.util.List<String> respHeaderLines = new java.util.ArrayList<>();
                 for (Header h : response.getHeaders()) {
                     String name = h.getName();
@@ -91,52 +97,63 @@ public final class OpenSearchRawGet {
             Thread.currentThread().interrupt();
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             String protocol = OpenSearchLogFormat.parseProtocolFromException(e);
-            String reqForLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, credsUsed);
+            String reqForLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, authForLog);
             return new RawGetResult(0, null, msg, "", reqForLog, java.util.List.of());
         } catch (java.security.GeneralSecurityException | java.io.IOException
                 | java.util.concurrent.ExecutionException | IllegalArgumentException e) {
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             String protocol = OpenSearchLogFormat.parseProtocolFromException(e);
-            String reqForLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, credsUsed);
+            String reqForLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, authForLog);
             return new RawGetResult(0, null, msg, "", reqForLog, java.util.List.of());
         }
     }
 
-    private static final Timeout RESPONSE_TIMEOUT = Timeout.ofSeconds(5);
+    private static final Timeout RAW_GET_RESPONSE_TIMEOUT = Timeout.ofSeconds(5);
+    private static final Timeout BULK_RESPONSE_TIMEOUT = Timeout.ofMinutes(2);
 
-    private static CloseableHttpAsyncClient buildAsyncClient(HttpHost host, String username, String password, boolean insecure)
+    static CloseableHttpAsyncClient buildAsyncClientForBulk(
+            HttpHost host,
+            OpenSearchAuth auth,
+            boolean insecure,
+            ConfigState.SearchDestination destination) throws java.security.GeneralSecurityException {
+        return buildAsyncClient(host, auth, insecure, BULK_RESPONSE_TIMEOUT, destination);
+    }
+
+    private static CloseableHttpAsyncClient buildAsyncClient(HttpHost host, OpenSearchAuth auth, boolean insecure)
+            throws java.security.GeneralSecurityException {
+        return buildAsyncClient(host, auth, insecure, RAW_GET_RESPONSE_TIMEOUT);
+    }
+
+    private static CloseableHttpAsyncClient buildAsyncClient(
+            HttpHost host, OpenSearchAuth auth, boolean insecure, Timeout responseTimeout)
+            throws java.security.GeneralSecurityException {
+        return buildAsyncClient(
+                host, auth, insecure, responseTimeout, ConfigState.SearchDestination.OPEN_SEARCH);
+    }
+
+    private static CloseableHttpAsyncClient buildAsyncClient(
+            HttpHost host,
+            OpenSearchAuth auth,
+            boolean insecure,
+            Timeout responseTimeout,
+            ConfigState.SearchDestination destination)
             throws java.security.GeneralSecurityException {
         var clientBuilder = HttpAsyncClients.custom();
         PoolingAsyncClientConnectionManagerBuilder connManagerBuilder =
-                PoolingAsyncClientConnectionManagerBuilder.create()
-                        .setDefaultTlsConfig(TlsConfig.custom()
-                                .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
-                                .build());
+                PoolingAsyncClientConnectionManagerBuilder.create();
         clientBuilder.setDefaultRequestConfig(RequestConfig.custom()
-                .setResponseTimeout(RESPONSE_TIMEOUT)
+                .setResponseTimeout(responseTimeout)
                 .build());
-        if (username != null && !username.isBlank() && password != null && !password.isBlank()) {
-            BasicCredentialsProvider credsProvider = new BasicCredentialsProvider();
-            credsProvider.setCredentials(
-                    new AuthScope(host),
-                    new UsernamePasswordCredentials(username, password.toCharArray()));
-            clientBuilder.setDefaultCredentialsProvider(credsProvider);
-        }
         if ("https".equalsIgnoreCase(host.getSchemeName())) {
-            if (insecure) {
-                SSLContext sslContext = SSLContextBuilder.create()
-                        .loadTrustMaterial(TrustAllStrategy.INSTANCE)
-                        .build();
-                connManagerBuilder.setTlsStrategy(ClientTlsStrategyBuilder.create()
-                        .setSslContext(sslContext)
-                        .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                        .buildAsync());
-            } else if (OpenSearchTlsSupport.isPinnedMode()) {
-                SSLContext sslContext = OpenSearchTlsSupport.buildPinnedSslContext();
-                connManagerBuilder.setTlsStrategy(ClientTlsStrategyBuilder.create()
-                        .setSslContext(sslContext)
-                        .buildAsync());
+            try {
+                OpenSearchHttpTlsSupport.configureAsyncTls(connManagerBuilder, auth, insecure, destination);
+            } catch (java.io.IOException e) {
+                throw new java.security.GeneralSecurityException("Failed to load OpenSearch client certificate.", e);
             }
+        } else {
+            connManagerBuilder.setDefaultTlsConfig(TlsConfig.custom()
+                    .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
+                    .build());
         }
         AsyncClientConnectionManager connManager = connManagerBuilder.build();
         clientBuilder.setConnectionManager(connManager);

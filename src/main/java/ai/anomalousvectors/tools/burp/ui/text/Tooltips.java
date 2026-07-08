@@ -2,11 +2,13 @@ package ai.anomalousvectors.tools.burp.ui.text;
 
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Point;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -14,14 +16,21 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
+import javax.swing.Popup;
+import javax.swing.PopupFactory;
 import javax.swing.JRadioButton;
 import javax.swing.JTextField;
 import javax.swing.JToolTip;
 import javax.swing.SwingUtilities;
 import javax.swing.ToolTipManager;
+import javax.swing.event.PopupMenuEvent;
+import javax.swing.event.PopupMenuListener;
+import javax.swing.plaf.basic.BasicComboPopup;
 
 /**
  * Shared tooltip helpers so panels use consistent formatting.
@@ -212,6 +221,208 @@ public final class Tooltips {
                 SwingUtilities.invokeLater(sync);
             } else {
                 sync.run();
+            }
+        }
+    }
+
+    /**
+     * Combo box that exposes HTML tooltips for individual popup items.
+     *
+     * <p>The selected value has no tooltip because the popup list already exposes item help.
+     * Popup rows use a small owned tooltip popup so long HTML descriptions render consistently
+     * across look-and-feel popup lists that otherwise display markup as literal text.</p>
+     *
+     * @param <E> combo item type
+     */
+    public static final class ItemTooltipComboBox<E> extends JComboBox<E> {
+        private final Map<Object, String> itemTooltips;
+        private transient Popup itemTooltipPopup;
+        private transient JList<?> popupList;
+        private transient MouseAdapter popupTooltipHandler;
+        private transient Object popupTooltipValue;
+
+        /**
+         * Creates a combo box with item-specific HTML tooltip text.
+         *
+         * <p>Caller must invoke on the EDT. Tooltip strings may come from {@link #htmlRaw(String...)}
+         * or {@link #html(String...)} and are keyed by the same values supplied in {@code items}.</p>
+         *
+         * @param items visible combo items
+         * @param itemTooltips tooltip text by item value
+         */
+        public ItemTooltipComboBox(E[] items, Map<E, String> itemTooltips) {
+            super(items);
+            this.itemTooltips = new java.util.HashMap<>(itemTooltips);
+            putClientProperty(HTML_DISABLE, Boolean.FALSE);
+            setRenderer(new TooltipListCellRenderer());
+            addPopupMenuListener(new PopupMenuListener() {
+                @Override
+                public void popupMenuWillBecomeVisible(PopupMenuEvent e) {
+                    SwingUtilities.invokeLater(ItemTooltipComboBox.this::syncPopupListTooltips);
+                }
+
+                @Override
+                public void popupMenuWillBecomeInvisible(PopupMenuEvent e) {
+                    hideItemTooltip();
+                }
+
+                @Override
+                public void popupMenuCanceled(PopupMenuEvent e) {
+                    hideItemTooltip();
+                }
+            });
+            syncSelectedTooltip();
+        }
+
+        @Override
+        public void setSelectedItem(Object item) {
+            super.setSelectedItem(item);
+            syncSelectedTooltip();
+        }
+
+        @Override
+        public void addNotify() {
+            super.addNotify();
+            syncChildTooltips();
+            syncPopupListTooltips();
+        }
+
+        @Override
+        public void updateUI() {
+            super.updateUI();
+            putClientProperty(HTML_DISABLE, Boolean.FALSE);
+            setRenderer(new TooltipListCellRenderer());
+            if (itemTooltips != null) {
+                syncSelectedTooltip();
+            }
+            SwingUtilities.invokeLater(this::syncPopupListTooltips);
+        }
+
+        @Override
+        public JToolTip createToolTip() {
+            return createHtmlToolTip(this);
+        }
+
+        private void syncSelectedTooltip() {
+            setToolTipText(null);
+            syncChildTooltips();
+        }
+
+        private String tooltipFor(Object value) {
+            if (itemTooltips == null) {
+                return null;
+            }
+            return itemTooltips.get(value);
+        }
+
+        private void syncChildTooltips() {
+            Runnable sync = () -> applyHtmlTooltipToChildren(this, this, getToolTipText());
+            if (isDisplayable()) {
+                SwingUtilities.invokeLater(sync);
+            } else {
+                sync.run();
+            }
+        }
+
+        private void syncPopupListTooltips() {
+            if (getUI() == null) {
+                return;
+            }
+            int childCount = getUI().getAccessibleChildrenCount(this);
+            for (int i = 0; i < childCount; i++) {
+                Object child = getUI().getAccessibleChild(this, i);
+                if (child instanceof BasicComboPopup popup) {
+                    installPopupListTooltipHandler(popup.getList());
+                    return;
+                }
+            }
+        }
+
+        private void installPopupListTooltipHandler(JList<?> list) {
+            if (list == null || list == popupList) {
+                return;
+            }
+            uninstallPopupListTooltipHandler();
+            popupList = list;
+            popupList.putClientProperty(HTML_DISABLE, Boolean.FALSE);
+            popupList.setToolTipText(null);
+            popupTooltipHandler = new MouseAdapter() {
+                @Override
+                public void mouseMoved(MouseEvent e) {
+                    int index = popupList.locationToIndex(e.getPoint());
+                    if (index < 0) {
+                        hideItemTooltip();
+                        return;
+                    }
+                    Object value = popupList.getModel().getElementAt(index);
+                    showItemTooltip(popupList, e, value, tooltipFor(value));
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hideItemTooltip();
+                }
+            };
+            popupList.addMouseListener(popupTooltipHandler);
+            popupList.addMouseMotionListener(popupTooltipHandler);
+        }
+
+        private void uninstallPopupListTooltipHandler() {
+            if (popupList != null && popupTooltipHandler != null) {
+                popupList.removeMouseListener(popupTooltipHandler);
+                popupList.removeMouseMotionListener(popupTooltipHandler);
+            }
+            popupList = null;
+            popupTooltipHandler = null;
+            hideItemTooltip();
+        }
+
+        private void showItemTooltip(Component owner, MouseEvent event, Object value, String tooltip) {
+            if (tooltip == null || tooltip.isBlank()) {
+                hideItemTooltip();
+                return;
+            }
+            if (Objects.equals(value, popupTooltipValue) && itemTooltipPopup != null) {
+                return;
+            }
+            hideItemTooltip();
+            popupTooltipValue = value;
+            JToolTip toolTip = createHtmlToolTip(this);
+            toolTip.setTipText(tooltip);
+            Point ownerLocation = owner.getLocationOnScreen();
+            itemTooltipPopup = PopupFactory.getSharedInstance().getPopup(
+                    owner,
+                    toolTip,
+                    ownerLocation.x + event.getX() + 12,
+                    ownerLocation.y + event.getY() + 18);
+            itemTooltipPopup.show();
+        }
+
+        private void hideItemTooltip() {
+            if (itemTooltipPopup != null) {
+                itemTooltipPopup.hide();
+                itemTooltipPopup = null;
+            }
+            popupTooltipValue = null;
+        }
+
+        private final class TooltipListCellRenderer extends DefaultListCellRenderer {
+            @Override
+            public Component getListCellRendererComponent(
+                    JList<?> list,
+                    Object value,
+                    int index,
+                    boolean isSelected,
+                    boolean cellHasFocus) {
+                Component component = super.getListCellRendererComponent(
+                        list, value, index, isSelected, cellHasFocus);
+                if (component instanceof JComponent jc) {
+                    jc.putClientProperty(HTML_DISABLE, Boolean.FALSE);
+                    jc.setToolTipText(null);
+                }
+                list.putClientProperty(HTML_DISABLE, Boolean.FALSE);
+                list.setToolTipText(null);
+                return component;
             }
         }
     }

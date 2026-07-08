@@ -20,12 +20,11 @@ import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionStatus;
 
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.core.BulkRequest;
 import org.opensearch.client.opensearch.core.BulkResponse;
-import org.opensearch.client.opensearch.core.IndexRequest;
-import org.opensearch.client.opensearch.core.IndexResponse;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 
@@ -43,7 +42,7 @@ public class OpenSearchClientWrapper {
      * @param baseUrl OpenSearch base URL
      * @return structured connection status
      */
-    public static OpenSearchStatus testConnection(String baseUrl) {
+    public static SearchConnectionStatus testConnection(String baseUrl) {
         return testConnection(baseUrl, null, null);
     }
 
@@ -58,13 +57,22 @@ public class OpenSearchClientWrapper {
      * @param password optional basic-auth password
      * @return structured connection status
      */
-    public static OpenSearchStatus testConnection(String baseUrl, String username, String password) {
-        boolean credentialsProvided = username != null && !username.isBlank() && password != null && !password.isBlank();
+    public static SearchConnectionStatus testConnection(String baseUrl, String username, String password) {
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return testConnection(baseUrl, auth);
+    }
+
+    /** Tests connectivity with the selected upstream OpenSearch auth mode. */
+    public static SearchConnectionStatus testConnection(String baseUrl, OpenSearchAuth auth) {
+        OpenSearchAuth resolvedAuth = auth == null ? OpenSearchAuth.none() : auth;
+        boolean credentialsProvided = resolvedAuth.mode() != OpenSearchAuth.Mode.NONE && resolvedAuth.isComplete();
         Logger.logDebug("[OpenSearch] Testing connection: url=" + baseUrl
                 + ", tlsMode=" + OpenSearchTlsSupport.currentTlsMode()
                 + ", pinnedCertificateLoaded=" + OpenSearchTlsSupport.hasPinnedCertificate()
                 + ", credentialsProvided=" + credentialsProvided);
-        OpenSearchRawGet.RawGetResult result = OpenSearchRawGet.performRawGet(baseUrl, username, password);
+        OpenSearchRawGet.RawGetResult result = OpenSearchRawGet.performRawGet(baseUrl, resolvedAuth);
 
         // Log request/response only when we actually got an HTTP response from the server.
         // For client-side failures (e.g. SSL handshake never completed), no HTTP was exchanged — do not log reconstructed request/response.
@@ -90,7 +98,8 @@ public class OpenSearchClientWrapper {
                     // Version JSON is optional; connection still succeeds with blank version fields.
                 }
             }
-            OpenSearchStatus status = new OpenSearchStatus(
+            SearchConnectionStatus status = new SearchConnectionStatus(
+                    "OpenSearch",
                     true,
                     distribution,
                     version,
@@ -117,7 +126,8 @@ public class OpenSearchClientWrapper {
             case 0 -> "Not tested";
             default -> credentialsProvided ? "Attempted" : "Not used";
         };
-        return new OpenSearchStatus(
+        return new SearchConnectionStatus(
+                "OpenSearch",
                 false,
                 "",
                 "",
@@ -135,7 +145,7 @@ public class OpenSearchClientWrapper {
      * @param baseUrl OpenSearch base URL
      * @return structured connection status
      */
-    public static OpenSearchStatus safeTestConnection(String baseUrl) {
+    public static SearchConnectionStatus safeTestConnection(String baseUrl) {
         return safeTestConnection(baseUrl, null, null);
     }
 
@@ -147,9 +157,17 @@ public class OpenSearchClientWrapper {
      * @param password optional basic-auth password
      * @return structured connection status
      */
-    public static OpenSearchStatus safeTestConnection(String baseUrl, String username, String password) {
+    public static SearchConnectionStatus safeTestConnection(String baseUrl, String username, String password) {
+        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
+                ? OpenSearchAuth.none()
+                : OpenSearchAuth.basic(username, password);
+        return safeTestConnection(baseUrl, auth);
+    }
+
+    /** Tests OpenSearch connectivity with selected auth and converts runtime failures into a failed status result. */
+    public static SearchConnectionStatus safeTestConnection(String baseUrl, OpenSearchAuth auth) {
         try {
-            return testConnection(baseUrl, username, password);
+            return testConnection(baseUrl, auth);
         } catch (RuntimeException e) {
             String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
             StringWriter sw = new StringWriter();
@@ -159,7 +177,8 @@ public class OpenSearchClientWrapper {
             Logger.logErrorPanelOnly("[OpenSearch] safeTestConnection threw for " + baseUrl
                     + ": " + msg + " | tlsMode=" + OpenSearchTlsSupport.currentTlsMode()
                     + " | trust=" + trustStatus);
-            return new OpenSearchStatus(
+            return new SearchConnectionStatus(
+                    "OpenSearch",
                     false,
                     "",
                     "",
@@ -388,25 +407,17 @@ public class OpenSearchClientWrapper {
         return pushPreparedBulk(baseUrl, indexName, indexKey, prepared).successCount();
     }
 
-    /**
-     * One-shot index (no retry, no queue). Used by coordinator and drain thread.
-     */
-    static SingleDocPushResult doPushDocument(String baseUrl, String indexName, Map<String, Object> document) {
-        try {
-            OpenSearchClient client = OpenSearchConnector.getClient(baseUrl,
-                    RuntimeConfig.openSearchUser(), RuntimeConfig.openSearchPassword());
-            IndexRequest<Map<String, Object>> request = new IndexRequest.Builder<Map<String, Object>>()
-                    .index(indexName)
-                    .document(document)
-                    .build();
-            IndexResponse response = client.index(request);
-            BulkOutcomeBreakdown breakdown = breakdownFromIndexResult(response.result().jsonValue());
-            return new SingleDocPushResult(breakdown.successTotal() > 0, breakdown, null);
-        } catch (IOException | RuntimeException e) {
-            logPushOutcome(indexName, "doPushDocument", e);
-            String detail = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            return new SingleDocPushResult(false, BulkOutcomeBreakdown.empty(), detail);
+    /** One-shot prepared document push using the shared Bulk API path. */
+    static SingleDocPushResult doPushPreparedDocument(String baseUrl, PreparedExportDocument document) {
+        if (document == null) {
+            return new SingleDocPushResult(false, BulkOutcomeBreakdown.empty(), "document is null");
         }
+        BulkResult bulkResult = doPushPreparedBulkWithDetails(baseUrl, document.indexName(), List.of(document));
+        boolean success = bulkResult.successCount() > 0;
+        String detail = success || bulkResult.failedItems.isEmpty()
+                ? null
+                : bulkResult.failedItems.get(0).reason();
+        return new SingleDocPushResult(success, bulkResult.breakdown(), detail);
     }
 
     /**
@@ -420,8 +431,7 @@ public class OpenSearchClientWrapper {
         }
         ExportStats.BulkInFlightTicket ticket = ExportStats.openBulk();
         try (ticket) {
-            OpenSearchClient client = OpenSearchConnector.getClient(baseUrl,
-                    RuntimeConfig.openSearchUser(), RuntimeConfig.openSearchPassword());
+            OpenSearchClient client = OpenSearchConnector.getClient(baseUrl, OpenSearchAuth.fromRuntime());
             BulkRequest.Builder builder = new BulkRequest.Builder();
             for (Map<String, Object> doc : documents) {
                 builder.operations(o -> o.index(i -> i.index(indexName).document(doc)));
@@ -560,21 +570,6 @@ public class OpenSearchClientWrapper {
 
         String failureDetail() {
             return failureDetail;
-        }
-    }
-
-    public record OpenSearchStatus(boolean success, String distribution, String version, String message,
-                                   String connectionStatus, String authenticationStatus, String trustStatus) {
-        /** Returns a multi-line status summary suitable for the Config destination status panel. */
-        public String formattedStatus() {
-            String resolvedVersion = (distribution == null || distribution.isBlank() ? "" : distribution + " ")
-                    + (version == null || version.isBlank() ? "unknown" : version);
-            String details = message == null || message.isBlank() ? "" : "\nDetails: " + message;
-            return "Connection: " + connectionStatus
-                    + "\nAuthentication: " + authenticationStatus
-                    + "\nTrust: " + trustStatus
-                    + "\nOpenSearch version: " + resolvedVersion.trim()
-                    + details;
         }
     }
 }

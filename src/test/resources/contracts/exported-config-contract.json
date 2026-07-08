@@ -7,7 +7,7 @@
     "ui"
   ],
   "sinks": {
-    "requiredKeys": [ "files", "openSearch" ],
+    "requiredKeys": [ "files", "database" ],
     "files": {
       "allowedKeys": [ "enabled", "path", "formats", "limits" ],
       "allowedFormats": [ "jsonl", "bulkNdjson" ],
@@ -15,21 +15,45 @@
         "allowedKeys": [ "totalEnabled", "totalGb", "diskUsedPercentEnabled", "maxDiskUsedPercent" ]
       }
     },
-    "openSearch": {
-      "allowedKeys": [ "enabled", "url", "tlsMode", "auth", "pinnedTlsCertificate" ],
+    "database": {
+      "allowedKeys": [ "enabled", "type", "openSearch", "openSearchAmazon", "elasticsearch" ],
+      "allowedTypes": [ "openSearch", "openSearchAmazon", "elasticsearch" ],
+      "openSearch": {
+      "allowedKeys": [ "url", "tlsMode", "auth", "pinnedTlsCertificate" ],
       "auth": {
         "allowedKeys": [ "type", "username", "apiKeyId", "certPath", "certKeyPath" ],
-        "allowedTypes": [ "API Key", "Basic", "Certificate", "JWT", "None" ],
+        "allowedTypes": [ "API key", "Bearer token", "Certificate", "Basic", "None" ],
         "allowedFieldsByType": {
-          "API Key": [ "apiKeyId" ],
-          "Basic": [ "username" ],
+          "API key": [ "apiKeyId" ],
+          "Bearer token": [],
           "Certificate": [ "certPath", "certKeyPath" ],
-          "JWT": [],
+          "Basic": [ "username" ],
           "None": []
         }
       },
       "pinnedTlsCertificate": {
         "allowedKeys": [ "sourcePath", "fingerprintSha256", "encodedBase64" ]
+      }
+      },
+      "openSearchAmazon": {
+        "allowedKeys": [ "url", "region", "profile", "tlsMode", "auth", "pinnedTlsCertificate" ],
+        "auth": {
+          "allowedKeys": [ "type", "username" ],
+          "allowedTypes": [ "IAM (sigV4)", "Basic", "None" ]
+        },
+        "pinnedTlsCertificate": {
+          "allowedKeys": [ "sourcePath", "fingerprintSha256", "encodedBase64" ]
+        }
+      },
+      "elasticsearch": {
+        "allowedKeys": [ "url", "tlsMode", "auth", "pinnedTlsCertificate" ],
+        "auth": {
+          "allowedKeys": [ "type", "username", "certPath", "certKeyPath" ],
+          "allowedTypes": [ "API key", "Bearer token", "Certificate", "Basic", "None" ]
+        },
+        "pinnedTlsCertificate": {
+          "allowedKeys": [ "sourcePath", "fingerprintSha256", "encodedBase64" ]
+        }
       }
     }
   }

@@ -21,7 +21,7 @@ import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 
 /**
- * Verifies Config Control status reflects live destination checkbox changes during an export run.
+ * Verifies Config Control status reflects live destination changes during an export run.
  */
 class ConfigPanelRunningDestinationStatusHeadlessTest {
 
@@ -33,17 +33,18 @@ class ConfigPanelRunningDestinationStatusHeadlessTest {
     }
 
     @Test
-    void toggling_destination_checkboxes_updates_control_status_while_export_running() throws Exception {
+    void toggling_destination_controls_updates_control_status_while_export_running() throws Exception {
         JCheckBox filesEnable = JCheckBox.class.cast(get(panel, "fileSinkCheckbox"));
-        JCheckBox osEnable = JCheckBox.class.cast(get(panel, "openSearchSinkCheckbox"));
+        javax.swing.AbstractButton openSearch = javax.swing.AbstractButton.class.cast(get(panel, "openSearchSinkCheckbox"));
+        javax.swing.AbstractButton aws = javax.swing.AbstractButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
         JTextArea controlStatus = findByName(panel, "control.status", JTextArea.class);
 
         SwingUtilities.invokeAndWait(() -> {
             if (!filesEnable.isSelected()) {
                 filesEnable.doClick();
             }
-            if (!osEnable.isSelected()) {
-                osEnable.doClick();
+            if (!openSearch.isSelected()) {
+                openSearch.doClick();
             }
             RuntimeConfig.setExportRunning(true);
             call(panel, "updateRuntimeConfig");
@@ -53,7 +54,7 @@ class ConfigPanelRunningDestinationStatusHeadlessTest {
                 .contains("Files: Running")
                 .contains("OpenSearch: Running");
 
-        SwingUtilities.invokeAndWait(osEnable::doClick);
+        SwingUtilities.invokeAndWait(aws::doClick);
 
         assertThat(controlStatus.getText())
                 .contains("Files: Running")
@@ -67,7 +68,7 @@ class ConfigPanelRunningDestinationStatusHeadlessTest {
 
         SwingUtilities.invokeAndWait(() -> {
             filesEnable.doClick();
-            osEnable.doClick();
+            openSearch.doClick();
         });
 
         assertThat(controlStatus.getText())
@@ -117,7 +118,7 @@ class ConfigPanelRunningDestinationStatusHeadlessTest {
             // not used
         }
 
-        @Override public void onOpenSearchStatus(String message) {
+        @Override public void onDatabaseStatus(String message) {
             // not used
         }
 

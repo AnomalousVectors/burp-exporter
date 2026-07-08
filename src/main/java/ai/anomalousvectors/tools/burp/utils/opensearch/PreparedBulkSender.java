@@ -1,12 +1,10 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
 import java.io.IOException;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.ByteArrayEntity;
@@ -14,7 +12,6 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
-import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedBulkBodies;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
@@ -46,10 +43,9 @@ public final class PreparedBulkSender {
         if (body.length == 0) {
             return new OpenSearchClientWrapper.BulkResult(BulkOutcomeBreakdown.empty(), List.of());
         }
-        String bulkUrl = ChunkedBulkSender.buildBulkUrl(baseUrl, indexName);
-        HttpPost post = new HttpPost(URI.create(bulkUrl));
+        HttpPost post = new HttpPost(OpenSearchClassicHttpSupport.bulkPathForIndex(indexName));
         post.setEntity(new ByteArrayEntity(body, ContentType.create("application/x-ndjson")));
-        ChunkedBulkSender.addPreemptiveBasicAuthHeader(post);
+        ChunkedBulkSender.addPreemptiveAuthHeader(post);
         ExportStats.BulkInFlightTicket ticket = ExportStats.openBulk();
         try (ticket) {
             return executeRequest(post, baseUrl, indexName, documents.size());
@@ -64,9 +60,11 @@ public final class PreparedBulkSender {
             String baseUrl,
             String indexName,
             int attemptedCount) throws IOException {
-        CloseableHttpClient client = OpenSearchConnector.getClassicHttpClient(
-                baseUrl, RuntimeConfig.openSearchUser(), RuntimeConfig.openSearchPassword());
-        return client.execute(post, response -> {
+        return OpenSearchBulkHttpExecutor.executeBulkPost(
+                baseUrl,
+                indexName,
+                post.getEntity(),
+                response -> {
             int status = response.getCode();
             String responseBody;
             try {

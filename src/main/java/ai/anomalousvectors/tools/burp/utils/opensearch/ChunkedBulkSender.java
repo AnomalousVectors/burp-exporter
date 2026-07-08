@@ -3,10 +3,8 @@ package ai.anomalousvectors.tools.burp.utils.opensearch;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,7 +15,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
@@ -195,15 +192,14 @@ public final class ChunkedBulkSender {
         if (firstEntry == null) {
             return new Result(0, 0, 0, 0);
         }
-        String bulkUrl = buildBulkUrl(baseUrl, indexName);
-        HttpPost post = new HttpPost(URI.create(bulkUrl));
+        HttpPost post = new HttpPost(OpenSearchClassicHttpSupport.bulkPathForIndex(indexName));
         long maxWaitNanos = maxWaitMs * 1_000_000L;
         AtomicInteger attemptedRef = new AtomicInteger(0);
         AtomicLong attemptedBytesRef = new AtomicLong(0);
         NdjsonQueueInputStream ndjsonStream = new NdjsonQueueInputStream(
                 queue, firstEntry, maxBatch, maxBytes, maxWaitNanos, attemptedRef, attemptedBytesRef);
         post.setEntity(new InputStreamEntity(ndjsonStream, -1, ContentType.create("application/x-ndjson")));
-        addPreemptiveBasicAuthHeader(post);
+        addPreemptiveAuthHeader(post);
         List<TrafficRouteBucket.Route> attemptedTrafficRoutes = ndjsonStream.attemptedTrafficRoutes();
         Result result;
         ExportStats.BulkInFlightTicket ticket = ExportStats.openBulk();
@@ -231,9 +227,11 @@ public final class ChunkedBulkSender {
             AtomicLong attemptedBytesRef,
             String indexName,
             List<TrafficRouteBucket.Route> attemptedTrafficRoutes) throws IOException {
-        CloseableHttpClient client = OpenSearchConnector.getClassicHttpClient(
-                baseUrl, RuntimeConfig.openSearchUser(), RuntimeConfig.openSearchPassword());
-        return client.execute(post, response -> {
+        return OpenSearchBulkHttpExecutor.executeBulkPost(
+                baseUrl,
+                indexName,
+                post.getEntity(),
+                response -> {
             int status = response.getCode();
             String responseBody;
             try {
@@ -277,15 +275,8 @@ public final class ChunkedBulkSender {
      * some clients cannot transparently replay the same request body. Sending Authorization on the
      * first request avoids repeated 401 loops on the live traffic bulk path.</p>
      */
-    static void addPreemptiveBasicAuthHeader(HttpPost post) {
-        String username = RuntimeConfig.openSearchUser();
-        String password = RuntimeConfig.openSearchPassword();
-        if (username == null || username.isBlank() || password == null || password.isBlank()) {
-            return;
-        }
-        String token = Base64.getEncoder()
-                .encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
-        post.setHeader("Authorization", "Basic " + token);
+    static void addPreemptiveAuthHeader(HttpPost post) {
+        OpenSearchAuth.fromRuntime(RuntimeConfig.searchDestinationKind()).applyTo(post);
     }
 
     private static TrafficQueueEntry pollFirstEntry(BlockingQueue<TrafficQueueEntry> queue, long maxWaitMs) {

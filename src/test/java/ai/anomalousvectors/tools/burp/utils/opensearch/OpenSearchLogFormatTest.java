@@ -39,6 +39,14 @@ class OpenSearchLogFormatTest {
     }
 
     @Test
+    void formatRequestForLog_includesSelectedRedactedAuthScheme() {
+        String raw = OpenSearchLogFormat.formatRequestForLog(
+                "GET", "/", "https://localhost:9200/", "HTTP/2.0", "ApiKey ***");
+        assertThat(raw).contains("Authorization: ApiKey ***");
+        assertThat(raw).doesNotContain("os_api_token");
+    }
+
+    @Test
     void formatRequestForLog_omitsAuthWhenNotUsed() {
         String raw = OpenSearchLogFormat.formatRequestForLog("GET", "/", "https://localhost:9200/", "HTTP/1.1", false);
         assertThat(raw).doesNotContain("Authorization");

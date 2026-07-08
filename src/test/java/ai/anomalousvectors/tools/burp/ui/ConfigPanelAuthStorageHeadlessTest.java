@@ -2,6 +2,9 @@ package ai.anomalousvectors.tools.burp.ui;
 
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.FontMetrics;
+import java.awt.Insets;
+import java.awt.event.MouseEvent;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -18,6 +21,7 @@ import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
+import javax.swing.JRadioButton;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import javax.swing.ToolTipManager;
@@ -30,8 +34,8 @@ import static ai.anomalousvectors.tools.burp.testutils.Reflect.get;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.getComboBox;
 import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
 import ai.anomalousvectors.tools.burp.utils.Logger;
-import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 
 class ConfigPanelAuthStorageHeadlessTest {
@@ -80,7 +84,7 @@ class ConfigPanelAuthStorageHeadlessTest {
     @Test
     void selectingApiKeyJwtAndCertificate_showsCorrectFormAndLoadsSessionValues() throws Exception {
         withCleanSession(() -> {
-            SecureCredentialStore.saveApiKeyCredentials("kid-1", "ksecret-1");
+            SecureCredentialStore.saveApiKeyCredentials("os_api_token_1");
             SecureCredentialStore.saveJwtCredentials("jwt-token-1");
             SecureCredentialStore.saveCertificateCredentials("cert.pem", "cert.key", "passphrase-1");
 
@@ -88,8 +92,7 @@ class ConfigPanelAuthStorageHeadlessTest {
             JPanel authForm = JPanel.class.cast(get(panel, "openSearchAuthFormPanel"));
             JComboBox<?> authType = getComboBox(panel, "openSearchAuthTypeCombo");
 
-            JTextField apiKeyId = JTextField.class.cast(get(panel, "openSearchApiKeyIdField"));
-            JPasswordField apiKeySecret = JPasswordField.class.cast(get(panel, "openSearchApiKeySecretField"));
+            JPasswordField apiKeyToken = JPasswordField.class.cast(get(panel, "openSearchApiKeyTokenField"));
             JTextField jwtToken = JTextField.class.cast(get(panel, "openSearchJwtTokenField"));
             JTextField certPath = JTextField.class.cast(get(panel, "openSearchCertPathField"));
             JTextField certKeyPath = JTextField.class.cast(get(panel, "openSearchCertKeyPathField"));
@@ -99,14 +102,13 @@ class ConfigPanelAuthStorageHeadlessTest {
             Component jwtCard = findByName(authForm, "os.authCard.jwt");
             Component certCard = findByName(authForm, "os.authCard.certificate");
 
-            runEdt(() -> authType.setSelectedItem("API Key"));
+            runEdt(() -> authType.setSelectedItem("API key"));
             runEdt(() -> {
                 assertThat(isEffectivelyVisible(apiKeyCard)).isTrue();
-                assertThat(apiKeyId.getText()).isEqualTo("kid-1");
-                assertThat(new String(apiKeySecret.getPassword())).isEqualTo("ksecret-1");
+                assertThat(new String(apiKeyToken.getPassword())).isEqualTo("os_api_token_1");
             });
 
-            runEdt(() -> authType.setSelectedItem("JWT"));
+            runEdt(() -> authType.setSelectedItem("Bearer token"));
             runEdt(() -> {
                 assertThat(isEffectivelyVisible(jwtCard)).isTrue();
                 assertThat(jwtToken.getText()).isEqualTo("jwt-token-1");
@@ -202,7 +204,8 @@ class ConfigPanelAuthStorageHeadlessTest {
             Path certFile = exportAnyDefaultTrustStoreCertificate();
             try {
                 ConfigPanel panel = newPanelOnEdt();
-                runEdt(() -> call(panel, "applyPinnedCertificateImport", certFile));
+                runEdt(() -> call(panel, "applyPinnedCertificateImport",
+                        ConfigState.SearchDestination.OPEN_SEARCH, certFile));
 
                 SecureCredentialStore.PinnedTlsCertificate pinned = SecureCredentialStore.loadPinnedTlsCertificate();
                 assertThat(pinned.sourcePath()).isEqualTo(certFile.toAbsolutePath().normalize().toString());
@@ -255,7 +258,6 @@ class ConfigPanelAuthStorageHeadlessTest {
 
             JComboBox<?> authType = getComboBox(panel, "openSearchAuthTypeCombo");
             JTextField user = JTextField.class.cast(get(panel, "openSearchUserField"));
-            JTextField apiKeyId = JTextField.class.cast(get(panel, "openSearchApiKeyIdField"));
             JTextField certPath = JTextField.class.cast(get(panel, "openSearchCertPathField"));
             JTextField certKeyPath = JTextField.class.cast(get(panel, "openSearchCertKeyPathField"));
             JComboBox<?> tlsMode = getComboBox(panel, "openSearchTlsModeCombo");
@@ -265,7 +267,6 @@ class ConfigPanelAuthStorageHeadlessTest {
             runEdt(() -> {
                 assertThat(String.valueOf(authType.getSelectedItem())).isEqualTo("Certificate");
                 assertThat(user.getText()).isEqualTo("alice");
-                assertThat(apiKeyId.getText()).isEqualTo("kid-1");
                 assertThat(certPath.getText()).isEqualTo("client-cert.pem");
                 assertThat(certKeyPath.getText()).isEqualTo("client-key.pem");
                 assertThat(String.valueOf(tlsMode.getSelectedItem())).isEqualTo("Trust pinned certificate");
@@ -286,7 +287,7 @@ class ConfigPanelAuthStorageHeadlessTest {
             JPanel authForm = JPanel.class.cast(get(panel, "openSearchAuthFormPanel"));
             runEdt(() -> {
                 assertThat(testButton.getToolTipText())
-                        .isEqualTo("<html>Test connectivity and authentication against OpenSearch.<br>Status output includes connection, authentication, trust, and reported version.<br>Secrets are only stored within in-process memory.</html>");
+                        .isEqualTo("<html>Test connectivity and authentication against the selected database destination.<br>Status output includes connection, authentication, trust, and reported version.<br>Secrets are only stored within in-process memory.</html>");
                 assertThat(findByNameOrNull(authForm, "os.authenticate")).isNull();
             });
         });
@@ -318,6 +319,9 @@ class ConfigPanelAuthStorageHeadlessTest {
             JCheckBox traffic = JCheckBox.class.cast(get(panel, "trafficCheckbox"));
             JTextField filePathField = JTextField.class.cast(get(panel, "filePathField"));
             JTextField openSearchUrlField = JTextField.class.cast(get(panel, "openSearchUrlField"));
+            JRadioButton openSearchDestination = JRadioButton.class.cast(get(panel, "openSearchSinkCheckbox"));
+            JRadioButton awsDestination = JRadioButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
+            JRadioButton elasticDestination = JRadioButton.class.cast(get(panel, "elasticSearchDestinationRadio"));
             Component destinationsHeader = findLabelByText(panel, "Destinations");
 
             runEdt(() -> {
@@ -327,8 +331,11 @@ class ConfigPanelAuthStorageHeadlessTest {
                 assertThat(Arrays.stream(traffic.getMouseListeners()).anyMatch(ToolTipManager.class::isInstance)).isTrue();
                 assertThat(filePathField.getToolTipText()).isEqualTo(
                         "<html>Root directory for generated files. Examples:<br>&nbsp;&nbsp;/path/to/directory<br>&nbsp;&nbsp;c:\\path\\to\\directory</html>");
+                assertThat(openSearchDestination.getToolTipText()).isEqualTo("<html>OpenSearch destination. Wired in this build.</html>");
+                assertThat(awsDestination.getToolTipText()).contains("Amazon OpenSearch destination");
+                assertThat(elasticDestination.getToolTipText()).contains("Elasticsearch destination");
                 assertThat(openSearchUrlField.getToolTipText()).isEqualTo(
-                        "<html>Base URL of the OpenSearch cluster. Examples:<br>&nbsp;&nbsp;https://opensearch.url:9200<br>&nbsp;&nbsp;http://10.0.0.1:9200</html>");
+                        "<html>Base URL of the OpenSearch destination. Examples:<br>&nbsp;&nbsp;https://opensearch.url:9200<br>&nbsp;&nbsp;http://10.0.0.1:9200</html>");
                 assertThat(((javax.swing.JLabel) destinationsHeader).getToolTipText())
                         .isEqualTo("<html>Configure export destination(s).</html>");
             });
@@ -342,42 +349,84 @@ class ConfigPanelAuthStorageHeadlessTest {
             JComboBox<?> authType = getComboBox(panel, "openSearchAuthTypeCombo");
             JTextField user = JTextField.class.cast(get(panel, "openSearchUserField"));
             JPasswordField pass = JPasswordField.class.cast(get(panel, "openSearchPasswordField"));
-            JTextField apiKeyId = JTextField.class.cast(get(panel, "openSearchApiKeyIdField"));
-            JPasswordField apiKeySecret = JPasswordField.class.cast(get(panel, "openSearchApiKeySecretField"));
+            JPasswordField apiKeyToken = JPasswordField.class.cast(get(panel, "openSearchApiKeyTokenField"));
+            JTextField jwtToken = JTextField.class.cast(get(panel, "openSearchJwtTokenField"));
+            JTextField certPath = JTextField.class.cast(get(panel, "openSearchCertPathField"));
+            JTextField certKeyPath = JTextField.class.cast(get(panel, "openSearchCertKeyPathField"));
+            JPasswordField certPassphrase = JPasswordField.class.cast(get(panel, "openSearchCertPassphraseField"));
+            JPanel authPanel = JPanel.class.cast(get(panel, "openSearchAuthFormPanel"));
+
+            runEdt(() -> {
+                assertThat(authType.getToolTipText()).isNull();
+                assertThat(user.getToolTipText()).isEqualTo("<html>OpenSearch Basic auth username.<br>Stored only within in-process memory.</html>");
+                assertThat(pass.getToolTipText()).isEqualTo("<html>OpenSearch Basic auth password.<br>Stored only within in-process memory.</html>");
+                assertThat(apiKeyToken.getToolTipText()).isEqualTo(
+                        "<html>OpenSearch API key.<br>Use the token returned by upstream OpenSearch API key creation.<br>Stored only within in-process memory.</html>");
+                assertThat(jwtToken.getToolTipText()).isEqualTo("<html>OpenSearch bearer token.<br>Stored only within in-process memory.</html>");
+                assertThat(certPath.getToolTipText()).isEqualTo("<html>Path to the client certificate file used for OpenSearch authentication.</html>");
+                assertThat(certKeyPath.getToolTipText()).isEqualTo("<html>Path to the client private key file used for OpenSearch authentication.</html>");
+                assertThat(certPassphrase.getToolTipText()).isEqualTo("<html>Client key passphrase.<br>Stored only within in-process memory.</html>");
+
+                assertThat(openSearchAuthLabel(authPanel, "Auth type:").getToolTipText())
+                        .isEqualTo("<html>Select how requests to OpenSearch authenticate.</html>");
+                assertThat(openSearchAuthLabel(authPanel, "Username:").getToolTipText())
+                        .isEqualTo("<html>OpenSearch Basic auth username.<br>Stored only within in-process memory.</html>");
+                assertThat(openSearchAuthLabel(authPanel, "Password:").getToolTipText())
+                        .isEqualTo("<html>OpenSearch Basic auth password.<br>Stored only within in-process memory.</html>");
+                assertThat(openSearchAuthLabel(authPanel, "API Key:").getToolTipText())
+                        .isEqualTo("<html>OpenSearch API key.<br>Use the token returned by upstream OpenSearch API key creation.<br>Stored only within in-process memory.</html>");
+                assertThat(openSearchAuthLabel(authPanel, "Bearer Token:").getToolTipText())
+                        .isEqualTo("<html>OpenSearch bearer token.<br>Stored only within in-process memory.</html>");
+                assertThat(openSearchAuthLabel(authPanel, "Cert Path:").getToolTipText())
+                        .isEqualTo("<html>Path to the client certificate file used for OpenSearch authentication.</html>");
+                assertThat(openSearchAuthLabel(authPanel, "Key Path:").getToolTipText())
+                        .isEqualTo("<html>Path to the client private key file used for OpenSearch authentication.</html>");
+                assertThat(openSearchAuthLabel(authPanel, "Passphrase:").getToolTipText())
+                        .isEqualTo("<html>Client key passphrase.<br>Stored only within in-process memory.</html>");
+            });
+        });
+    }
+
+    @Test
+    void authCredentialFields_stackInRows_andUseCompactInitialWidths() throws Exception {
+        withCleanSession(() -> {
+            ConfigPanel panel = newPanelOnEdt();
+            JComboBox<?> authType = getComboBox(panel, "openSearchAuthTypeCombo");
+            JTextField user = JTextField.class.cast(get(panel, "openSearchUserField"));
+            JPasswordField pass = JPasswordField.class.cast(get(panel, "openSearchPasswordField"));
+            JPasswordField apiKeyToken = JPasswordField.class.cast(get(panel, "openSearchApiKeyTokenField"));
             JTextField jwtToken = JTextField.class.cast(get(panel, "openSearchJwtTokenField"));
             JTextField certPath = JTextField.class.cast(get(panel, "openSearchCertPathField"));
             JTextField certKeyPath = JTextField.class.cast(get(panel, "openSearchCertKeyPathField"));
             JPasswordField certPassphrase = JPasswordField.class.cast(get(panel, "openSearchCertPassphraseField"));
 
             runEdt(() -> {
-                assertThat(authType.getToolTipText()).isEqualTo("<html>Select how requests to OpenSearch authenticate.</html>");
-                assertThat(user.getToolTipText()).isEqualTo("<html>OpenSearch Basic auth username.<br>Stored only within in-process memory.</html>");
-                assertThat(pass.getToolTipText()).isEqualTo("<html>OpenSearch Basic auth password.<br>Stored only within in-process memory.</html>");
-                assertThat(apiKeyId.getToolTipText()).isEqualTo("<html>OpenSearch API key ID.<br>Stored only within in-process memory.</html>");
-                assertThat(apiKeySecret.getToolTipText()).isEqualTo("<html>OpenSearch API key secret.<br>Stored only within in-process memory.</html>");
-                assertThat(jwtToken.getToolTipText()).isEqualTo("<html>OpenSearch JWT bearer token.<br>Stored only within in-process memory.</html>");
-                assertThat(certPath.getToolTipText()).isEqualTo("<html>Path to the client certificate file used for OpenSearch authentication.</html>");
-                assertThat(certKeyPath.getToolTipText()).isEqualTo("<html>Path to the client private key file used for OpenSearch authentication.</html>");
-                assertThat(certPassphrase.getToolTipText()).isEqualTo("<html>Client key passphrase.<br>Stored only within in-process memory.</html>");
+                authType.setSelectedItem("Basic");
+                layoutTree(panel);
+                assertThat(user.getParent()).isSameAs(pass.getParent());
+                assertThat(user.getX()).isEqualTo(pass.getX());
+                assertThat(user.getY()).isLessThan(pass.getY());
 
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Auth type:")).getToolTipText())
-                        .isEqualTo("<html>Select how requests to OpenSearch authenticate.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Username:")).getToolTipText())
-                        .isEqualTo("<html>OpenSearch Basic auth username.<br>Stored only within in-process memory.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Password:")).getToolTipText())
-                        .isEqualTo("<html>OpenSearch Basic auth password.<br>Stored only within in-process memory.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Key ID:")).getToolTipText())
-                        .isEqualTo("<html>OpenSearch API key ID.<br>Stored only within in-process memory.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Key Secret:")).getToolTipText())
-                        .isEqualTo("<html>OpenSearch API key secret.<br>Stored only within in-process memory.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "JWT Token:")).getToolTipText())
-                        .isEqualTo("<html>OpenSearch JWT bearer token.<br>Stored only within in-process memory.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Cert Path:")).getToolTipText())
-                        .isEqualTo("<html>Path to the client certificate file used for OpenSearch authentication.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Key Path:")).getToolTipText())
-                        .isEqualTo("<html>Path to the client private key file used for OpenSearch authentication.</html>");
-                assertThat(((javax.swing.JLabel) findLabelByText(panel, "Passphrase:")).getToolTipText())
-                        .isEqualTo("<html>Client key passphrase.<br>Stored only within in-process memory.</html>");
+                assertThat(apiKeyToken.getPreferredSize().width).isLessThan(160);
+                assertThat(jwtToken.getPreferredSize().width).isLessThan(160);
+                assertThat(certPath.getPreferredSize().width).isLessThan(160);
+                assertThat(certKeyPath.getPreferredSize().width).isLessThan(160);
+                assertThat(certPassphrase.getPreferredSize().width).isLessThan(160);
+
+                String longPassword = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+                pass.setText(longPassword);
+                int hiddenWidth = pass.getPreferredSize().width;
+                char hiddenEcho = pass.getEchoChar();
+                assertThat(hiddenWidth).isLessThan(160);
+
+                clickPasswordEye(pass);
+                assertThat(pass.getEchoChar()).isEqualTo((char) 0);
+                assertThat(pass.getPreferredSize().width).isGreaterThan(hiddenWidth);
+                assertThat(pass.getPreferredSize().width).isEqualTo(expectedPasswordVisibleWidth(pass, longPassword));
+
+                clickPasswordEye(pass);
+                assertThat(pass.getEchoChar()).isEqualTo(hiddenEcho);
+                assertThat(pass.getPreferredSize().width).isEqualTo(hiddenWidth);
             });
         });
     }
@@ -387,7 +436,7 @@ class ConfigPanelAuthStorageHeadlessTest {
         withCleanSession(() -> {
             ConfigPanel panel = newPanelOnEdt();
             JComboBox<?> authType = getComboBox(panel, "openSearchAuthTypeCombo");
-            javax.swing.JTextArea status = javax.swing.JTextArea.class.cast(get(panel, "openSearchStatus"));
+            javax.swing.JTextArea status = javax.swing.JTextArea.class.cast(get(panel, "databaseStatus"));
 
             runEdt(() -> authType.setSelectedItem("None"));
 
@@ -413,6 +462,42 @@ class ConfigPanelAuthStorageHeadlessTest {
             SecureCredentialStore.BasicCredentials creds = SecureCredentialStore.loadOpenSearchCredentials();
             assertThat(creds.username()).isEqualTo("bob");
             assertThat(creds.password()).isEqualTo("s3cret");
+        });
+    }
+
+    @Test
+    void persistSelectedAuthSecrets_cachesAwsAndElasticsearchCredentialsForCurrentSession() throws Exception {
+        withCleanSession(() -> {
+            ConfigPanel panel = newPanelOnEdt();
+            JComboBox<?> awsAuthType = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+            JTextField awsUser = JTextField.class.cast(get(panel, "openSearchAmazonUserField"));
+            JPasswordField awsPassword = JPasswordField.class.cast(get(panel, "openSearchAmazonPasswordField"));
+            JComboBox<?> elasticAuthType = getComboBox(panel, "elasticSearchAuthTypeCombo");
+            JTextField elasticUser = JTextField.class.cast(get(panel, "elasticSearchUserField"));
+            JPasswordField elasticPassword = JPasswordField.class.cast(get(panel, "elasticSearchPasswordField"));
+
+            runEdt(() -> {
+                awsAuthType.setSelectedItem("Basic");
+                awsUser.setText("aws-user");
+                awsPassword.setText("aws-pass");
+                elasticAuthType.setSelectedItem("Basic");
+                elasticUser.setText("elastic-user");
+                elasticPassword.setText("elastic-pass");
+                ai.anomalousvectors.tools.burp.testutils.Reflect.call(panel, "persistSelectedAuthSecrets");
+            });
+
+            SecureCredentialStore.BasicCredentials awsCreds = SecureCredentialStore.loadBasicCredentials(
+                    ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey());
+            SecureCredentialStore.BasicCredentials elasticCreds = SecureCredentialStore.loadBasicCredentials(
+                    ConfigState.SearchDestination.ELASTICSEARCH.configKey());
+            assertThat(SecureCredentialStore.loadSelectedAuthType(
+                    ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey())).isEqualTo("Basic");
+            assertThat(SecureCredentialStore.loadSelectedAuthType(
+                    ConfigState.SearchDestination.ELASTICSEARCH.configKey())).isEqualTo("Basic");
+            assertThat(awsCreds.username()).isEqualTo("aws-user");
+            assertThat(awsCreds.password()).isEqualTo("aws-pass");
+            assertThat(elasticCreds.username()).isEqualTo("elastic-user");
+            assertThat(elasticCreds.password()).isEqualTo("elastic-pass");
         });
     }
 
@@ -490,7 +575,7 @@ class ConfigPanelAuthStorageHeadlessTest {
         SwingUtilities.invokeAndWait(() -> {
             ConfigPanel p = new ConfigPanel(new ConfigController(new ConfigController.Ui() {
                 @Override public void onFileStatus(String message) { }
-                @Override public void onOpenSearchStatus(String message) { }
+                @Override public void onDatabaseStatus(String message) { }
                 @Override public void onControlStatus(String message) { }
             }));
             p.setSize(1000, 700);
@@ -506,6 +591,40 @@ class ConfigPanelAuthStorageHeadlessTest {
         } else {
             SwingUtilities.invokeAndWait(r);
         }
+    }
+
+    private static void layoutTree(Container container) {
+        container.doLayout();
+        for (Component component : container.getComponents()) {
+            if (component instanceof Container child) {
+                layoutTree(child);
+            }
+        }
+    }
+
+    private static void clickPasswordEye(JPasswordField field) {
+        if (field.getWidth() <= 0 || field.getHeight() <= 0) {
+            field.setSize(field.getPreferredSize());
+            field.doLayout();
+        }
+        MouseEvent click = new MouseEvent(
+                field,
+                MouseEvent.MOUSE_CLICKED,
+                System.currentTimeMillis(),
+                0,
+                Math.max(0, field.getWidth() - 6),
+                field.getHeight() / 2,
+                1,
+                false,
+                MouseEvent.BUTTON1);
+        field.dispatchEvent(click);
+    }
+
+    private static int expectedPasswordVisibleWidth(JPasswordField field, String value) {
+        FontMetrics fm = field.getFontMetrics(field.getFont());
+        Insets margin = field.getMargin();
+        int textWidth = fm.charsWidth(value.toCharArray(), 0, value.length());
+        return Math.clamp(textWidth + margin.left + margin.right + 8, 80, 900);
     }
 
     private static void withCleanSession(CheckedRunnable action) throws Exception {
@@ -575,6 +694,12 @@ class ConfigPanelAuthStorageHeadlessTest {
             }
         }
         return null;
+    }
+
+    private static javax.swing.JLabel openSearchAuthLabel(Container authPanel, String text) {
+        Component label = findLabelByText(authPanel, text);
+        assertThat(label).as("OpenSearch auth label %s", text).isInstanceOf(javax.swing.JLabel.class);
+        return javax.swing.JLabel.class.cast(label);
     }
 
     private static boolean isEffectivelyVisible(Component component) {
