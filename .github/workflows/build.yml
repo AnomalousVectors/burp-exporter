@@ -120,4 +120,4 @@ jobs:
           artifacts: build/libs/${{ steps.props.outputs.basename }}-${{ steps.props.outputs.version }}.jar
           token: ${{ secrets.GITHUB_TOKEN }}
           body: |
-            In early development.
+            Always use the latest.
