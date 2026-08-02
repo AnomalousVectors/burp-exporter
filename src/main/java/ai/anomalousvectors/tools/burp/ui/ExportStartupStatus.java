@@ -6,7 +6,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 /**
  * User-visible control-status text for export startup.
  *
- * <p>Messages reflect actual bootstrap phases: file preflight and file creation, OpenSearch
+ * <p>Messages reflect actual bootstrap phases: file preflight and file creation, search database
  * connection test, index creation, then background reporter startup.</p>
  */
 public final class ExportStartupStatus {
@@ -19,59 +19,105 @@ public final class ExportStartupStatus {
      * Selected destinations at Start time.
      *
      * @param filesSelected Files sink checkbox selected
-     * @param openSearchSelected OpenSearch sink checkbox selected
+     * @param databaseSelected database sink checkbox selected
      */
-    public record Snapshot(boolean filesSelected, boolean openSearchSelected) {}
+    public record Snapshot(boolean filesSelected, boolean databaseSelected) {}
 
-    /** Captures sink selection from runtime config. Caller may invoke on the EDT when Start is clicked. */
+    /**
+     * Captures sink selection from runtime configuration.
+     *
+     * <p>This method does not access Swing state and may be invoked from any thread.</p>
+     *
+     * @return point-in-time destination-selection snapshot
+     */
     public static Snapshot capture() {
         ConfigState.State state = RuntimeConfig.getState();
         boolean files = false;
-        boolean openSearch = false;
+        boolean database = false;
         if (state != null) {
             ConfigState.Sinks sinks = state.sinks();
             if (sinks != null) {
                 files = sinks.filesEnabled();
-                openSearch = sinks.osEnabled();
+                database = sinks.databaseEnabled();
             }
         }
-        return new Snapshot(files, openSearch);
+        return new Snapshot(files, database);
     }
 
-    /** Initial status line shown immediately when Start is clicked. */
+    /**
+     * Returns the initial status line shown immediately when Start is clicked.
+     *
+     * @param snapshot non-null destination-selection snapshot
+     * @return initial starting message
+     * @throws NullPointerException if {@code snapshot} is {@code null}
+     */
     public static String initialStartingMessage(Snapshot snapshot) {
         return PREFIX + "preparing " + destinationLabel(snapshot) + " export …";
     }
 
-    /** Status while file export root and per-source files are prepared. */
+    /**
+     * Returns status while the file export root and per-source files are prepared.
+     *
+     * @return file-initialization message
+     */
     public static String initializingFilesMessage() {
         return PREFIX + "initializing file export …";
     }
 
-    /** Status while OpenSearch connectivity is verified. */
+    /**
+     * Returns status while search database connectivity is verified.
+     *
+     * @return connection-test message
+     */
+    public static String testingSearchConnectionMessage() {
+        return PREFIX + "testing search database connection …";
+    }
+
+    /**
+     * Returns the compatibility alias for search database connection status.
+     *
+     * @return connection-test message
+     */
     public static String testingOpenSearchConnectionMessage() {
-        return PREFIX + "testing OpenSearch connection …";
+        return testingSearchConnectionMessage();
     }
 
-    /** Status while selected OpenSearch indexes are created or updated. */
+    /**
+     * Returns status while selected search database indexes are created or updated.
+     *
+     * @return index-creation message
+     */
+    public static String creatingSearchIndexesMessage() {
+        return PREFIX + "creating search database indexes …";
+    }
+
+    /**
+     * Returns the compatibility alias for search database index-creation status.
+     *
+     * @return index-creation message
+     */
     public static String creatingOpenSearchIndexesMessage() {
-        return PREFIX + "creating OpenSearch indexes …";
+        return creatingSearchIndexesMessage();
     }
 
-    /** Status while recurring index reporters and traffic handlers are started. */
+    /**
+     * Returns status while recurring reporters and traffic handlers are started.
+     *
+     * @return background-reporter startup message
+     */
     public static String startingBackgroundReportersMessage() {
         return PREFIX + "starting background reporters …";
     }
 
     private static String destinationLabel(Snapshot snapshot) {
         String databaseName = RuntimeConfig.searchDestinationDisplayName();
-        if (snapshot.filesSelected() && snapshot.openSearchSelected()) {
+        if (snapshot.filesSelected() && snapshot.databaseSelected()) {
             return "Files and " + databaseName;
         }
         if (snapshot.filesSelected()) {
             return "Files";
         }
-        if (snapshot.openSearchSelected()) {
+        if (snapshot.databaseSelected()) {
             return databaseName;
         }
         return "export";

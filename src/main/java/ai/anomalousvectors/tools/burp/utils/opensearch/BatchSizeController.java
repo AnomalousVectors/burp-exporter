@@ -5,8 +5,10 @@ import java.util.Deque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
+
 /**
- * Single shared controller for batch size (doc count per OpenSearch bulk request).
+ * Single shared controller for batch size (doc count per search database bulk request).
  * Grows on success (with smoothing) and shrinks on failure; used by all reporters
  * and {@link IndexingRetryCoordinator}. Bounds are fixed in code; effective range
  * is driven only by success/failure observations. Thread-safe.
@@ -26,7 +28,11 @@ public final class BatchSizeController {
     private final Deque<Integer> successSizes = new ArrayDeque<>(SMOOTHING_WINDOW);
     private volatile Consumer<Integer> onChangeListener;
 
-    /** Constructs the controller. Instance is set by {@link #getInstance()} or by tests via {@link #setInstance(BatchSizeController)}. */
+    /**
+     * Constructs an isolated controller at the initial batch size.
+     *
+     * <p>Production callers normally obtain the shared instance from {@link #getInstance()}.</p>
+     */
     public BatchSizeController() {
     }
 
@@ -42,13 +48,19 @@ public final class BatchSizeController {
         return instance;
     }
 
-    /** For tests: reset or inject a controller. */
+    /**
+     * Replaces the shared instance for isolated tests.
+     *
+     * @param c replacement controller; {@code null} makes the next access create a fresh instance
+     */
     static void setInstance(BatchSizeController c) {
         instance = c;
     }
 
     /**
      * Returns the current batch size (doc count) to use for the next bulk request.
+     *
+     * @return current document-count ceiling
      */
     public int getCurrentBatchSize() {
         return current.get();
@@ -60,6 +72,9 @@ public final class BatchSizeController {
      * @param docsSent number of documents successfully sent in this bulk
      */
     public void recordSuccess(int docsSent) {
+        if (!ExportRunContext.allowsRunMutation()) {
+            return;
+        }
         int prev;
         int next;
         synchronized (this) {
@@ -91,9 +106,15 @@ public final class BatchSizeController {
      * Call after a bulk request failed (full failure, 429, timeout, or partial success).
      * Decreases batch size.
      *
+     * <p>The current algorithm halves from the existing ceiling; {@code attemptedDocs} is retained
+     * as observation context and does not change the reduction amount.</p>
+     *
      * @param attemptedDocs number of documents that were in the failed bulk
      */
     public void recordFailure(int attemptedDocs) {
+        if (!ExportRunContext.allowsRunMutation()) {
+            return;
+        }
         int prev;
         int next;
         synchronized (this) {
@@ -112,6 +133,9 @@ public final class BatchSizeController {
     /**
      * Optional: treat partial success as failure for scaling (conservative).
      *
+     * <p>The current algorithm uses {@code total} as failure context and deliberately does not
+     * scale the reduction by {@code successCount}.</p>
+     *
      * @param successCount number of docs that succeeded
      * @param total        total docs in the bulk
      */
@@ -124,7 +148,11 @@ public final class BatchSizeController {
      *
      * <p>Used by {@link ai.anomalousvectors.tools.burp.ui.StatsPanel} refresh hooks and
      * Exporter-index observability paths.</p>
-     * Invoked from the thread that called {@link #recordSuccess} or {@link #recordFailure}.
+     *
+     * <p>Invoked from the thread that called {@link #recordSuccess} or {@link #recordFailure}.
+     * Listener exceptions propagate to that caller after the size has changed.</p>
+     *
+     * @param listener replacement callback; {@code null} removes the current listener
      */
     public void setOnChangeListener(Consumer<Integer> listener) {
         this.onChangeListener = listener;

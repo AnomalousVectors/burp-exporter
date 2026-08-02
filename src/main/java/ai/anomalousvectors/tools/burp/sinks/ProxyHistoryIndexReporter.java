@@ -1,6 +1,8 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -14,10 +16,13 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache;
+import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.message.requests.HttpRequest;
@@ -32,14 +37,14 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse;
 public final class ProxyHistoryIndexReporter {
 
     private static final String SCHEMA_VERSION = "1";
-    private static final long BULK_MAX_BYTES = 5L * 1024 * 1024;
+    private static final Object STARTUP_BACKLOG_LOCK = new Object();
+    private static volatile StartupBacklogState startupBacklog;
 
     /**
-     * Single-owner scheduler for proxy-history snapshot work.
+     * Reporter-local scheduler retained for deterministic lifecycle cleanup.
      *
-     * <p>Created lazily by {@link LazyScheduler#getOrStart()} the first time a snapshot is
-     * scheduled and torn down deterministically by {@link #stop()} during UI stop or extension
-     * unload. Matches the lazy/stop pattern used by every other reporter in this package.</p>
+     * <p>Startup backlog slices run through {@link StartupSnapshotCoordinator}; {@link #stop()}
+     * also terminates any reporter-local work owned by this scheduler.</p>
      */
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-proxy-history-scheduler");
@@ -49,18 +54,22 @@ public final class ProxyHistoryIndexReporter {
     /**
      * Stops the proxy-history scheduler so the extension unloads cleanly.
      *
-     * <p>Safe to call from any thread and safe to call more than once. A subsequent
-     * {@link #pushSnapshotNow()} lazily starts a fresh scheduler via {@link LazyScheduler}.</p>
+     * <p>Safe to call from any thread and safe to call more than once. Also discards the
+     * coordinator-backed startup state so a late slice cannot resume the stopped backlog.</p>
      */
     public static void stop() {
         SCHEDULER.stop();
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            startupBacklog = null;
+        }
     }
 
     /**
-     * Schedules a one-time push of all current proxy history items (on Start), after a short delay.
+     * Schedules a one-time push of all current proxy history items on Start.
      *
-     * <p>Safe to call from any thread; work runs on a background thread. No-op if export is not
-     * running, no sink is enabled, or PROXY_HISTORY is not selected.</p>
+     * <p>Safe to call from any thread; work runs in cooperative background slices through
+     * {@link StartupSnapshotCoordinator}. No-op if export is not running, no sink is enabled, or
+     * {@code proxy_history} is not selected.</p>
      */
     public static void pushSnapshotNow() {
         try {
@@ -79,11 +88,13 @@ public final class ProxyHistoryIndexReporter {
                 return;
             }
             MontoyaApi apiRef = api;
-            SCHEDULER.getOrStart().execute(() -> {
-                if (!RuntimeConfig.isExportRunning()) return;
-                String activeBaseUrl = RuntimeConfig.openSearchUrl();
-                pushItems(apiRef, activeBaseUrl);
-            });
+            ExportRunToken token = RuntimeConfig.currentExportRunToken();
+            // After Findings/Sitemap on the ordered startup queue (ConfigPanel submission order).
+            StartupSnapshotCoordinator.submit(
+                    StartupSnapshotCoordinator.Lane.PROXY_HISTORY,
+                    token,
+                    "ProxyHistory",
+                    () -> runStartupBacklogSlice(apiRef, token));
         } catch (Exception e) {
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             Logger.logWarnPanelOnly("[SnapshotExport] ProxyHistory: push failed: " + msg);
@@ -91,155 +102,223 @@ public final class ProxyHistoryIndexReporter {
     }
 
     /**
-     * Pushes proxy-history items using bounded, streaming chunks.
+     * Runs one token-scoped Proxy History startup slice.
      *
-     * <p>Runs only on the reporter scheduler thread. This method avoids building the full
-     * history payload in memory by flushing chunks when either doc-count or estimated payload
-     * size thresholds are reached.</p>
-     *
-     * @param api Burp API reference
-     * @param baseUrl OpenSearch base URL
+     * <p>State selection and offset changes occur under {@link #STARTUP_BACKLOG_LOCK}; document
+     * preparation and delivery run outside the lock. The state identity and run token are checked
+     * again before results are committed so Stop or a later run cannot accept stale completion.</p>
      */
-    private static void pushItems(MontoyaApi api, String baseUrl) {
-        boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
-        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyHistorySnapshot();
-        SnapshotSummary.Baseline baseline = SnapshotSummary.forRoute(route);
-        List<ProxyHttpRequestResponse> history = api.proxy().history();
-        if (history == null || history.isEmpty()) {
-            TrafficStartupBacklogSummary.complete(
-                    TrafficStartupBacklogSummary.Component.PROXY_HISTORY,
-                    0,
-                    baseline);
+    private static void runStartupBacklogSlice(MontoyaApi api, ExportRunToken token) {
+        if (!RuntimeConfig.isExportRunActive(token)) {
             return;
         }
+        StartupBacklogState state;
+        List<ProxyHttpRequestResponse> slice;
+        int sliceStart;
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            state = startupBacklog;
+            if (state == null) {
+                List<ProxyHttpRequestResponse> history = api.proxy().history();
+                List<ProxyHttpRequestResponse> captured = history == null
+                        ? List.of()
+                        : Collections.unmodifiableList(new ArrayList<>(history));
+                TrafficRouteBucket.Route route = TrafficRouteBucket.proxyHistorySnapshot();
+                state = new StartupBacklogState(
+                        captured,
+                        RuntimeConfig.getState(),
+                        new SnapshotScopeCache(api),
+                        route,
+                        SnapshotSummary.forRoute(route),
+                        token);
+                startupBacklog = state;
+                Logger.logInfoPanelOnly("[StartupExport] ProxyHistory: exporting backlog: "
+                        + captured.size() + " item(s) with adaptive startup slices.");
+                SnapshotPacing.resetCountersForSnapshot();
+            }
+            if (state.offset >= state.history.size()) {
+                finishStartupBacklogLocked(state);
+                return;
+            }
+            int sliceTarget = StartupSnapshotCoordinator.nextSliceItemCount(
+                    StartupSnapshotCoordinator.Lane.PROXY_HISTORY);
+            sliceStart = state.offset;
+            int end = Math.min(state.offset + sliceTarget, state.history.size());
+            slice = state.history.subList(state.offset, end);
+        }
 
-        long startNs = System.nanoTime();
-        int chunkTarget = SnapshotBatchTuning.initialTarget();
-        int buildWorkers = SnapshotExportEngine.defaultBuildWorkers();
-        ExportStats.setCurrentProxyHistoryChunkTarget(chunkTarget);
-        String trafficIndexName = TrafficRouteBucket.trafficIndexName();
-        String trafficIndexKey = TrafficRouteBucket.INDEX_KEY;
-        SnapshotScopeCache scopeCache = new SnapshotScopeCache(api);
-        ConfigState.State state = RuntimeConfig.getState();
-        AtomicInteger skippedScope = new AtomicInteger();
-
-        // {@link EdtMonitor} captures stack traces when the EDT misses its tick deadline during
-        // large snapshots. Completion is logged once via {@link SnapshotSummary#logInfo}.
-        SnapshotPacing.resetCountersForSnapshot();
         EdtMonitor.start();
+        SnapshotExportEngine.Result result;
+        long sliceStartedNanos = System.nanoTime();
         try {
-        long startGcMs = totalGcCollectionTimeMs();
-        Logger.logInfoPanelOnly("[StartupExport] ProxyHistory: exporting backlog: " + history.size() + " item(s).");
-        Logger.logDebug("[SnapshotExport] ProxyHistory: start wt=" + nowWallClock()
-                + " items=" + history.size()
-                + " initial_chunk_target=" + chunkTarget
-                + " build_workers=" + buildWorkers
-                + " heap_used_mib=" + heapUsedMib()
-                + " gc_time_ms=" + startGcMs);
+            result = exportStartupSlice(state, slice);
+        } finally {
+            EdtMonitor.stop();
+        }
+        long elapsedMs = (System.nanoTime() - sliceStartedNanos) / 1_000_000L;
+        boolean more;
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            if (startupBacklog != state || !RuntimeConfig.isExportRunActive(token)) {
+                return;
+            }
+            state.add(result);
+            state.offset += slice.size();
+            more = state.offset < state.history.size();
+            if (!more) {
+                finishStartupBacklogLocked(state);
+            }
+        }
+        StartupSnapshotCoordinator.recordSliceOutcome(
+                StartupSnapshotCoordinator.Lane.PROXY_HISTORY,
+                "ProxyHistory",
+                sliceStart,
+                slice.size(),
+                result.totalChunkBytes(),
+                elapsedMs,
+                more);
+        if (more) {
+            StartupSnapshotCoordinator.submit(
+                    StartupSnapshotCoordinator.Lane.PROXY_HISTORY,
+                    token,
+                    "ProxyHistory",
+                    () -> runStartupBacklogSlice(api, token));
+        }
+    }
 
-        SnapshotExportEngine.Result exportResult = SnapshotExportEngine.run(
-                history,
-                buildWorkers,
-                BULK_MAX_BYTES,
+    private static SnapshotExportEngine.Result exportStartupSlice(
+            StartupBacklogState state,
+            List<ProxyHttpRequestResponse> slice) {
+        String trafficIndexName = TrafficRouteBucket.trafficIndexName();
+        int chunkTarget = state.finalChunkTarget > 0
+                ? state.finalChunkTarget
+                : SnapshotBatchTuning.initialTarget();
+        ExportStats.setCurrentProxyHistoryChunkTarget(chunkTarget);
+        return SnapshotExportEngine.run(
+                state.token,
+                slice,
+                SnapshotExportEngine.defaultBuildWorkers(),
+                BulkByteBudget.currentMaxBytes(),
                 chunkTarget,
                 SnapshotBatchTuning::applyLiveBackpressure,
                 SnapshotBatchTuning.chunkTargetAdjuster(),
-                baseUrl,
+                RuntimeConfig.searchBaseUrl(),
                 trafficIndexName,
-                trafficIndexKey,
+                TrafficRouteBucket.INDEX_KEY,
                 item -> {
-                    Map<String, Object> doc = buildDocument(item, state, scopeCache, skippedScope);
-                    if (doc == null) {
-                        return null;
-                    }
-                    return ExportDocumentIdentity.prepare(trafficIndexName, trafficIndexKey, doc);
+                    Map<String, Object> doc =
+                            buildDocument(item, state.config, state.scopeCache, state.skippedScope);
+                    return doc == null
+                            ? null
+                            : ExportDocumentIdentity.prepare(
+                                    trafficIndexName, TrafficRouteBucket.INDEX_KEY, doc);
                 },
                 (chunk, outcome, nextChunkTarget) -> {
-                    recordChunkOutcome(route, openSearchActive, outcome);
+                    recordChunkOutcome(state.route, RuntimeConfig.isSearchActive(), outcome);
                     ExportStats.setCurrentProxyHistoryChunkTarget(nextChunkTarget);
                 });
-
-        long durationMs = (System.nanoTime() - startNs) / 1_000_000;
-        ExportStats.recordProxyHistorySnapshot(
-                exportResult.attempted(),
-                exportResult.success(),
-                durationMs,
-                exportResult.finalChunkTarget(),
-                exportResult.chunks(),
-                exportResult.totalChunkBytes(),
-                exportResult.buildWallMs(),
-                exportResult.buildCpuMs(),
-                exportResult.flushMs(),
-                exportResult.fileFlushMs(),
-                exportResult.openSearchFlushMs(),
-                exportResult.buildWorkers());
-        Logger.logDebug(SnapshotPacing.summaryLine("ProxyHistory")
-                + " wt=" + nowWallClock()
-                + " elapsed_ms=" + durationMs
-                + " build_wall_ms=" + exportResult.buildWallMs()
-                + " build_cpu_ms=" + exportResult.buildCpuMs()
-                + " flush_ms=" + exportResult.flushMs()
-                + " build_workers=" + exportResult.buildWorkers()
-                + " chunks=" + exportResult.chunks());
-        SnapshotSummary.logInfo(
-                "ProxyHistory",
-                baseline,
-                exportResult.attempted(),
-                durationMs,
-                exportResult.buildWallMs(),
-                exportResult.flushMs(),
-                openSearchActive,
-                RuntimeConfig.isAnyFileExportEnabled());
-        int skippedScopeCount = skippedScope.get();
-        if (skippedScopeCount > 0) {
-            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, skippedScopeCount);
-        }
-        Logger.logInfoPanelOnly("[SnapshotExport] ProxyHistory: backlog filters: seen="
-                + history.size()
-                + " exported=" + exportResult.attempted()
-                + " skipped_scope=" + skippedScopeCount
-                + " in " + durationMs + "ms.");
-        TrafficStartupBacklogSummary.complete(
-                TrafficStartupBacklogSummary.Component.PROXY_HISTORY,
-                exportResult.attempted(),
-                baseline);
-        } finally {
-            EdtMonitor.stop();
-            if (ExportStats.getCurrentProxyHistoryChunkTarget() >= 0) {
-                ExportStats.clearCurrentProxyHistoryChunkTarget();
-            }
-        }
     }
 
     /**
-     * Returns a worker-side wall-clock timestamp ({@code HH:mm:ss.SSS}) captured on the calling
-     * thread. Embedded into snapshot diagnostic log lines so we can compute the EDT delivery lag by
-     * comparing this value with the {@code [yyyy-MM-dd HH:mm:ss]} prefix that the LogPanel
-     * appends when it renders the entry on the EDT.
+     * Finalizes the current startup backlog while {@link #STARTUP_BACKLOG_LOCK} is held.
      */
-    private static String nowWallClock() {
-        return EdtMonitor.WallClock.format(System.currentTimeMillis());
-    }
-
-    private static long totalGcCollectionTimeMs() {
-        long sum = 0L;
-        try {
-            for (var bean : java.lang.management.ManagementFactory.getGarbageCollectorMXBeans()) {
-                long t = bean.getCollectionTime();
-                if (t > 0L) {
-                    sum += t;
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // Fall through with whatever we accumulated.
+    private static void finishStartupBacklogLocked(StartupBacklogState state) {
+        startupBacklog = null;
+        ExportStats.clearCurrentProxyHistoryChunkTarget();
+        if (!RuntimeConfig.isExportRunActive(state.token)) {
+            return;
         }
-        return sum;
+        long durationMs = (System.nanoTime() - state.startNs) / 1_000_000L;
+        ExportStats.recordProxyHistorySnapshot(
+                state.attempted,
+                state.success,
+                durationMs,
+                state.finalChunkTarget,
+                state.chunks,
+                state.totalChunkBytes,
+                state.buildWallMs,
+                state.buildCpuMs,
+                state.flushMs,
+                state.fileFlushMs,
+                state.openSearchFlushMs,
+                state.buildWorkers);
+        SnapshotSummary.logInfo(
+                "ProxyHistory",
+                state.baseline,
+                state.attempted,
+                durationMs,
+                state.buildWallMs,
+                state.flushMs,
+                RuntimeConfig.isSearchActive(),
+                RuntimeConfig.isAnyFileExportEnabled());
+        int skipped = state.skippedScope.get();
+        if (skipped > 0) {
+            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, skipped);
+        }
+        Logger.logInfoPanelOnly("[SnapshotExport] ProxyHistory: backlog filters: seen="
+                + state.history.size() + " exported=" + state.attempted
+                + " skipped_scope=" + skipped + " in " + durationMs + "ms.");
+        TrafficStartupBacklogSummary.complete(
+                TrafficStartupBacklogSummary.Component.PROXY_HISTORY,
+                state.attempted,
+                state.baseline,
+                state.token);
     }
 
-    private static long heapUsedMib() {
-        Runtime rt = Runtime.getRuntime();
-        long bytes = rt.totalMemory() - rt.freeMemory();
-        return bytes / (1024L * 1024L);
+    /**
+     * Mutable aggregate owned by the serialized coordinator lane.
+     *
+     * <p>References and offsets are guarded by {@link #STARTUP_BACKLOG_LOCK}; one coordinator
+     * slice at a time updates the accumulated result fields.</p>
+     */
+    private static final class StartupBacklogState {
+        private final List<ProxyHttpRequestResponse> history;
+        private final ConfigState.State config;
+        private final SnapshotScopeCache scopeCache;
+        private final TrafficRouteBucket.Route route;
+        private final SnapshotSummary.Baseline baseline;
+        private final ExportRunToken token;
+        private final AtomicInteger skippedScope = new AtomicInteger();
+        private final long startNs = System.nanoTime();
+        private int offset;
+        private int attempted;
+        private int success;
+        private int chunks;
+        private long totalChunkBytes;
+        private long buildWallMs;
+        private long buildCpuMs;
+        private long flushMs;
+        private long fileFlushMs;
+        private long openSearchFlushMs;
+        private int finalChunkTarget;
+        private int buildWorkers;
+
+        private StartupBacklogState(
+                List<ProxyHttpRequestResponse> history,
+                ConfigState.State config,
+                SnapshotScopeCache scopeCache,
+                TrafficRouteBucket.Route route,
+                SnapshotSummary.Baseline baseline,
+                ExportRunToken token) {
+            this.history = history;
+            this.config = config;
+            this.scopeCache = scopeCache;
+            this.route = route;
+            this.baseline = baseline;
+            this.token = token;
+        }
+
+        private void add(SnapshotExportEngine.Result result) {
+            attempted += result.attempted();
+            success += result.success();
+            chunks += result.chunks();
+            totalChunkBytes += result.totalChunkBytes();
+            buildWallMs += result.buildWallMs();
+            buildCpuMs += result.buildCpuMs();
+            flushMs += result.flushMs();
+            fileFlushMs += result.fileFlushMs();
+            openSearchFlushMs += result.openSearchFlushMs();
+            finalChunkTarget = result.finalChunkTarget();
+            buildWorkers = result.buildWorkers();
+        }
     }
 
     private static void recordChunkOutcome(

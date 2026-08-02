@@ -1,20 +1,19 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
 
 /**
  * Shared chunk-target tuning for startup snapshot exports.
  */
 final class SnapshotBatchTuning {
 
-    private static final int SNAPSHOT_BATCH_INITIAL = 250;
-    private static final int SNAPSHOT_BATCH_MIN = 100;
+    private static final int SNAPSHOT_BATCH_INITIAL = 100;
+    private static final int SNAPSHOT_BATCH_MIN = 50;
     private static final int SNAPSHOT_BATCH_MAX = 1500;
-    private static final long SNAPSHOT_BULK_MAX_BYTES = 5L * 1024 * 1024;
-    private static final int LIVE_QUEUE_BACKPRESSURE_DOCS = 10_000;
-    private static final int LIVE_SPILL_BACKPRESSURE_DOCS = 2_000;
     private static final long BACKPRESSURE_PAUSE_MS = 75;
 
     private SnapshotBatchTuning() {}
@@ -65,25 +64,24 @@ final class SnapshotBatchTuning {
             return Math.max(SNAPSHOT_BATCH_MIN, docTarget);
         }
         long avgBytes = Math.max(1L, chunkBytes / attemptedChunk);
-        int byteCap = (int) Math.min(SNAPSHOT_BATCH_MAX, Math.max(SNAPSHOT_BATCH_MIN, SNAPSHOT_BULK_MAX_BYTES / avgBytes));
+        long bulkMaxBytes = BulkByteBudget.currentMaxBytes();
+        int byteCap = (int) Math.min(SNAPSHOT_BATCH_MAX, Math.max(SNAPSHOT_BATCH_MIN, bulkMaxBytes / avgBytes));
         int capped = Math.min(docTarget, byteCap);
         long projected = avgBytes * (long) capped;
-        if (projected > SNAPSHOT_BULK_MAX_BYTES) {
-            capped = (int) Math.max(SNAPSHOT_BATCH_MIN, SNAPSHOT_BULK_MAX_BYTES / avgBytes);
+        if (projected > bulkMaxBytes) {
+            capped = (int) Math.max(SNAPSHOT_BATCH_MIN, bulkMaxBytes / avgBytes);
         }
         return Math.max(SNAPSHOT_BATCH_MIN, capped);
     }
 
     /**
-     * Halves the chunk target when live traffic or JVM GC pressure indicates snapshot contention.
+     * Halves the chunk target when Soft Outage, Traffic Spill, mem headroom, or GC indicate
+     * snapshot contention.
      */
     static int applyLiveBackpressure(int currentTarget) {
-        int liveQueueDocs = TrafficExportQueue.getCurrentSize();
-        int spillDocs = TrafficExportQueue.getCurrentSpillSize();
-        boolean queuePressure = liveQueueDocs >= LIVE_QUEUE_BACKPRESSURE_DOCS
-                || spillDocs >= LIVE_SPILL_BACKPRESSURE_DOCS;
+        boolean admissionPressure = ExportAdmissionController.shouldBackpressureSnapshots();
         boolean gcPressure = SnapshotPacing.gcSaturated();
-        if (!queuePressure && !gcPressure) {
+        if (!admissionPressure && !gcPressure) {
             return currentTarget;
         }
         try {
@@ -91,6 +89,11 @@ final class SnapshotBatchTuning {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        return Math.max(SNAPSHOT_BATCH_MIN, currentTarget / 2);
+        int reduced = Math.max(SNAPSHOT_BATCH_MIN, currentTarget / 2);
+        if (ExportAdmissionController.currentSpillStatus()
+                == ExportAdmissionController.SpillStatus.FULL) {
+            return Math.max(SNAPSHOT_BATCH_MIN, reduced / 2);
+        }
+        return reduced;
     }
 }

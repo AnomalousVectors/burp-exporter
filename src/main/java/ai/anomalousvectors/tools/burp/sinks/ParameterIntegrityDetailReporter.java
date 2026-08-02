@@ -123,7 +123,7 @@ final class ParameterIntegrityDetailReporter {
         if (docs.isEmpty() || !shouldPush()) {
             return;
         }
-        String baseUrl = RuntimeConfig.openSearchUrl();
+        String baseUrl = RuntimeConfig.searchBaseUrl();
         String indexName = RuntimeConfig.indexNameForKey("exporter");
         boolean bypassReadyGate = !RuntimeConfig.isExportReady();
         for (Map<String, Object> doc : docs) {
@@ -133,7 +133,7 @@ final class ParameterIntegrityDetailReporter {
             SingleDocOutcomeRecorder.record(
                     "exporter",
                     result.success(),
-                    RuntimeConfig.isOpenSearchActive(),
+                    RuntimeConfig.isSearchActive(),
                     "Parameter Integrity detail push failed");
         }
     }

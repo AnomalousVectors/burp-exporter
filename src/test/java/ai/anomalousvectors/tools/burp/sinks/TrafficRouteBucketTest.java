@@ -5,13 +5,17 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
+import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 /**
  * Unit tests for the centralized {@link TrafficRouteBucket} mapping and stats helpers.
@@ -21,6 +25,13 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  * and for recording per-bucket counts on both the OpenSearch and file sinks.</p>
  */
 class TrafficRouteBucketTest {
+
+    @AfterEach
+    void restoreRuntimeFlags() {
+        RuntimeConfig.setExportRunning(false);
+        RuntimeConfig.setExportStarting(false);
+        RuntimeConfig.setExportStopping(false);
+    }
 
     void resetStats() {
         ExportStats.resetForTests();
@@ -85,6 +96,49 @@ class TrafficRouteBucketTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new TrafficRouteBucket.Route(TrafficRouteBucket.Kind.TOOL_TYPE, ""))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void recordOpenSearchPermanentAndRetryQueueDrops_routeSeparatelyAndFoldUnderProxyHistory() {
+        resetStats();
+        TrafficRouteBucket.recordOpenSearchPermanentDrop(TrafficRouteBucket.proxyHistorySnapshot(), 2);
+        TrafficRouteBucket.recordOpenSearchPermanentDrop(TrafficRouteBucket.fromToolType("REPEATER_TABS"), 1);
+        TrafficRouteBucket.recordOpenSearchRetryQueueDrop(TrafficRouteBucket.proxyWebSocket(), 3);
+        TrafficRouteBucket.recordOpenSearchRetryQueueDrop(TrafficRouteBucket.fromToolType("INTRUDER"), 4);
+
+        assertThat(ExportStats.getTrafficSourcePermanentDrops(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT))
+                .isEqualTo(2);
+        assertThat(ExportStats.getTrafficToolTypePermanentDrops("REPEATER_TABS")).isEqualTo(1);
+        assertThat(TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops("PROXY_HISTORY")).isEqualTo(2);
+        assertThat(TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops("REPEATER_TABS")).isEqualTo(1);
+
+        assertThat(ExportStats.getTrafficSourceRetryQueueDrops(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+                .isEqualTo(3);
+        assertThat(ExportStats.getTrafficToolTypeRetryQueueDrops("INTRUDER")).isEqualTo(4);
+        assertThat(TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops("PROXY_HISTORY")).isEqualTo(3);
+        assertThat(TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops("INTRUDER")).isEqualTo(4);
+    }
+
+    @Test
+    void countQueuedForDisplaySource_attributesByRouteAndFoldsProxyFamily() {
+        PreparedExportDocument proxyHistory = ExportDocumentIdentity.prepare(
+                "tool-burp-traffic",
+                "traffic",
+                Map.of("burp", Map.of("reporting_tool", "Proxy History")));
+        PreparedExportDocument proxyWs = ExportDocumentIdentity.prepare(
+                "tool-burp-traffic",
+                "traffic",
+                Map.of("burp", Map.of("reporting_tool", "Proxy WebSocket")));
+        PreparedExportDocument repeater = ExportDocumentIdentity.prepare(
+                "tool-burp-traffic",
+                "traffic",
+                Map.of("burp", Map.of("reporting_tool", "Repeater")));
+
+        assertThat(TrafficRouteBucket.countQueuedForDisplaySource(
+                "PROXY_HISTORY", List.of(proxyHistory, proxyWs, repeater))).isEqualTo(2);
+        assertThat(TrafficRouteBucket.countQueuedForDisplaySource(
+                "REPEATER", List.of(proxyHistory, proxyWs, repeater))).isEqualTo(1);
+        assertThat(TrafficRouteBucket.countQueuedForDisplaySource("INTRUDER", List.of(repeater))).isZero();
     }
 
     @Test
@@ -167,6 +221,22 @@ class TrafficRouteBucketTest {
                 .isEqualTo(3);
         assertThat(ExportStats.getTrafficSourceFailureCount(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT))
                 .isEqualTo(2);
+    }
+
+    @Test
+    void recordBulkOutcome_stoppedPartial_countsRouteSuccessButSuppressesRouteFailure() {
+        resetStats();
+        RuntimeConfig.setExportRunning(false);
+        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyHistorySnapshot();
+
+        TrafficRouteBucket.recordBulkOutcome(route, 5, 3, true, "Proxy history chunk");
+
+        assertThat(ExportStats.getSuccessCount("traffic")).isEqualTo(3);
+        assertThat(ExportStats.getFailureCount("traffic")).isZero();
+        assertThat(ExportStats.getTrafficSourceSuccessCount(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT))
+                .isEqualTo(3);
+        assertThat(ExportStats.getTrafficSourceFailureCount(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT))
+                .isZero();
     }
 
     @Test

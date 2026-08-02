@@ -42,7 +42,8 @@ public final class Json {
             "Basic",
             "None");
     private static final List<String> ALLOWED_OPEN_SEARCH_AMAZON_AUTH_TYPES = List.of(
-            "IAM (sigV4)",
+            ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE,
+            ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC,
             "Basic",
             "None");
     private static final List<String> ALLOWED_SEARCH_DESTINATIONS = List.of(
@@ -71,11 +72,15 @@ public final class Json {
             "url",
             "region",
             "profile",
+            "credentialsFilePath",
+            "configFilePath",
+            "deploymentType",
             "tlsMode",
             "auth",
             "pinnedTlsCertificate");
     private static final List<String> ELASTICSEARCH_KEYS = List.of(
             "url",
+            "deploymentType",
             "tlsMode",
             "auth",
             "pinnedTlsCertificate");
@@ -102,12 +107,53 @@ public final class Json {
 
     /** Dedicated runtime exception for config JSON errors. */
     public static final class ConfigJsonException extends RuntimeException {
+        /**
+         * Creates a config JSON exception with its serialization cause.
+         *
+         * @param message diagnostic message
+         * @param cause underlying JSON processing failure; may be {@code null}
+         */
         public ConfigJsonException(String message, Throwable cause) { super(message, cause); }
     }
 
     /**
      * Parsed config projection used by the UI and tests.
-     * Null/empty defaulting behavior is handled via the canonical constructor.
+     *
+     * <p>Null and empty defaulting behavior is handled by the canonical constructor. Collection
+     * components are copied before exposure.</p>
+     *
+     * @param dataSources normalized data-source keys
+     * @param scopeType normalized scope mode
+     * @param scopeRegexes ordered custom-scope values
+     * @param scopeKinds matching kinds aligned with custom-scope values, or {@code null}
+     * @param filesEnabled whether file export is selected
+     * @param filesPath configured file root; may be {@code null} when absent
+     * @param fileJsonlEnabled whether JSONL is selected
+     * @param fileBulkNdjsonEnabled whether bulk NDJSON is selected
+     * @param fileTotalCapEnabled whether the total file cap is enabled
+     * @param fileTotalCapGb normalized total file cap in GiB
+     * @param fileDiskUsagePercentEnabled whether the disk-used threshold is enabled
+     * @param fileDiskUsagePercent configured disk-used threshold
+     * @param openSearchEnabled historical database-wide enable flag
+     * @param openSearchUrl upstream OpenSearch URL
+     * @param openSearchUser upstream OpenSearch username, normalized to non-null
+     * @param openSearchPassword non-durable password, normalized to non-null
+     * @param openSearchTlsMode normalized upstream OpenSearch TLS mode
+     * @param openSearchOptions persisted upstream OpenSearch options
+     * @param searchDestination normalized selected destination key
+     * @param openSearchAmazonUrl Amazon OpenSearch URL
+     * @param openSearchAmazonOptions persisted Amazon OpenSearch options
+     * @param elasticSearchUrl Elasticsearch URL
+     * @param elasticSearchOptions persisted Elasticsearch options
+     * @param settingsSub normalized Settings sub-options
+     * @param trafficToolTypes normalized traffic tool keys
+     * @param findingsSeverities normalized finding severities
+     * @param exporterSubOptions normalized exporter sub-options
+     * @param exporterStatsIntervalSeconds positive snapshot interval
+     * @param exporterOptionsPresent whether exporter options appeared in imported JSON
+     * @param indexNameBaseTemplate normalized index base template
+     * @param enabledExportFieldsByIndex immutable optional-field selections, or {@code null}
+     * @param uiPreferences persisted UI preferences
      */
     public static final record ImportedConfig(
             List<String> dataSources,
@@ -375,7 +421,7 @@ public final class Json {
         fileLimits.put("maxDiskUsedPercent", sinks.fileDiskUsagePercent());
 
         ObjectNode databaseNode = sinksNode.putObject("database");
-        databaseNode.put("enabled", sinks.osEnabled());
+        databaseNode.put("enabled", sinks.databaseEnabled());
         databaseNode.put("type", sinks.searchDestinationKind().configKey());
         buildOpenSearchDestination(databaseNode.putObject("openSearch"), sinks);
         buildOpenSearchAmazonDestination(databaseNode.putObject("openSearchAmazon"), sinks);
@@ -431,6 +477,15 @@ public final class Json {
         if (!options.profile().isBlank()) {
             node.put("profile", options.profile());
         }
+        if (!options.credentialsFilePath().isBlank()) {
+            node.put("credentialsFilePath", options.credentialsFilePath());
+        }
+        if (!options.configFilePath().isBlank()) {
+            node.put("configFilePath", options.configFilePath());
+        }
+        if (!ConfigState.DEPLOYMENT_AUTO.equals(options.deploymentType())) {
+            node.put("deploymentType", options.deploymentType());
+        }
         node.put("tlsMode", ConfigState.normalizeOpenSearchTlsMode(options.tlsMode()));
         ObjectNode auth = node.putObject("auth");
         auth.put("type", options.authType());
@@ -450,6 +505,9 @@ public final class Json {
         ConfigState.ElasticsearchOptions options = sinks.elasticSearchOptions() == null
                 ? ConfigState.defaultElasticsearchOptions()
                 : sinks.elasticSearchOptions();
+        if (!ConfigState.DEPLOYMENT_AUTO.equals(options.deploymentType())) {
+            node.put("deploymentType", options.deploymentType());
+        }
         node.put("tlsMode", ConfigState.normalizeOpenSearchTlsMode(options.tlsMode()));
         ObjectNode auth = node.putObject("auth");
         String authType = options.authType();
@@ -541,15 +599,34 @@ public final class Json {
 
     /**
      * Parsed config plus any non-fatal import warnings.
+     *
+     * @param config normalized imported configuration
+     * @param report non-fatal compatibility and unknown-key warnings
      */
     public static final record ConfigJsonParseResult(ImportedConfig config, ConfigImportReport report) { }
 
+    /**
+     * Parses config JSON and returns both normalized values and non-fatal warnings.
+     *
+     * @param json JSON object text
+     * @return parsed config and import report
+     * @throws IOException if JSON is malformed or violates a required config shape
+     * @throws IllegalArgumentException if {@code json} is null
+     */
     public static ConfigJsonParseResult parseConfigJsonWithReport(String json) throws IOException {
         ConfigImportReport report = new ConfigImportReport();
         ImportedConfig config = parseConfigJson(json, report);
         return new ConfigJsonParseResult(config, report);
     }
 
+    /**
+     * Parses config JSON while discarding non-fatal import warnings.
+     *
+     * @param json JSON object text
+     * @return normalized imported configuration
+     * @throws IOException if JSON is malformed or violates a required config shape
+     * @throws IllegalArgumentException if {@code json} is null
+     */
     public static ImportedConfig parseConfigJson(String json) throws IOException {
         return parseConfigJson(json, new ConfigImportReport());
     }
@@ -904,6 +981,9 @@ public final class Json {
                 awsUsername,
                 textOrNull(awsNode.get("region")),
                 textOrNull(awsNode.get("profile")),
+                textOrNull(awsNode.get("credentialsFilePath")),
+                textOrNull(awsNode.get("configFilePath")),
+                textOrNull(awsNode.get("deploymentType")),
                 textOrNull(awsNode.get("tlsMode")),
                 textOrNull(awsPinnedTlsNode.get("sourcePath")),
                 textOrNull(awsPinnedTlsNode.get("fingerprintSha256")),
@@ -922,6 +1002,7 @@ public final class Json {
                 elasticUsername,
                 textOrNull(elasticAuthNode.get("certPath")),
                 textOrNull(elasticAuthNode.get("certKeyPath")),
+                textOrNull(elasticNode.get("deploymentType")),
                 textOrNull(elasticNode.get("tlsMode")),
                 textOrNull(elasticPinnedTlsNode.get("sourcePath")),
                 textOrNull(elasticPinnedTlsNode.get("fingerprintSha256")),
@@ -1074,14 +1155,15 @@ public final class Json {
     private static String validateAndResolveOpenSearchAmazonAuthType(JsonNode authNode) throws IOException {
         String rawAuthType = textOrNull(authNode.get("type"));
         if (rawAuthType == null || rawAuthType.isBlank()) {
-            return "IAM (sigV4)";
+            return ConfigState.DEFAULT_OPEN_SEARCH_AMAZON_AUTH_TYPE;
         }
-        if (!ALLOWED_OPEN_SEARCH_AMAZON_AUTH_TYPES.contains(rawAuthType)) {
+        String normalizedAuthType = ConfigState.normalizeOpenSearchAmazonAuthType(rawAuthType);
+        if (!ALLOWED_OPEN_SEARCH_AMAZON_AUTH_TYPES.contains(normalizedAuthType)) {
             throw new IOException("Invalid config: unsupported value '" + rawAuthType
                     + "' at 'sinks.database.openSearchAmazon.auth.type'. Allowed values: "
                     + String.join(", ", ALLOWED_OPEN_SEARCH_AMAZON_AUTH_TYPES) + ".");
         }
-        return rawAuthType;
+        return normalizedAuthType;
     }
 
     private static void validateOpenSearchAuthFieldCombination(
@@ -1101,7 +1183,8 @@ public final class Json {
             String username) throws IOException {
         List<String> allowedFields = switch (authType) {
             case "Basic" -> List.of("username");
-            case "IAM (sigV4)", "None" -> List.of();
+            case ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC,
+                    ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE, "None" -> List.of();
             default -> throw new IllegalStateException("Unexpected Amazon OpenSearch auth type: " + authType);
         };
         requireAllowedAuthField(

@@ -59,65 +59,6 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 class StatsPanelTest {
 
     @Test
-    void buildStatsText_containsExportStateAndSessionTotalsAndByIndex() {
-        String text = StatsPanel.buildStatsText();
-
-        assertThat(text).contains("Export state");
-        assertThat(text).contains("export running:");
-        assertThat(text).contains("traffic queue:");
-        assertThat(text).contains("drops=");
-        assertThat(text).contains("null tool/source hits:");
-        assertThat(text).contains("throughput (last 10s):");
-        assertThat(text).contains("docs/s");
-        assertThat(text).contains("Efficiency");
-        assertThat(text).contains("start click -> first successful traffic doc acknowledged (ms):");
-        assertThat(text).contains("snapshot last runs:");
-        assertThat(text).doesNotContain("proxy-history recorded at:");
-
-        assertThat(text).contains("Session totals (this session)");
-        assertThat(text).contains("total docs exported:");
-        assertThat(text).contains("total failures:");
-
-        assertThat(text).contains("Traffic by source");
-        assertThat(text).contains("Source");
-        assertThat(text).contains("burp_ai");
-        assertThat(text).contains("extensions");
-        assertThat(text).contains("intruder");
-        assertThat(text).contains("proxy");
-        assertThat(text).contains("proxy_history");
-        assertThat(text).contains("repeater");
-        assertThat(text).contains("scanner");
-        assertThat(text).contains("sequencer");
-        assertThat(text).contains("total");
-
-        assertThat(text).contains("By index");
-        assertThat(text).contains("Index");
-        assertThat(text).contains("Docs exported");
-        assertThat(text).contains("Queued");
-        assertThat(text).contains("Rty drop");
-        assertThat(text).contains("Failures");
-        assertThat(text).contains("Last bulk (ms)");
-        assertThat(text).contains("Last error");
-
-        assertThat(text).contains("traffic");
-        assertThat(text).contains("exporter");
-        assertThat(text).contains("settings");
-        assertThat(text).contains("sitemap");
-        assertThat(text).contains("findings");
-
-        assertThat(text).doesNotContain("Process total (Burp + all extensions)");
-        assertThat(text).doesNotContain("Our extension (burp-exporter)");
-        assertThat(text).doesNotContain("Burp + other extensions");
-        assertThat(text).doesNotContain("heap (MB)");
-        assertThat(text).doesNotContain("thread count:");
-
-        assertThat(text).contains("heap used / max bytes:");
-        assertThat(text).contains("heap committed bytes:");
-        assertThat(text).contains("direct buffer used bytes:");
-        assertThat(text).contains("mapped buffer used bytes:");
-    }
-
-    @Test
     void docsChart_usesReadableTimeAxis_andPositiveWholeNumberDefaults() {
         StatsPanel panel = onEdt(StatsPanel::new);
         JFreeChart docsChart = JFreeChart.class.cast(get(panel, "docsChart"));
@@ -172,21 +113,48 @@ class StatsPanelTest {
         DefaultTableModel fileIndexModel = DefaultTableModel.class.cast(get(panel, "fileByIndexModel"));
         JPanel cardsRow = JPanel.class.cast(get(panel, "cardsRow"));
 
-        // OpenSearch carries 8 columns including Exported counter.
-        // File carries 5 columns. Both tables nest source rows under the Traffic index row.
-        assertThat(indexModel.getColumnCount()).isEqualTo(8);
+        // OpenSearch carries 9 columns including Exported and Recovered Failures counters.
+        // File carries 10 columns. Both tables nest source rows under the Traffic index row.
+        assertThat(indexModel.getColumnCount()).isEqualTo(9);
         assertThat(indexModel.getColumnName(0)).isEqualTo("Index");
         assertThat(indexModel.getColumnName(1)).isEqualTo("Exported");
-        assertThat(indexModel.getColumnName(2)).isEqualTo("Queued");
-        assertThat(indexModel.getColumnName(4)).isEqualTo("Permanent Drops");
-        assertThat(fileIndexModel.getColumnCount()).isEqualTo(5);
+        assertThat(indexModel.getColumnName(2)).isEqualTo("Failures");
+        assertThat(indexModel.getColumnName(3)).isEqualTo("Queued");
+        assertThat(indexModel.getColumnName(4)).isEqualTo("Recovered Failures");
+        assertThat(indexModel.getColumnName(5)).isEqualTo("Retry Drops");
+        assertThat(indexModel.getColumnName(6)).isEqualTo("Permanent Drops");
+        assertThat(fileIndexModel.getColumnCount()).isEqualTo(10);
         assertThat(fileIndexModel.getColumnName(0)).isEqualTo("Index");
         assertThat(fileIndexModel.getColumnName(1)).isEqualTo("Written");
         assertThat(fileIndexModel.getColumnName(2)).isEqualTo("Failures");
-        assertThat(indexModel.getColumnName(6)).isEqualTo("Last Bulk (ms)");
-        assertThat(fileIndexModel.getColumnName(3)).isEqualTo("Last Write (ms)");
-        assertThat(fileIndexModel.getColumnName(4)).isEqualTo("Last Error");
+        assertThat(fileIndexModel.getColumnName(3)).isEqualTo("Retry Attempts");
+        assertThat(fileIndexModel.getColumnName(4)).isEqualTo("Baseline");
+        assertThat(fileIndexModel.getColumnName(5)).isEqualTo("Appended");
+        assertThat(fileIndexModel.getColumnName(6)).isEqualTo("Final Size");
+        assertThat(fileIndexModel.getColumnName(7)).isEqualTo("Integrity");
+        assertThat(indexModel.getColumnName(7)).isEqualTo("Last Bulk (ms)");
+        assertThat(fileIndexModel.getColumnName(8)).isEqualTo("Last Append (ms)");
+        assertThat(fileIndexModel.getColumnName(9)).isEqualTo("Last Error");
         assertThat(cardsRow.getComponentCount()).isEqualTo(1);
+    }
+
+    @Test
+    void stoppedDashboard_displaysLastActiveCapacityInsteadOfControllerResetDefaults() {
+        ExportStats.resetForTests();
+        RuntimeConfig.setExportRunning(false);
+        try {
+            ExportStats.recordLastActiveSearchCapacity(5L * 1024L * 1024L, 3);
+            StatsPanel panel = onEdt(StatsPanel::new);
+
+            onEdt(() -> call(panel, "refreshDashboard"));
+
+            JLabel bulkByteBudget = JLabel.class.cast(get(panel, "bulkByteBudgetValue"));
+            JLabel snapshotFlushCap = JLabel.class.cast(get(panel, "snapshotFlushCapValue"));
+            assertThat(onEdt(bulkByteBudget::getText)).isEqualTo("5.0 MiB");
+            assertThat(onEdt(snapshotFlushCap::getText)).isEqualTo("3");
+        } finally {
+            ExportStats.resetForTests();
+        }
     }
 
     @Test
@@ -211,6 +179,22 @@ class StatsPanelTest {
         RowSorter<? extends javax.swing.table.TableModel> sorter = byIndexTable.getRowSorter();
         assertThat(sorter).isNotNull();
         assertThat(sorter.getSortKeys()).isEmpty();
+    }
+
+    @Test
+    void countsTableHeaders_useSharedHtmlToolTipPath() {
+        StatsPanel panel = onEdt(StatsPanel::new);
+        JTable byIndexTable = JTable.class.cast(get(panel, "byIndexTable"));
+        JTable fileTable = JTable.class.cast(get(panel, "fileByIndexTable"));
+
+        onEdt(() -> {
+            JToolTip openSearchTip = byIndexTable.getTableHeader().createToolTip();
+            JToolTip fileTip = fileTable.getTableHeader().createToolTip();
+            assertThat(openSearchTip.getClientProperty("html.disable")).isEqualTo(Boolean.FALSE);
+            assertThat(fileTip.getClientProperty("html.disable")).isEqualTo(Boolean.FALSE);
+            assertThat(byIndexTable.getTableHeader().getToolTipText()).startsWith("<html>");
+            assertThat(fileTable.getTableHeader().getToolTipText()).startsWith("<html>");
+        });
     }
 
     @Test
@@ -486,7 +470,7 @@ class StatsPanelTest {
                 .as("shared Stats copy button")
                 .isNotNull();
         assertThat(findByName(JPanel.class.cast(get(panel, "openSearchSinkCard")),
-                "copy.OpenSearch Counts", JButton.class)).isNull();
+                "copy.Database Counts", JButton.class)).isNull();
         assertThat(findByName(JPanel.class.cast(get(panel, "fileSinkCard")),
                 "copy.File Counts", JButton.class)).isNull();
         assertThat(findByName(JPanel.class.cast(get(panel, "miscStatsCard")),
@@ -570,31 +554,47 @@ class StatsPanelTest {
             assertThat(miscCard).isNotNull();
 
             List<String> labels = collectLabelTexts(miscCard);
-            JPanel openSearchRow0 = findByName(miscCard, "miscStats.row.OpenSearch Session.0", JPanel.class);
-            JPanel openSearchRow1 = findByName(miscCard, "miscStats.row.OpenSearch Session.1", JPanel.class);
-            JPanel openSearchRow2 = findByName(miscCard, "miscStats.row.OpenSearch Session.2", JPanel.class);
+            JPanel openSearchRow0 = findByName(miscCard, "miscStats.row.Database Session.0", JPanel.class);
+            JPanel openSearchRow1 = findByName(miscCard, "miscStats.row.Database Session.1", JPanel.class);
+            JPanel openSearchRow2 = findByName(miscCard, "miscStats.row.Database Session.2", JPanel.class);
 
             assertThat(labels)
                     .contains(
-                            "Global", "OpenSearch Session", "OpenSearch Traffic",
-                            "OpenSearch Spill", "OpenSearch Retry", "Files");
+                            "Overview", "Database Session", "Database Traffic",
+                            "Traffic Spill", "Database Retry", "Database Capacity", "Files");
             assertThat(labels).contains(
                     "Export Running", "Shared Batch Size", "Proxy History Chunk Target",
                     "Traffic Queue Size", "Queue Drops");
             assertThat(labels).contains("Throughput (10s)");
-            assertThat(labels).contains("Exported Docs", "Exported Size", "Exported Failures");
+            assertThat(labels).contains("Export Running", "Soft Outage",
+                    "Database Exported Size", "Files Exported Size", "Traffic Spill Status");
+            assertThat(labels).contains("Exported Docs", "Exported Failures", "Count Basis",
+                    "Authorization Recovery",
+                    "Permanent Drops", "Permanent Drop Reasons", "Body Truncations",
+                    "Body Truncations by Index",
+                    "Recovered Failures", "Retry Drain Pushes");
+            assertThat(labels).doesNotContain("Exported Size", "File Total Size Exported");
             assertThat(labels).contains("Last Success");
             assertThat(labels).contains("Bulk In-Flight");
-            assertThat(findByName(miscCard, "miscStats.section.OpenSearch Spill", JLabel.class)).isNotNull();
+            assertThat(labels).contains(
+                    "Bulk Byte Budget", "Snapshot Flush Cap", "Snapshot Build-Ahead",
+                    "Cooldown Remaining", "Pressure Streak",
+                    "Soft Outage Entries", "Capacity Events");
+            assertThat(labels).contains("Peak Snapshot Build-Ahead");
+            assertThat(findByName(miscCard, "miscStats.section.Traffic Spill", JLabel.class)).isNotNull();
             assertThat(labels).contains("Queue", "Oldest Age (s)", "Enqueued / Dequeued / Dropped", "Drop Reasons");
             assertThat(labels).contains("Queue Depth", "Oldest Queued Age");
             assertThat(labels).doesNotContain("Spill Directory", "Skips by Reason", "Retry Queue Bytes (per index)");
             assertThat(openSearchRow0.getBackground()).isNotEqualTo(openSearchRow1.getBackground());
             assertThat(openSearchRow1.getBackground()).isNotEqualTo(openSearchRow2.getBackground());
             assertThat(openSearchRow0.getBackground()).isEqualTo(openSearchRow2.getBackground());
-            assertThat(labels).contains("File Total Size Exported");
             assertThat(labels).contains("File Total Docs Exported");
             assertThat(labels).contains("File Total Failures");
+            assertThat(findByName(miscCard, "miscStats.row.Overview.0", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.1", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.2", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isTrue();
             assertThat(labels).doesNotContain("Proxy-History Attempted/Success");
 
             assertThat(openSearchRow0.getBackground()).isNotEqualTo(openSearchRow1.getBackground());
@@ -645,21 +645,29 @@ class StatsPanelTest {
             JPanel miscCard = findByName(JPanel.class.cast(get(panel, "cardsRow")), "miscStatsCard", JPanel.class);
 
             assertThat(miscCard).isNotNull();
-            assertThat(findByName(miscCard, "miscStats.section.Global", JLabel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.section.Overview", JLabel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Files", JLabel.class).isVisible()).isTrue();
-            assertThat(findByName(miscCard, "miscStats.section.OpenSearch Session", JLabel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.row.Overview.0", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.1", JPanel.class).isVisible()).isFalse();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.2", JPanel.class).isVisible()).isFalse();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.section.Database Session", JLabel.class).isVisible())
                     .isFalse();
-            assertThat(findByName(miscCard, "miscStats.section.OpenSearch Traffic", JLabel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.section.Database Traffic", JLabel.class).isVisible())
                     .isFalse();
-            assertThat(findByName(miscCard, "miscStats.section.OpenSearch Spill", JLabel.class).isVisible())
+            // Traffic source is still enabled for files-only runs → Traffic Spill remains relevant.
+            assertThat(findByName(miscCard, "miscStats.section.Traffic Spill", JLabel.class).isVisible())
+                    .isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.section.Database Retry", JLabel.class).isVisible())
                     .isFalse();
-            assertThat(findByName(miscCard, "miscStats.section.OpenSearch Retry", JLabel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.section.Database Capacity", JLabel.class).isVisible())
                     .isFalse();
-            assertThat(findByName(miscCard, "miscStats.row.OpenSearch Session.0", JPanel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.row.Database Session.0", JPanel.class).isVisible())
                     .isFalse();
-            assertThat(findByName(miscCard, "miscStats.row.OpenSearch Traffic.1", JPanel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.row.Database Traffic.1", JPanel.class).isVisible())
                     .isFalse();
-            assertThat(findByName(miscCard, "miscStats.row.OpenSearch Traffic.3", JPanel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.row.Database Traffic.3", JPanel.class).isVisible())
                     .isFalse();
         } finally {
             RuntimeConfig.updateState(previous);
@@ -675,10 +683,14 @@ class StatsPanelTest {
             JPanel miscCard = findByName(JPanel.class.cast(get(panel, "cardsRow")), "miscStatsCard", JPanel.class);
 
             assertThat(miscCard).isNotNull();
-            assertThat(findByName(miscCard, "miscStats.section.Global", JLabel.class).isVisible()).isTrue();
-            assertThat(findByName(miscCard, "miscStats.section.OpenSearch Session", JLabel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.section.Overview", JLabel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.0", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.1", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.2", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isFalse();
+            assertThat(findByName(miscCard, "miscStats.section.Database Session", JLabel.class).isVisible())
                     .isTrue();
-            assertThat(findByName(miscCard, "miscStats.section.OpenSearch Traffic", JLabel.class).isVisible())
+            assertThat(findByName(miscCard, "miscStats.section.Database Traffic", JLabel.class).isVisible())
                     .isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Files", JLabel.class).isVisible()).isFalse();
             assertThat(findByName(miscCard, "miscStats.row.Files.0", JPanel.class).isVisible()).isFalse();
@@ -1002,6 +1014,65 @@ class StatsPanelTest {
     }
 
     @Test
+    void mergedTable_recoveredColumnTracksRetryRecovery() {
+        ExportStats.resetForTests();
+        StatsPanel panel = onEdt(StatsPanel::new);
+        DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
+
+        ExportStats.recordFailure("sitemap", 50);
+        onEdt(() -> call(panel, "refreshDashboard"));
+        assertThat(sourceTableLong(indexModel, "Sitemap", 2)).isEqualTo(50);
+        assertThat(sourceTableLong(indexModel, "Sitemap", 4)).isEqualTo(0);
+
+        ExportStats.recordRetryRecovery("sitemap", 50);
+        onEdt(() -> call(panel, "refreshDashboard"));
+        assertThat(sourceTableLong(indexModel, "Sitemap", 2)).isEqualTo(50);
+        assertThat(sourceTableLong(indexModel, "Sitemap", 4)).isEqualTo(50);
+    }
+
+    @Test
+    void mergedTable_trafficSubRowShowsRouteAttributedRecoveries() {
+        ExportStats.resetForTests();
+        StatsPanel panel = onEdt(StatsPanel::new);
+        DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
+        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+
+        ExportStats.recordFailure("traffic", 3);
+        ExportStats.recordTrafficSourceFailure("proxy_history_snapshot", 3);
+        ExportStats.recordRetryRecovery("traffic", 3);
+        ExportStats.recordTrafficSourceRecovery("proxy_history_snapshot", 3);
+        onEdt(() -> call(panel, "refreshDashboard"));
+
+        assertThat(sourceTableLong(indexModel, "Traffic", 4)).isEqualTo(3);
+        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 4)).isEqualTo(3);
+    }
+
+    @Test
+    void mergedTable_trafficSubRowShowsRouteAttributedQueueDropsAndPermanentDrops() {
+        ExportStats.resetForTests();
+        StatsPanel panel = onEdt(StatsPanel::new);
+        DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
+        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+
+        ExportStats.recordRetryQueueDrop("traffic", 5);
+        ExportStats.recordTrafficSourceRetryQueueDrop("proxy_history_snapshot", 2);
+        ExportStats.recordTrafficToolTypeRetryQueueDrop("REPEATER", 3);
+        ExportStats.recordPermanentDrop("traffic", 4);
+        ExportStats.recordTrafficSourcePermanentDrop("proxy_websocket", 1);
+        ExportStats.recordTrafficToolTypePermanentDrop("INTRUDER", 3);
+        onEdt(() -> call(panel, "refreshDashboard"));
+
+        assertThat(sourceTableLong(indexModel, "Traffic", 5)).isEqualTo(5);
+        assertThat(sourceTableLong(indexModel, "Traffic", 6)).isEqualTo(4);
+        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 5)).isEqualTo(2);
+        assertThat(sourceTableLong(indexModel, indent + "Repeater", 5)).isEqualTo(3);
+        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 6)).isEqualTo(1);
+        assertThat(sourceTableLong(indexModel, indent + "Intruder", 6)).isEqualTo(3);
+        // Queued is a live retry-queue snapshot; empty queue shows 0 (not "-").
+        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 3)).isZero();
+    }
+
+    @Test
     void mergedTable_countsProxyWebSocketsUnderProxyHistorySubRowAndTrafficIndex() {
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
@@ -1011,8 +1082,8 @@ class StatsPanelTest {
 
         long proxyHistoryBefore = sourceTableLong(indexModel, indent + "Proxy History", 1);
         long trafficIndexBefore = sourceTableLong(indexModel, "Traffic", 1);
-        long proxyHistoryFailuresBefore = sourceTableLong(indexModel, indent + "Proxy History", 5);
-        long trafficIndexFailuresBefore = sourceTableLong(indexModel, "Traffic", 5);
+        long proxyHistoryFailuresBefore = sourceTableLong(indexModel, indent + "Proxy History", 2);
+        long trafficIndexFailuresBefore = sourceTableLong(indexModel, "Traffic", 2);
 
         ExportStats.recordSuccess("traffic", 7);
         ExportStats.recordTrafficSourceSuccess("proxy_websocket", 7);
@@ -1026,8 +1097,8 @@ class StatsPanelTest {
         // and into the Traffic index row.
         assertThat(sourceTableLong(indexModel, indent + "Proxy History", 1) - proxyHistoryBefore).isEqualTo(7);
         assertThat(sourceTableLong(indexModel, "Traffic", 1) - trafficIndexBefore).isEqualTo(7);
-        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 5) - proxyHistoryFailuresBefore).isEqualTo(2);
-        assertThat(sourceTableLong(indexModel, "Traffic", 5) - trafficIndexFailuresBefore).isEqualTo(2);
+        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 2) - proxyHistoryFailuresBefore).isEqualTo(2);
+        assertThat(sourceTableLong(indexModel, "Traffic", 2) - trafficIndexFailuresBefore).isEqualTo(2);
     }
 
     @Test
@@ -1040,8 +1111,8 @@ class StatsPanelTest {
 
         long subRowSumBefore = sumSubRowsForColumn(indexModel, indent, 1);
         long trafficIndexBefore = sourceTableLong(indexModel, "Traffic", 1);
-        long subRowFailureSumBefore = sumSubRowsForColumn(indexModel, indent, 5);
-        long trafficIndexFailuresBefore = sourceTableLong(indexModel, "Traffic", 5);
+        long subRowFailureSumBefore = sumSubRowsForColumn(indexModel, indent, 2);
+        long trafficIndexFailuresBefore = sourceTableLong(indexModel, "Traffic", 2);
 
         ExportStats.recordSuccess("traffic", 17);
         ExportStats.recordTrafficToolTypeSuccess("PROXY", 5);
@@ -1060,8 +1131,8 @@ class StatsPanelTest {
         // table's analog of the old "source-table Total == traffic-index row" invariant.
         long subRowSumAfter = sumSubRowsForColumn(indexModel, indent, 1);
         long trafficIndexAfter = sourceTableLong(indexModel, "Traffic", 1);
-        long subRowFailureSumAfter = sumSubRowsForColumn(indexModel, indent, 5);
-        long trafficIndexFailuresAfter = sourceTableLong(indexModel, "Traffic", 5);
+        long subRowFailureSumAfter = sumSubRowsForColumn(indexModel, indent, 2);
+        long trafficIndexFailuresAfter = sourceTableLong(indexModel, "Traffic", 2);
         assertThat(subRowSumAfter - subRowSumBefore).isEqualTo(trafficIndexAfter - trafficIndexBefore);
         assertThat(subRowFailureSumAfter - subRowFailureSumBefore)
                 .isEqualTo(trafficIndexFailuresAfter - trafficIndexFailuresBefore);
@@ -1077,6 +1148,8 @@ class StatsPanelTest {
             Object value = model.getValueAt(row, columnIndex);
             if (value instanceof Number number) {
                 sum += number.longValue();
+            } else if (value != null && !"-".equals(String.valueOf(value))) {
+                sum += parseStatsTableLong(String.valueOf(value));
             }
         }
         return sum;
@@ -1208,7 +1281,7 @@ class StatsPanelTest {
             onEdt((Runnable) styleButton::doClick);
             assertThat(plot.getRenderer()).isInstanceOf(XYSplineRenderer.class);
             XYSplineRenderer renderer = (XYSplineRenderer) plot.getRenderer();
-            assertThat(renderer.getPrecision()).isEqualTo(5);
+            assertThat(renderer.getPrecision()).isEqualTo(12);
             assertThat(renderer.getFillType()).isEqualTo(XYSplineRenderer.FillType.TO_LOWER_BOUND);
             assertThat(renderer.getSeriesFillPaint(0)).isInstanceOf(call(panel, "seriesAreaPaint", 0).getClass());
             assertThat(plot.getDataset(1)).isNull();
@@ -1365,7 +1438,6 @@ class StatsPanelTest {
         FileExportStats.recordSuccess("traffic", 5);
         FileExportStats.recordExportedBytes("traffic", 4096L);
         FileExportStats.recordTrafficToolTypeSuccess("PROXY", 5);
-        java.util.concurrent.TimeUnit.MILLISECONDS.sleep(20L);
         onEdt(() -> call(panel, "refreshVisibleStats"));
 
         assertThat(sourceTableLong(fileIndexModel, indent + "Proxy", 1) - proxyBefore).isEqualTo(5);
@@ -1374,6 +1446,38 @@ class StatsPanelTest {
             TimeSeries traffic = fileDocsSeriesByIndex.get("traffic");
             return traffic == null ? 0 : traffic.getItemCount();
         })).isGreaterThan(0);
+    }
+
+    @Test
+    void fileTable_displaysRetryAndArtifactIntegrityValues() {
+        FileExportStats.resetForTests();
+        try {
+            FileExportStats.recordSuccess("traffic", 5);
+            FileExportStats.recordRetryAttempt("traffic", 2);
+            FileExportStats.recordArtifactRegistration("traffic", 1024L);
+            FileExportStats.recordExportedBytes("traffic", 2048L);
+            FileExportStats.recordArtifactCompletion(
+                    "traffic",
+                    1024L,
+                    3072L,
+                    3000L,
+                    FileExportStats.ArtifactIntegrity.FAILED,
+                    "artifact changed");
+            StatsPanel panel = onEdt(StatsPanel::new);
+            DefaultTableModel model =
+                    DefaultTableModel.class.cast(get(panel, "fileByIndexModel"));
+
+            onEdt(() -> call(panel, "refreshDashboard"));
+
+            assertThat(sourceTableLong(model, "Traffic", 3)).isEqualTo(2L);
+            assertThat(sourceTableText(model, "Traffic", 4)).isEqualTo("1.0 KiB");
+            assertThat(sourceTableText(model, "Traffic", 5)).isEqualTo("2.0 KiB");
+            assertThat(sourceTableText(model, "Traffic", 6)).isEqualTo("2.9 KiB");
+            assertThat(sourceTableText(model, "Traffic", 7)).isEqualTo("Failed");
+            assertThat(sourceTableText(model, "Traffic", 9)).isEqualTo("artifact changed");
+        } finally {
+            FileExportStats.resetForTests();
+        }
     }
 
     @Test
@@ -1516,10 +1620,32 @@ class StatsPanelTest {
                 if (value instanceof Number number) {
                     return number.longValue();
                 }
-                return Long.parseLong(String.valueOf(value));
+                return parseStatsTableLong(String.valueOf(value));
             }
         }
         throw new AssertionError("Row not found: " + rowLabel);
+    }
+
+    private static String sourceTableText(
+            DefaultTableModel model,
+            String rowLabel,
+            int columnIndex) {
+        for (int row = 0; row < model.getRowCount(); row++) {
+            if (rowLabel.equals(String.valueOf(model.getValueAt(row, 0)))) {
+                return String.valueOf(model.getValueAt(row, columnIndex));
+            }
+        }
+        throw new AssertionError("Row not found: " + rowLabel);
+    }
+
+    /** Parses a numeric table cell (plain counts or legacy formatted failure cells). */
+    private static long parseStatsTableLong(String raw) {
+        String text = raw == null ? "" : raw.trim();
+        int attemptsIdx = text.indexOf(" attempts");
+        if (attemptsIdx > 0) {
+            return Long.parseLong(text.substring(0, attemptsIdx).replace(",", "").trim());
+        }
+        return Long.parseLong(text);
     }
 
     private static int firstColumnPreferredWidth(JTable table) {

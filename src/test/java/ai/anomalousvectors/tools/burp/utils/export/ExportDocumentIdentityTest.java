@@ -29,16 +29,21 @@ class ExportDocumentIdentityTest {
     void prepare_recordsBulkNdjsonBytesMatchingExportLineCodec() throws Exception {
         Map<String, Object> doc = sampleDoc("hello");
         PreparedExportDocument prepared = ExportDocumentIdentity.prepare("attack-traffic", "traffic", doc);
-        assertThat(prepared.bulkNdjsonBytes()).isEqualTo(ExportLineCodec.bulkNdjsonBytes(prepared.document()));
+        assertThat(prepared.bulkNdjsonBytes())
+                .isEqualTo(ExportLineCodec.bulkNdjsonBytes(
+                        prepared.operationId(), prepared.document()));
     }
 
     @Test
-    void prepare_doesNotWriteExportIdOrIdentityKey() {
+    void prepare_writesOperationIdOnlyToBulkActionMetadata() {
         PreparedExportDocument prepared = ExportDocumentIdentity.prepare(
                 "attack-traffic", "traffic", sampleDoc("payload"));
         Map<?, ?> meta = (Map<?, ?>) prepared.document().get("meta");
         assertThat(meta.containsKey("export_id")).isFalse();
         assertThat(meta.containsKey("identity_key")).isFalse();
+        assertThat(prepared.document().toString()).doesNotContain(prepared.operationId());
+        assertThat(new String(prepared.bulkNdjsonBytes(), java.nio.charset.StandardCharsets.UTF_8))
+                .startsWith("{\"index\":{\"_id\":\"" + prepared.operationId() + "\"}}\n");
     }
 
     @Test
@@ -47,6 +52,7 @@ class ExportDocumentIdentityTest {
         PreparedExportDocument first = ExportDocumentIdentity.prepare("attack-traffic", "traffic", doc);
         PreparedExportDocument second = ExportDocumentIdentity.prepare("attack-traffic", "traffic", sampleDoc("same"));
         assertThat(first.document()).isNotSameAs(second.document());
+        assertThat(first.operationId()).isNotEqualTo(second.operationId());
     }
 
     private static Map<String, Object> sampleDoc(String message) {

@@ -8,6 +8,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -19,11 +20,12 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
  * <p>Registers as a {@link Logger.LogListener}; each log event is queued and pushed asynchronously
  * by a single worker thread. Events are forwarded only when export is ready, the
  * {@code exporter} source is enabled, the corresponding exporter log level is selected, and at
- * least one sink is active.</p>
+ * least one sink is active. While Soft Outage or hard cooldown is active, enqueue and drain
+ * pause so tiny exporter singles do not compete with payload recovery.</p>
  *
  * <p>Delivery is fire-and-forget: failures are not logged back into the same stream to avoid
- * feedback loops. If the queue is full, the oldest event is dropped to make room for the newest
- * event.</p>
+ * feedback loops. If the queue is full while healthy, the newest event is rejected (no
+ * drop-oldest churn during capacity pressure).</p>
  */
 public final class ExporterIndexLogForwarder implements Logger.LogListener {
 
@@ -81,6 +83,16 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
         if (!RuntimeConfig.isAnySinkEnabled()) {
             return;
         }
+        // High-volume Amazon bulk lifecycle TRACE/INFO must never become exporter documents; that
+        // creates a feedback loop (log → exporter bulk → more lifecycle TRACE → more exporter docs).
+        // Periodic exporter-stats operator lines are also excluded: they describe the stats push
+        // itself and would otherwise create extra exporter documents beside each snapshot.
+        if (isBulkLifecycleNoise(message) || isExporterStatsOperatorNoise(message)) {
+            return;
+        }
+        if (ExportAdmissionController.shouldPauseExporterNonFinal()) {
+            return;
+        }
         Map<String, Object> doc = new LinkedHashMap<>();
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("level", level != null ? level : "INFO");
@@ -91,10 +103,32 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
         doc.put("event", event);
         doc.put("meta", ExportMetaFields.meta(SCHEMA_VERSION));
 
-        if (!queue.offer(doc)) {
-            queue.poll();
-            queue.offer(doc);
+        // Reject newest when full — avoid drop-oldest churn under pressure.
+        queue.offer(doc);
+    }
+
+    private static boolean isBulkLifecycleNoise(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
         }
+        return message.contains("Bulk HTTP request started:")
+                || message.contains("Bulk HTTP response received:")
+                || message.contains("Bulk HTTP slow response:");
+    }
+
+    /**
+     * Returns whether a log line describes an exporter-stats push and must not be re-indexed.
+     *
+     * @param message panel/log text
+     * @return {@code true} when forwarding would create a feedback document beside the snapshot
+     */
+    private static boolean isExporterStatsOperatorNoise(String message) {
+        if (message == null || message.isBlank()) {
+            return false;
+        }
+        return message.contains("[PeriodicExport] Exporter stats:")
+                || message.contains("[SnapshotExport] Exporter stats:")
+                || message.contains("[Stats] Final exporter stats push:");
     }
 
     private void drainLoop() {
@@ -126,15 +160,27 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
                     TimeUnit.SECONDS.sleep(1);
                     continue;
                 }
+                if (ExportAdmissionController.shouldPauseExporterNonFinal()) {
+                    TimeUnit.SECONDS.sleep(1);
+                    continue;
+                }
 
                 Map<String, Object> doc = queue.poll(1, TimeUnit.SECONDS);
                 if (doc == null) continue;
+                // Export state can change while poll waits. Recheck before dispatch so a document
+                // from a completed run cannot create an index during the next Start bootstrap.
+                if (!RuntimeConfig.isExportReady()
+                        || !RuntimeConfig.isAnySinkEnabled()
+                        || !RuntimeConfig.isDataSourceEnabled(
+                                ai.anomalousvectors.tools.burp.utils.config.ConfigKeys.SRC_EXPORTER)) {
+                    continue;
+                }
                 if (!RuntimeConfig.isExporterLogLevelEnabled(normalizeLevel(eventLevel(doc)))) {
                     continue;
                 }
 
-                String baseUrl = RuntimeConfig.openSearchUrl();
-                boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
+                String baseUrl = RuntimeConfig.searchBaseUrl();
+                boolean openSearchActive = RuntimeConfig.isSearchActive();
                 boolean ok = OpenSearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
                 SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive,
                         "Exporter log push failed");

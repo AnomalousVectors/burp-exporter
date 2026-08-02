@@ -41,7 +41,7 @@
       "openSearchAmazon" : {
         "tlsMode" : "verify",
         "auth" : {
-          "type" : "IAM (sigV4)"
+          "type" : "IAM SigV4 - Static credentials"
         }
       },
       "elasticsearch" : {

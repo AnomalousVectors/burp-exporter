@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.ui.primitives.TriStateCheckBox;
 import ai.anomalousvectors.tools.burp.ui.text.ExportFieldSectionTooltips;
 import ai.anomalousvectors.tools.burp.utils.config.ExportFieldRegistry;
+import ai.anomalousvectors.tools.burp.utils.config.SearchMappingResources;
 
 class ConfigPanelFieldTooltipsHeadlessTest {
 
@@ -558,7 +559,7 @@ class ConfigPanelFieldTooltipsHeadlessTest {
     }
 
     private static List<String> mappingDirectoryPaths(String index) {
-        String resource = "/opensearch/mappings/" + index + ".json";
+        String resource = SearchMappingResources.DEFAULT_ROOT + index + ".json";
         try (InputStream is = ConfigPanelFieldTooltipsHeadlessTest.class.getResourceAsStream(resource)) {
             assertThat(is)
                     .as("mapping resource %s", resource)
@@ -585,7 +586,7 @@ class ConfigPanelFieldTooltipsHeadlessTest {
     }
 
     private static List<String> mappingLeafPaths(String index) {
-        String resource = "/opensearch/mappings/" + index + ".json";
+        String resource = SearchMappingResources.DEFAULT_ROOT + index + ".json";
         try (InputStream is = ConfigPanelFieldTooltipsHeadlessTest.class.getResourceAsStream(resource)) {
             assertThat(is)
                     .as("mapping resource %s", resource)

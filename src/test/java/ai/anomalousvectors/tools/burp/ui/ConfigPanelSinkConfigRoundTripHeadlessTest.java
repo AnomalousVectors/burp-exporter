@@ -47,6 +47,10 @@ class ConfigPanelSinkConfigRoundTripHeadlessTest {
             JTextField openSearchAmazonUserField = JTextField.class.cast(get(original, "openSearchAmazonUserField"));
             JTextField openSearchAmazonRegionField = JTextField.class.cast(get(original, "openSearchAmazonRegionField"));
             JTextField openSearchAmazonProfileField = JTextField.class.cast(get(original, "openSearchAmazonProfileField"));
+            JTextField openSearchAmazonCredentialsFileField =
+                    JTextField.class.cast(get(original, "openSearchAmazonCredentialsFileField"));
+            JTextField openSearchAmazonConfigFileField =
+                    JTextField.class.cast(get(original, "openSearchAmazonConfigFileField"));
             JTextField elasticSearchUrlField = JTextField.class.cast(get(original, "elasticSearchUrlField"));
             JComboBox<?> elasticSearchAuthTypeCombo = getComboBox(original, "elasticSearchAuthTypeCombo");
             JComboBox<?> elasticSearchTlsModeCombo = getComboBox(original, "elasticSearchTlsModeCombo");
@@ -80,12 +84,15 @@ class ConfigPanelSinkConfigRoundTripHeadlessTest {
                 openSearchCertPathField.setText("certs/client.pem");
                 openSearchCertKeyPathField.setText("certs/client-key.pem");
                 openSearchTlsModeCombo.setSelectedItem("Trust all certificates");
-                openSearchAmazonUrlField.setText("https://aws-domain.example:443");
+                openSearchAmazonUrlField.setText("https://aws-domain.example");
                 openSearchAmazonAuthTypeCombo.setSelectedItem("Basic");
                 openSearchAmazonTlsModeCombo.setSelectedItem("Trust all certificates");
                 openSearchAmazonUserField.setText("aws-user");
                 openSearchAmazonRegionField.setText("us-east-1");
                 openSearchAmazonProfileField.setText("burp-exporter");
+                openSearchAmazonCredentialsFileField.setText("C:/Users/test/.aws/credentials");
+                openSearchAmazonConfigFileField.setText("C:/Users/test/.aws/config");
+                call(original, "applyAmazonDeploymentTypeSelection", ConfigState.DEPLOYMENT_HOSTED);
                 elasticSearchUrlField.setText("https://elasticsearch.example:9200");
                 elasticSearchAuthTypeCombo.setSelectedItem("Certificate");
                 elasticSearchTlsModeCombo.setSelectedItem("Trust all certificates");
@@ -116,9 +123,12 @@ class ConfigPanelSinkConfigRoundTripHeadlessTest {
             assertThat(json).contains("\"certPath\" : \"certs/client.pem\"");
             assertThat(json).contains("\"certKeyPath\" : \"certs/client-key.pem\"");
             assertThat(json).contains("\"openSearchAmazon\" : {");
-            assertThat(json).contains("\"url\" : \"https://aws-domain.example:443\"");
+            assertThat(json).contains("\"url\" : \"https://aws-domain.example\"");
             assertThat(json).contains("\"region\" : \"us-east-1\"");
             assertThat(json).contains("\"profile\" : \"burp-exporter\"");
+            assertThat(json).contains("\"credentialsFilePath\" : \"C:/Users/test/.aws/credentials\"");
+            assertThat(json).contains("\"configFilePath\" : \"C:/Users/test/.aws/config\"");
+            assertThat(json).contains("\"deploymentType\" : \"hosted\"");
             assertThat(json).contains("\"username\" : \"aws-user\"");
             assertThat(json).contains("\"sourcePath\" : \"certs/aws-ca.pem\"");
             assertThat(json).contains("\"fingerprintSha256\" : \"AA:BB:CC\"");
@@ -156,6 +166,12 @@ class ConfigPanelSinkConfigRoundTripHeadlessTest {
             JComboBox<?> restoredElasticTlsModeCombo = getComboBox(restored, "elasticSearchTlsModeCombo");
             JTextField restoredAwsRegionField = JTextField.class.cast(get(restored, "openSearchAmazonRegionField"));
             JTextField restoredAwsProfileField = JTextField.class.cast(get(restored, "openSearchAmazonProfileField"));
+            JTextField restoredAwsCredentialsFileField =
+                    JTextField.class.cast(get(restored, "openSearchAmazonCredentialsFileField"));
+            JTextField restoredAwsConfigFileField =
+                    JTextField.class.cast(get(restored, "openSearchAmazonConfigFileField"));
+            JComboBox<?> restoredAwsDeploymentType =
+                    getComboBox(restored, "openSearchAmazonDeploymentTypeCombo");
             JTextField restoredElasticCertPathField = JTextField.class.cast(get(restored, "elasticSearchCertPathField"));
             JTextField restoredElasticCertKeyPathField = JTextField.class.cast(get(restored, "elasticSearchCertKeyPathField"));
 
@@ -170,6 +186,12 @@ class ConfigPanelSinkConfigRoundTripHeadlessTest {
                 assertThat(String.valueOf(restoredElasticTlsModeCombo.getSelectedItem())).isEqualTo("Trust all certificates");
                 assertThat(restoredAwsRegionField.getText()).isEqualTo("us-east-1");
                 assertThat(restoredAwsProfileField.getText()).isEqualTo("burp-exporter");
+                assertThat(restoredAwsCredentialsFileField.getText())
+                        .isEqualTo("C:/Users/test/.aws/credentials");
+                assertThat(restoredAwsConfigFileField.getText())
+                        .isEqualTo("C:/Users/test/.aws/config");
+                assertThat(String.valueOf(restoredAwsDeploymentType.getSelectedItem()))
+                        .isEqualTo("Hosted");
                 assertThat(restoredAmazonPin.sourcePath()).isEqualTo("certs/aws-ca.pem");
                 assertThat(restoredAmazonPin.fingerprintSha256()).isEqualTo("AA:BB:CC");
                 assertThat(restoredElasticCertPathField.getText()).isEqualTo("certs/elastic-client.pem");
@@ -197,6 +219,12 @@ class ConfigPanelSinkConfigRoundTripHeadlessTest {
             assertThat(restoredState.sinks().openSearchAmazonOptions().username()).isEqualTo("aws-user");
             assertThat(restoredState.sinks().openSearchAmazonOptions().region()).isEqualTo("us-east-1");
             assertThat(restoredState.sinks().openSearchAmazonOptions().profile()).isEqualTo("burp-exporter");
+            assertThat(restoredState.sinks().openSearchAmazonOptions().credentialsFilePath())
+                    .isEqualTo("C:/Users/test/.aws/credentials");
+            assertThat(restoredState.sinks().openSearchAmazonOptions().configFilePath())
+                    .isEqualTo("C:/Users/test/.aws/config");
+            assertThat(restoredState.sinks().openSearchAmazonOptions().deploymentType())
+                    .isEqualTo(ConfigState.DEPLOYMENT_HOSTED);
             assertThat(restoredState.sinks().openSearchAmazonOptions().tlsMode()).isEqualTo(ConfigState.OPEN_SEARCH_TLS_INSECURE);
             assertThat(restoredState.sinks().openSearchAmazonOptions().pinnedTlsCertificateSourcePath())
                     .isEqualTo("certs/aws-ca.pem");

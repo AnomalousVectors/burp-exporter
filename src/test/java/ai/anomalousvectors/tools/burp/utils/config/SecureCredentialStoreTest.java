@@ -102,7 +102,8 @@ class SecureCredentialStoreTest {
             SecureCredentialStore.saveSelectedAuthType(destination, "IAM (sigV4)");
 
             assertThat(SecureCredentialStore.hasSelectedAuthType(destination)).isTrue();
-            assertThat(SecureCredentialStore.loadSelectedAuthType(destination)).isEqualTo("IAM (sigV4)");
+            assertThat(SecureCredentialStore.loadSelectedAuthType(destination))
+                    .isEqualTo(ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC);
         });
     }
 

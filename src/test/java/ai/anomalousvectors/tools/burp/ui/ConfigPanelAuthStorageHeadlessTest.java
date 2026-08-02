@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JRadioButton;
@@ -33,6 +34,8 @@ import static ai.anomalousvectors.tools.burp.testutils.Reflect.call;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.get;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.getComboBox;
 import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
+import ai.anomalousvectors.tools.burp.ui.primitives.AutoSizingPasswordField;
+import ai.anomalousvectors.tools.burp.ui.primitives.AutoSizingTextField;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -286,8 +289,12 @@ class ConfigPanelAuthStorageHeadlessTest {
             JButton testButton = JButton.class.cast(get(panel, "testConnectionButton"));
             JPanel authForm = JPanel.class.cast(get(panel, "openSearchAuthFormPanel"));
             runEdt(() -> {
-                assertThat(testButton.getToolTipText())
-                        .isEqualTo("<html>Test connectivity and authentication against the selected database destination.<br>Status output includes connection, authentication, trust, and reported version.<br>Secrets are only stored within in-process memory.</html>");
+                String tip = testButton.getToolTipText();
+                assertThat(tip).contains("Test Connection");
+                assertThat(tip).contains("connectivity and authentication");
+                assertThat(tip).contains("Secrets stay in session memory only");
+                assertThat(tip).doesNotContain("During export");
+                assertThat(tip).doesNotContain("spill");
                 assertThat(findByNameOrNull(authForm, "os.authenticate")).isNull();
             });
         });
@@ -306,7 +313,13 @@ class ConfigPanelAuthStorageHeadlessTest {
         withCleanSession(() -> {
             ConfigPanel panel = newPanelOnEdt();
             JButton start = (JButton) findByName(panel, "control.startStop");
-            runEdt(() -> assertThat(start.getToolTipText()).isEqualTo("<html>Start exporting to the configured destination(s).</html>"));
+            runEdt(() -> {
+                String tip = start.getToolTipText();
+                assertThat(tip).contains("Start exporting to the configured destination(s).");
+                assertThat(tip).contains("During export");
+                assertThat(tip).contains("health check");
+                assertThat(tip).contains("spill");
+            });
         });
     }
 
@@ -329,15 +342,21 @@ class ConfigPanelAuthStorageHeadlessTest {
                 assertThat(issues.getToolTipText()).isEqualTo("<html>All findings (aka issues).</html>");
                 assertThat(traffic.getToolTipText()).isEqualTo("<html>All in-scope traffic.</html>");
                 assertThat(Arrays.stream(traffic.getMouseListeners()).anyMatch(ToolTipManager.class::isInstance)).isTrue();
-                assertThat(filePathField.getToolTipText()).isEqualTo(
-                        "<html>Root directory for generated files. Examples:<br>&nbsp;&nbsp;/path/to/directory<br>&nbsp;&nbsp;c:\\path\\to\\directory</html>");
-                assertThat(openSearchDestination.getToolTipText()).isEqualTo("<html>OpenSearch destination. Wired in this build.</html>");
-                assertThat(awsDestination.getToolTipText()).contains("Amazon OpenSearch destination");
-                assertThat(elasticDestination.getToolTipText()).contains("Elasticsearch destination");
-                assertThat(openSearchUrlField.getToolTipText()).isEqualTo(
-                        "<html>Base URL of the OpenSearch destination. Examples:<br>&nbsp;&nbsp;https://opensearch.url:9200<br>&nbsp;&nbsp;http://10.0.0.1:9200</html>");
+                assertThat(filePathField.getToolTipText()).contains("File root directory");
+                assertThat(filePathField.getToolTipText()).contains("/path/to/directory");
+                assertThat(filePathField.getToolTipText()).contains("c:\\path\\to\\directory");
+                assertThat(openSearchDestination.getToolTipText()).contains("OpenSearch");
+                assertThat(openSearchDestination.getToolTipText()).contains("wired");
+                assertThat(awsDestination.getToolTipText()).contains("Amazon OpenSearch");
+                assertThat(awsDestination.getToolTipText()).contains("IAM SigV4 - Profile");
+                assertThat(awsDestination.getToolTipText()).contains("not renewed");
+                assertThat(elasticDestination.getToolTipText()).contains("Elasticsearch");
+                assertThat(openSearchUrlField.getToolTipText()).contains("OpenSearch URL");
+                assertThat(openSearchUrlField.getToolTipText()).contains("https://opensearch.url:9200");
                 assertThat(((javax.swing.JLabel) destinationsHeader).getToolTipText())
-                        .isEqualTo("<html>Configure export destination(s).</html>");
+                        .contains("Destinations");
+                assertThat(((javax.swing.JLabel) destinationsHeader).getToolTipText())
+                        .contains("Files");
             });
         });
     }
@@ -358,31 +377,37 @@ class ConfigPanelAuthStorageHeadlessTest {
 
             runEdt(() -> {
                 assertThat(authType.getToolTipText()).isNull();
-                assertThat(user.getToolTipText()).isEqualTo("<html>OpenSearch Basic auth username.<br>Stored only within in-process memory.</html>");
-                assertThat(pass.getToolTipText()).isEqualTo("<html>OpenSearch Basic auth password.<br>Stored only within in-process memory.</html>");
-                assertThat(apiKeyToken.getToolTipText()).isEqualTo(
-                        "<html>OpenSearch API key.<br>Use the token returned by upstream OpenSearch API key creation.<br>Stored only within in-process memory.</html>");
-                assertThat(jwtToken.getToolTipText()).isEqualTo("<html>OpenSearch bearer token.<br>Stored only within in-process memory.</html>");
-                assertThat(certPath.getToolTipText()).isEqualTo("<html>Path to the client certificate file used for OpenSearch authentication.</html>");
-                assertThat(certKeyPath.getToolTipText()).isEqualTo("<html>Path to the client private key file used for OpenSearch authentication.</html>");
-                assertThat(certPassphrase.getToolTipText()).isEqualTo("<html>Client key passphrase.<br>Stored only within in-process memory.</html>");
+                assertThat(user.getToolTipText()).contains("Username");
+                assertThat(user.getToolTipText()).contains("in-process memory");
+                assertThat(pass.getToolTipText()).contains("Password");
+                assertThat(pass.getToolTipText()).contains("in-process memory");
+                assertThat(apiKeyToken.getToolTipText()).contains("API Key");
+                assertThat(apiKeyToken.getToolTipText()).contains("in-process memory");
+                assertThat(jwtToken.getToolTipText()).contains("Bearer Token");
+                assertThat(jwtToken.getToolTipText()).contains("If credentials expire mid-run");
+                assertThat(jwtToken.getToolTipText()).contains("spill");
+                assertThat(certPath.getToolTipText()).contains("Cert Path");
+                assertThat(certKeyPath.getToolTipText()).contains("Key Path");
+                assertThat(certPassphrase.getToolTipText()).contains("Passphrase");
+                assertThat(certPassphrase.getToolTipText()).contains("in-process memory");
 
                 assertThat(openSearchAuthLabel(authPanel, "Auth type:").getToolTipText())
-                        .isEqualTo("<html>Select how requests to OpenSearch authenticate.</html>");
+                        .contains("Auth type");
                 assertThat(openSearchAuthLabel(authPanel, "Username:").getToolTipText())
-                        .isEqualTo("<html>OpenSearch Basic auth username.<br>Stored only within in-process memory.</html>");
+                        .contains("Username");
                 assertThat(openSearchAuthLabel(authPanel, "Password:").getToolTipText())
-                        .isEqualTo("<html>OpenSearch Basic auth password.<br>Stored only within in-process memory.</html>");
+                        .contains("Password");
                 assertThat(openSearchAuthLabel(authPanel, "API Key:").getToolTipText())
-                        .isEqualTo("<html>OpenSearch API key.<br>Use the token returned by upstream OpenSearch API key creation.<br>Stored only within in-process memory.</html>");
+                        .contains("API Key");
                 assertThat(openSearchAuthLabel(authPanel, "Bearer Token:").getToolTipText())
-                        .isEqualTo("<html>OpenSearch bearer token.<br>Stored only within in-process memory.</html>");
+                        .contains("Bearer Token")
+                        .contains("spill");
                 assertThat(openSearchAuthLabel(authPanel, "Cert Path:").getToolTipText())
-                        .isEqualTo("<html>Path to the client certificate file used for OpenSearch authentication.</html>");
+                        .contains("Cert Path");
                 assertThat(openSearchAuthLabel(authPanel, "Key Path:").getToolTipText())
-                        .isEqualTo("<html>Path to the client private key file used for OpenSearch authentication.</html>");
+                        .contains("Key Path");
                 assertThat(openSearchAuthLabel(authPanel, "Passphrase:").getToolTipText())
-                        .isEqualTo("<html>Client key passphrase.<br>Stored only within in-process memory.</html>");
+                        .contains("Passphrase");
             });
         });
     }
@@ -407,17 +432,19 @@ class ConfigPanelAuthStorageHeadlessTest {
                 assertThat(user.getX()).isEqualTo(pass.getX());
                 assertThat(user.getY()).isLessThan(pass.getY());
 
-                assertThat(apiKeyToken.getPreferredSize().width).isLessThan(160);
-                assertThat(jwtToken.getPreferredSize().width).isLessThan(160);
-                assertThat(certPath.getPreferredSize().width).isLessThan(160);
-                assertThat(certKeyPath.getPreferredSize().width).isLessThan(160);
-                assertThat(certPassphrase.getPreferredSize().width).isLessThan(160);
+                int emptyCredentialWidth = AutoSizingTextField.CREDENTIAL_MIN_WIDTH;
+                assertThat(user.getPreferredSize().width).isEqualTo(emptyCredentialWidth);
+                assertThat(apiKeyToken.getPreferredSize().width).isEqualTo(emptyCredentialWidth);
+                assertThat(jwtToken.getPreferredSize().width).isEqualTo(emptyCredentialWidth);
+                assertThat(certPath.getPreferredSize().width).isEqualTo(emptyCredentialWidth);
+                assertThat(certKeyPath.getPreferredSize().width).isEqualTo(emptyCredentialWidth);
+                assertThat(certPassphrase.getPreferredSize().width).isEqualTo(emptyCredentialWidth);
 
                 String longPassword = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
                 pass.setText(longPassword);
                 int hiddenWidth = pass.getPreferredSize().width;
                 char hiddenEcho = pass.getEchoChar();
-                assertThat(hiddenWidth).isLessThan(160);
+                assertThat(hiddenWidth).isEqualTo(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
 
                 clickPasswordEye(pass);
                 assertThat(pass.getEchoChar()).isEqualTo((char) 0);
@@ -502,6 +529,82 @@ class ConfigPanelAuthStorageHeadlessTest {
     }
 
     @Test
+    void persistSelectedAuthSecrets_coversAwsStaticAndElasticsearchTokenCertificateBranches()
+            throws Exception {
+        withCleanSession(() -> {
+            ConfigPanel panel = newPanelOnEdt();
+            String awsDestination =
+                    ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey();
+            String elasticDestination =
+                    ConfigState.SearchDestination.ELASTICSEARCH.configKey();
+            JComboBox<?> awsAuthType = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+            JTextField accessKey =
+                    JTextField.class.cast(get(panel, "openSearchAmazonAccessKeyIdField"));
+            JPasswordField secretKey =
+                    JPasswordField.class.cast(get(panel, "openSearchAmazonSecretAccessKeyField"));
+            JPasswordField sessionToken =
+                    JPasswordField.class.cast(get(panel, "openSearchAmazonSessionTokenField"));
+            JComboBox<?> elasticAuthType = getComboBox(panel, "elasticSearchAuthTypeCombo");
+            JPasswordField apiKey =
+                    JPasswordField.class.cast(get(panel, "elasticSearchApiKeyTokenField"));
+            JPasswordField bearer =
+                    JPasswordField.class.cast(get(panel, "elasticSearchBearerTokenField"));
+            JTextField certPath =
+                    JTextField.class.cast(get(panel, "elasticSearchCertPathField"));
+            JTextField certKeyPath =
+                    JTextField.class.cast(get(panel, "elasticSearchCertKeyPathField"));
+            JPasswordField certPassphrase =
+                    JPasswordField.class.cast(get(panel, "elasticSearchCertPassphraseField"));
+
+            runEdt(() -> {
+                awsAuthType.setSelectedItem(ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC);
+                accessKey.setText("AKIATESTACCESSKEY12");
+                secretKey.setText("test-secret");
+                sessionToken.setText("test-session");
+                elasticAuthType.setSelectedItem("API key");
+                apiKey.setText("elastic-api-key");
+                ai.anomalousvectors.tools.burp.testutils.Reflect.call(
+                        panel, "persistSelectedAuthSecrets");
+            });
+
+            SecureCredentialStore.AwsStaticCredentials aws =
+                    SecureCredentialStore.loadAwsStaticCredentials(awsDestination);
+            assertThat(aws.accessKeyId()).isEqualTo("AKIATESTACCESSKEY12");
+            assertThat(aws.secretAccessKey()).isEqualTo("test-secret");
+            assertThat(aws.sessionToken()).isEqualTo("test-session");
+            assertThat(SecureCredentialStore.loadApiKeyCredentials(elasticDestination).token())
+                    .isEqualTo("elastic-api-key");
+
+            runEdt(() -> {
+                elasticAuthType.setSelectedItem("Bearer token");
+                bearer.setText("elastic-bearer");
+                ai.anomalousvectors.tools.burp.testutils.Reflect.call(
+                        panel, "persistSelectedAuthSecrets");
+            });
+            assertThat(SecureCredentialStore.loadJwtCredentials(elasticDestination).token())
+                    .isEqualTo("elastic-bearer");
+            assertThat(SecureCredentialStore.loadAwsStaticCredentials(awsDestination))
+                    .isEqualTo(aws);
+
+            runEdt(() -> {
+                elasticAuthType.setSelectedItem("Certificate");
+                certPath.setText("client.pem");
+                certKeyPath.setText("client-key.pem");
+                certPassphrase.setText("cert-pass");
+                ai.anomalousvectors.tools.burp.testutils.Reflect.call(
+                        panel, "persistSelectedAuthSecrets");
+            });
+            SecureCredentialStore.CertificateCredentials certificate =
+                    SecureCredentialStore.loadCertificateCredentials(elasticDestination);
+            assertThat(certificate.certPath()).isEqualTo("client.pem");
+            assertThat(certificate.keyPath()).isEqualTo("client-key.pem");
+            assertThat(certificate.passphrase()).isEqualTo("cert-pass");
+            assertThat(SecureCredentialStore.loadAwsStaticCredentials(awsDestination))
+                    .isEqualTo(aws);
+        });
+    }
+
+    @Test
     void testConnection_appliesAndCachesSelectedBasicAuthForCurrentSession() throws Exception {
         withCleanSession(() -> {
             ConfigPanel panel = newPanelOnEdt();
@@ -570,6 +673,101 @@ class ConfigPanelAuthStorageHeadlessTest {
         });
     }
 
+    @Test
+    void temporaryCredentialWarnings_showForSessionTokenAndBearerFields() throws Exception {
+        withCleanSession(() -> {
+            ConfigPanel panel = newPanelOnEdt();
+            JRadioButton amazon = JRadioButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
+            JComboBox<?> amazonAuth = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+            JPasswordField sessionToken = JPasswordField.class.cast(get(panel, "openSearchAmazonSessionTokenField"));
+            JLabel sessionWarning = javax.swing.JLabel.class.cast(get(panel, "openSearchAmazonSessionTokenWarning"));
+            JComboBox<?> openSearchAuth = getComboBox(panel, "openSearchAuthTypeCombo");
+            JTextField jwt = JTextField.class.cast(get(panel, "openSearchJwtTokenField"));
+            JLabel bearerWarning = javax.swing.JLabel.class.cast(get(panel, "openSearchBearerTokenWarning"));
+
+            runEdt(() -> {
+                assertThat(amazonAuth.getSelectedItem()).isEqualTo(ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE);
+                amazon.doClick();
+                amazonAuth.setSelectedItem(ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC);
+                assertThat(sessionWarning.isVisible()).isFalse();
+                sessionToken.setText("temporary-session");
+                call(panel, "refreshTemporaryCredentialWarnings");
+                assertThat(sessionWarning.isVisible()).isTrue();
+                assertThat(sessionWarning.getText()).contains("Elevated risk");
+                assertThat(sessionWarning.getText()).contains("#FF5555");
+                assertThat(sessionWarning.getText()).contains("<b>");
+                assertThat(sessionWarning.getText()).contains("<br>");
+
+                JRadioButton openSearch = JRadioButton.class.cast(get(panel, "openSearchSinkCheckbox"));
+                openSearch.doClick();
+                openSearchAuth.setSelectedItem("Bearer token");
+                jwt.setText("bearer-token");
+                call(panel, "refreshTemporaryCredentialWarnings");
+                assertThat(bearerWarning.isVisible()).isTrue();
+                assertThat(bearerWarning.getText()).contains("Elevated risk");
+                assertThat(bearerWarning.getText()).contains("#FF5555");
+                assertThat(bearerWarning.getText()).contains("<br>");
+            });
+        });
+    }
+
+    @Test
+    void temporaryCredentialAdvisory_emitsOneWarnAndControlStatusWithoutBlocking() throws Exception {
+        withCleanSession(() -> {
+            List<String> warnings = new CopyOnWriteArrayList<>();
+            Logger.LogListener listener = (level, message) -> {
+                if ("WARN".equals(level)) {
+                    warnings.add(message);
+                }
+            };
+            Logger.registerListener(listener);
+            try {
+                ConfigPanel panel = newPanelOnEdt();
+                JRadioButton database =
+                        JRadioButton.class.cast(get(panel, "openSearchSinkCheckbox"));
+                JRadioButton amazon =
+                        JRadioButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
+                JComboBox<?> amazonAuth =
+                        getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+                JTextField accessKey = JTextField.class.cast(
+                        get(panel, "openSearchAmazonAccessKeyIdField"));
+                JPasswordField secretKey = JPasswordField.class.cast(
+                        get(panel, "openSearchAmazonSecretAccessKeyField"));
+                JPasswordField sessionToken = JPasswordField.class.cast(
+                        get(panel, "openSearchAmazonSessionTokenField"));
+                javax.swing.JTextArea controlStatus = javax.swing.JTextArea.class.cast(
+                        get(panel, "controlStatus"));
+
+                runEdt(() -> {
+                    if (!database.isSelected()) {
+                        database.doClick();
+                    }
+                    amazon.doClick();
+                    amazonAuth.setSelectedItem(ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC);
+                    accessKey.setText("AKIATESTACCESSKEY12");
+                    secretKey.setText("test-secret");
+                    sessionToken.setText("temporary-session");
+                    call(panel, "syncSelectedAuthStateFromUi");
+                    call(panel, "emitTemporaryCredentialAdvisoryIfNeeded");
+                });
+                SwingUtilities.invokeAndWait(() -> {});
+
+                assertThat(warnings).singleElement().asString()
+                        .contains(
+                                "[Amazon OpenSearch]",
+                                "AWS session token is set",
+                                "will not be renewed");
+                assertThat(controlStatus.getText())
+                        .contains("AWS session token is set")
+                        .doesNotContain("aborted");
+                assertThat(RuntimeConfig.isExportStarting()).isFalse();
+            } finally {
+                Logger.unregisterListener(listener);
+                Logger.resetState();
+            }
+        });
+    }
+
     private static ConfigPanel newPanelOnEdt() throws Exception {
         AtomicReference<ConfigPanel> ref = new AtomicReference<>();
         SwingUtilities.invokeAndWait(() -> {
@@ -624,7 +822,10 @@ class ConfigPanelAuthStorageHeadlessTest {
         FontMetrics fm = field.getFontMetrics(field.getFont());
         Insets margin = field.getMargin();
         int textWidth = fm.charsWidth(value.toCharArray(), 0, value.length());
-        return Math.clamp(textWidth + margin.left + margin.right + 8, 80, 900);
+        return Math.clamp(
+                textWidth + margin.left + margin.right + 8,
+                AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH,
+                900);
     }
 
     private static void withCleanSession(CheckedRunnable action) throws Exception {

@@ -41,6 +41,7 @@ public class Exporter implements BurpExtension {
     private volatile Registration contextMenuRegistration;
     private volatile Registration webSocketCreatedRegistration;
     private volatile ExporterIndexLogForwarder logForwarder;
+    private volatile boolean initialized;
 
     /**
      * Registers the extension with Burp, wiring logging and UI composition.
@@ -60,10 +61,10 @@ public class Exporter implements BurpExtension {
         try {
             api.extension().setName(ProductInfo.EXTENSION_NAME);
             unloadRegistration = api.extension().registerUnloadingHandler(this::cleanupExtensionState);
+            Logger.initialize(api.logging());
 
             MontoyaApiProvider.set(api);
             BurpRuntimeMetadata.prime(api);
-            Logger.initialize(api.logging());
             Tooltips.configureSharedToolTipManager();
             logForwarder = new ExporterIndexLogForwarder();
             Logger.registerListener(logForwarder);
@@ -97,10 +98,12 @@ public class Exporter implements BurpExtension {
                     api.websockets().registerWebSocketCreatedHandler(ToolWebSocketLiveHandler.instance());
 
             String initLine = ProductInfo.EXTENSION_NAME + " v" + version + " initialized successfully.";
+            initialized = true;
             Logger.logInfoPanelAndBurp("[Exporter] " + initLine, initLine);
         } catch (RuntimeException e) {
-            Logger.logError("[Exporter] " + ProductInfo.EXTENSION_NAME + " v" + version
-                    + " initialization failed: " + e.getMessage(), e);
+            String failureLine = ProductInfo.EXTENSION_NAME + " v" + version
+                    + " initialization failed.";
+            Logger.logErrorPanelAndBurp("[Exporter] " + failureLine, failureLine, e);
             cleanupExtensionState();
         }
     }
@@ -125,6 +128,7 @@ public class Exporter implements BurpExtension {
         contextMenuRegistration = null;
         safeDeregister(suiteTabRegistration);
         suiteTabRegistration = null;
+        Tooltips.restoreSharedPopupFactory();
 
         BatchSizeController.getInstance().setOnChangeListener(null);
         if (ExporterIndexStatsReporter.shouldAttemptFinalPushOnUnload()) {
@@ -132,12 +136,17 @@ public class Exporter implements BurpExtension {
                     ExporterIndexStatsReporter.pushFinalSnapshotNow());
         }
         ExportReporterLifecycle.stopAndClearSessionState();
-        // Unload is the last chance to release pooled connections, TLS session caches, and the
-        // HTTP/2 reactor/scheduler threads owned by the cached OpenSearch transports. Run
-        // synchronously here so the classloader can be GC'd cleanly; closeAll() is idempotent
-        // if a Stop-triggered async closeAll() already ran.
+        // Cleanup after unload or failed initialization must release pooled connections, TLS
+        // session caches, and transport-owned reactor/scheduler threads. Run synchronously so the
+        // classloader can be GC'd cleanly; closeAll() is idempotent if a Stop-triggered async
+        // closeAll() already ran.
         OpenSearchConnector.closeAll();
         ConfigPanel.shutdownStartupExecutor();
+        if (initialized) {
+            initialized = false;
+            String unloadLine = ProductInfo.EXTENSION_NAME + " unloaded.";
+            Logger.logInfoPanelAndBurp("[Exporter] " + unloadLine, unloadLine);
+        }
         Logger.resetState();
 
         safeDeregister(unloadRegistration);

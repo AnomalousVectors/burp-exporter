@@ -33,6 +33,16 @@ class StatsPanelFormattersTest {
     }
 
     @Test
+    void formatCooldownRemaining_andSoftOutage_coverEmptyAndActiveStates() {
+        assertThat(StatsPanelFormatters.formatCooldownRemaining(0L)).isEqualTo("—");
+        assertThat(StatsPanelFormatters.formatCooldownRemaining(-1L)).isEqualTo("—");
+        assertThat(StatsPanelFormatters.formatCooldownRemaining(250L)).isEqualTo("250 ms");
+        assertThat(StatsPanelFormatters.formatCooldownRemaining(12_500L)).isEqualTo("12.5 s");
+        assertThat(StatsPanelFormatters.formatSoftOutage(false)).isEqualTo("No");
+        assertThat(StatsPanelFormatters.formatSoftOutage(true)).isEqualTo("Yes");
+    }
+
+    @Test
     void formatSpillQueue_combinesDocsAndMiB() {
         assertThat(StatsPanelFormatters.formatSpillQueue(0, 0)).isEqualTo("0 docs (0.0 MiB)");
         assertThat(StatsPanelFormatters.formatSpillQueue(12, 1024L * 1024L)).isEqualTo("12 docs (1.0 MiB)");
@@ -47,6 +57,30 @@ class StatsPanelFormattersTest {
     @Test
     void formatRetryQueueDepthSummary_allZero_returnsEmDash() {
         assertThat(StatsPanelFormatters.formatRetryQueueDepthSummary()).isEqualTo("—");
+    }
+
+    @Test
+    void formatBodyTruncationsByIndex_omitsZeroIndexesAndUsesStableOrder() {
+        ExportStats.recordSearchBodyPrefixTruncation("traffic");
+        ExportStats.recordSearchBodyPrefixTruncation("findings");
+        ExportStats.recordSearchBodyPrefixTruncation("findings");
+
+        assertThat(StatsPanelFormatters.formatBodyTruncationsByIndex())
+                .isEqualTo("findings: 2, traffic: 1");
+    }
+
+    @Test
+    void formatSnapshotBuildAhead_showsCurrentCapacityAndPeak() {
+        assertThat(StatsPanelFormatters.formatSnapshotBuildAhead())
+                .isEqualTo("0 B / 64.0 MiB (0 / 1,024 permits)");
+        assertThat(StatsPanelFormatters.formatPeakSnapshotBuildAhead()).isEqualTo("—");
+
+        ExportStats.reserveSnapshotBuildAhead(4, 256L * 1024L);
+
+        assertThat(StatsPanelFormatters.formatSnapshotBuildAhead())
+                .isEqualTo("256.0 KiB / 64.0 MiB (4 / 1,024 permits)");
+        assertThat(StatsPanelFormatters.formatPeakSnapshotBuildAhead())
+                .isEqualTo("256.0 KiB (4 permits)");
     }
 
     @Test
@@ -164,6 +198,17 @@ class StatsPanelFormattersTest {
     }
 
     @Test
+    void rangeCeiling_stepsPastTightNiceTickSoSplineHasHeadroom() {
+        // 800 * 1.0 lands exactly on a nice tick; ceiling must move above it.
+        assertThat(StatsPanelFormatters.rangeCeiling(800.0, 1.0)).isGreaterThan(800.0);
+        // Spiky rate peak with Smooth headroom still keeps spare above the padded max.
+        double max = 50.0;
+        double headroom = 1.22;
+        double ceiling = StatsPanelFormatters.rangeCeiling(max, headroom);
+        assertThat(ceiling).isGreaterThan(max * headroom);
+    }
+
+    @Test
     void chooseMemoryAxisScale_rollsToGiBWhenHeapExceeds999MiBDisplay() {
         assertThat(StatsPanelFormatters.chooseMemoryAxisScale(500.0, 1.5).label()).isEqualTo("MiB");
         assertThat(StatsPanelFormatters.chooseMemoryAxisScale(2500.0, 1.5).label()).isEqualTo("GiB");
@@ -181,5 +226,14 @@ class StatsPanelFormattersTest {
                 .contains("scope=1,234")
                 .contains("tool_disabled=5")
                 .doesNotContain("-");
+    }
+
+    @Test
+    void formatPermanentDropReasons_isStableAndCompact() {
+        ExportStats.recordPermanentDropReason(ExportStats.PERMANENT_DROP_REASON_STOP, 5);
+        ExportStats.recordPermanentDropReason(ExportStats.PERMANENT_DROP_REASON_MAX_FIT, 1_234);
+
+        assertThat(StatsPanelFormatters.formatPermanentDropReasons())
+                .isEqualTo("max_fit_exceeded=1,234 stop_discard=5");
     }
 }

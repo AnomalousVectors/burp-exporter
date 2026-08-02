@@ -43,8 +43,8 @@ public final class ExporterIndexConfigReporter {
             if (!RuntimeConfig.isAnySinkEnabled()) {
                 return;
             }
-            String baseUrl = RuntimeConfig.openSearchUrl();
-            boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
+            String baseUrl = RuntimeConfig.searchBaseUrl();
+            boolean openSearchActive = RuntimeConfig.isSearchActive();
             Map<String, Object> doc = buildConfigDoc(RuntimeConfig.getState());
             boolean ok = OpenSearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
             SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive,
@@ -90,7 +90,7 @@ public final class ExporterIndexConfigReporter {
             sinksMap.put("files_path", sinks.filesPath() != null ? sinks.filesPath() : "");
             sinksMap.put("file_jsonl_enabled", sinks.fileJsonlEnabled());
             sinksMap.put("file_bulk_ndjson_enabled", sinks.fileBulkNdjsonEnabled());
-            sinksMap.put("os_enabled", sinks.osEnabled());
+            sinksMap.put("os_enabled", sinks.databaseEnabled());
             sinksMap.put("open_search_url", sinks.openSearchUrl() != null ? sinks.openSearchUrl() : "");
             message.put("sinks", sinksMap);
         }

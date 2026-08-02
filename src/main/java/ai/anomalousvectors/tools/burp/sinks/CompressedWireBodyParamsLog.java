@@ -164,7 +164,12 @@ public final class CompressedWireBodyParamsLog {
         }
     }
 
-    /** Emits DEBUG summaries for live events accumulated since the last periodic flush. */
+    /**
+     * Emits DEBUG summaries for live events accumulated since the last periodic flush.
+     *
+     * <p>Log text uses phase {@code periodic/live} so operators can tell scheduled rollups from
+     * startup/stop summaries.</p>
+     */
     public static void flushPeriodicSummary() {
         if (!RuntimeConfig.isExportRunning()) {
             return;
@@ -178,11 +183,11 @@ public final class CompressedWireBodyParamsLog {
             }
             docCounts = copyDocCounts(LIVE_PENDING_DOC_COUNTS);
             urlCounts = copyUrlCounts(LIVE_PENDING_URLS);
-            summaryLine = formatSummaryLocked("live", docCounts, urlCounts);
+            summaryLine = formatSummaryLocked("periodic/live", docCounts, urlCounts);
             clearCategoryMaps(LIVE_PENDING_DOC_COUNTS, LIVE_PENDING_URLS);
         }
         if (summaryLine != null) {
-            reportDetails("live", docCounts, urlCounts);
+            reportDetails("periodic/live", docCounts, urlCounts);
             Logger.logDebug(summaryLine);
         }
     }

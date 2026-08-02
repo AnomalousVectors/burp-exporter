@@ -1,5 +1,9 @@
 {
-  "settings": {},
+  "settings": {
+    "number_of_shards": 1,
+    "auto_expand_replicas": "0-1",
+    "refresh_interval": "5s"
+  },
   "mappings": {
     "dynamic": true,
     "properties": {
@@ -8,6 +12,22 @@
           "notes": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
           "highlight": { "type": "keyword", "ignore_above": 8191 },
           "is_in_scope": { "type": "boolean" },
+          "message_id": { "type": "integer" },
+          "proxy": {
+            "properties": {
+              "history_id": { "type": "integer" },
+              "listener_port": { "type": "integer" },
+              "request_is_edited": { "type": "boolean" },
+              "response_is_edited": { "type": "boolean" }
+            }
+          },
+          "repeater": {
+            "properties": {
+              "tab_group": { "type": "keyword", "ignore_above": 8191 },
+              "tab_name": { "type": "keyword", "ignore_above": 8191 }
+            }
+          },
+          "reporting_tool": { "type": "keyword", "ignore_above": 8191 },
           "timing": {
             "properties": {
               "req_sent_to_res_end": { "type": "integer" },
@@ -39,7 +59,8 @@
                 }
               },
               "offset": { "type": "integer" },
-              "text": { "type": "text", "index_options": "offsets" }
+              "text": { "type": "text", "index_options": "offsets" },
+              "truncated": { "type": "boolean" }
             }
           },
           "method": { "type": "keyword", "ignore_above": 8191 },
@@ -48,7 +69,8 @@
             "properties": {
               "name": { "type": "keyword", "ignore_above": 8191 },
               "type": { "type": "keyword", "ignore_above": 8191 },
-              "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } }
+              "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
+              "truncated": { "type": "boolean" }
             }
           },
           "path": {
@@ -82,7 +104,8 @@
               "name": { "type": "keyword", "ignore_above": 8191 },
               "raw": { "type": "keyword", "ignore_above": 8191 },
               "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-              "ordinal": { "type": "integer" }
+              "ordinal": { "type": "integer" },
+              "truncated": { "type": "boolean" }
             }
           },
           "cookies": {
@@ -91,7 +114,8 @@
               "name": { "type": "keyword", "ignore_above": 8191 },
               "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
               "raw": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-              "ordinal": { "type": "integer" }
+              "ordinal": { "type": "integer" },
+              "truncated": { "type": "boolean" }
             }
           },
           "content_type": {
@@ -157,6 +181,7 @@
               },
               "offset": { "type": "integer" },
               "text": { "type": "text", "index_options": "offsets" },
+              "truncated": { "type": "boolean" },
               "word_count": { "type": "integer" }
             }
           },
@@ -178,7 +203,8 @@
               "name": { "type": "keyword", "ignore_above": 8191 },
               "raw": { "type": "keyword", "ignore_above": 8191 },
               "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-              "ordinal": { "type": "integer" }
+              "ordinal": { "type": "integer" },
+              "truncated": { "type": "boolean" }
             }
           },
           "header_attributes": {
@@ -200,7 +226,8 @@
               "same_site": { "type": "keyword", "ignore_above": 8191 },
               "partitioned": { "type": "boolean" },
               "raw": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-              "ordinal": { "type": "integer" }
+              "ordinal": { "type": "integer" },
+              "truncated": { "type": "boolean" }
             }
           },
           "mime_type": {
@@ -213,6 +240,25 @@
               "inferred_body": { "type": "keyword", "ignore_above": 8191 }
             }
           }
+        }
+      },
+      "websocket": {
+        "properties": {
+          "direction": { "type": "keyword", "ignore_above": 8191 },
+          "is_edited": { "type": "boolean" },
+          "id": { "type": "integer" },
+          "is_websocket": { "type": "boolean" },
+          "message_id": { "type": "integer" },
+          "message_type": { "type": "keyword", "ignore_above": 8191 },
+          "payload": {
+            "properties": {
+              "b64": { "type": "binary", "doc_values": false },
+              "length": { "type": "integer" },
+              "text": { "type": "text" },
+              "truncated": { "type": "boolean" }
+            }
+          },
+          "time": { "type": "date" }
         }
       }
     }

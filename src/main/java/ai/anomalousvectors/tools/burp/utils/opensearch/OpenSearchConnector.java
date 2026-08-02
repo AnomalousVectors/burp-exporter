@@ -12,12 +12,16 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.impl.nio.PoolingAsyncClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
 import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.util.Timeout;
 import org.opensearch.client.json.JsonpMapper;
 import org.opensearch.client.json.jackson.JacksonJsonpMapper;
 import org.opensearch.client.opensearch.OpenSearchClient;
@@ -30,14 +34,25 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 /**
  * Factory/cache for OpenSearch clients.
  *
- * <p>Ownership:
- * Clients are cached per base URL (and optional credentials) and reused. Do not close the returned client;
- * lifecycle is managed here.</p>
+ * <p>Clients are cached per URL, authentication fingerprint, and effective TLS settings. Do not
+ * close a returned client; lifecycle is managed by {@link #closeAll()}.</p>
+ *
+ * <p>Thread-safe. Client creation and cache detachment are serialized so callers do not receive a
+ * client that has already been selected for closure.</p>
  */
 public final class OpenSearchConnector {
 
+    /** Matches certificate-bulk async response timeout so classic hangs fail within a known budget. */
+    static final Timeout CLASSIC_BULK_RESPONSE_TIMEOUT = Timeout.ofMinutes(2);
+    /** Bounds how long a sender waits for a free pooled connection before failing with a timeout. */
+    static final Timeout CLASSIC_CONNECTION_REQUEST_TIMEOUT = Timeout.ofSeconds(30);
+    /** Bounds TCP connect / TLS handshake so classic bulks cannot hang indefinitely on dial. */
+    static final Timeout CLASSIC_CONNECT_TIMEOUT = Timeout.ofSeconds(15);
+
     private static final ConcurrentHashMap<String, OpenSearchClient> clientCache = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, CloseableHttpClient> classicClientCache = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, CloseableHttpAsyncClient> asyncClientCache = new ConcurrentHashMap<>();
+    private static final Object clientLifecycleLock = new Object();
 
     private OpenSearchConnector() {
         throw new AssertionError("No instances");
@@ -71,7 +86,14 @@ public final class OpenSearchConnector {
         return getClient(baseUrl, auth);
     }
 
-    /** Returns a cached client for the given base URL and selected auth mode. */
+    /**
+     * Returns a cached client for a base URL and selected authentication mode.
+     *
+     * @param baseUrl configured database base URL
+     * @param auth authentication descriptor; {@code null} selects no authentication
+     * @return shared client owned by this connector
+     * @throws OpenSearchClientBuildException when the client cannot be constructed
+     */
     public static OpenSearchClient getClient(String baseUrl, OpenSearchAuth auth) {
         ConfigState.SearchDestination destination = RuntimeConfig.searchDestinationKind();
         boolean insecure = isInsecureEnabled(destination);
@@ -79,7 +101,10 @@ public final class OpenSearchConnector {
         String key = cacheKey(baseUrl, resolvedAuth, insecure,
                 OpenSearchTlsSupport.currentTlsMode(destination),
                 OpenSearchTlsSupport.pinnedCertificateFingerprint(destination));
-        return clientCache.computeIfAbsent(key, k -> buildClient(baseUrl, resolvedAuth, insecure, destination));
+        synchronized (clientLifecycleLock) {
+            return clientCache.computeIfAbsent(
+                    key, k -> buildClient(baseUrl, resolvedAuth, insecure, destination));
+        }
     }
 
     /**
@@ -98,9 +123,14 @@ public final class OpenSearchConnector {
     /**
      * Returns a cached classic HTTP client for the selected database destination.
      *
+     * <p>The pooled client uses a 15-second connect timeout, a 2-minute response timeout, and a
+     * 30-second connection-request timeout so hung Amazon/OpenSearch bulks fail with a timed
+     * transport error instead of blocking flush or traffic workers indefinitely.</p>
+     *
      * @param baseUrl configured database base URL
      * @param auth resolved authentication descriptor
      * @return pooled classic HTTP client owned by this connector
+     * @throws OpenSearchClientBuildException when TLS or client construction fails
      */
     public static CloseableHttpClient getClassicHttpClient(String baseUrl, OpenSearchAuth auth) {
         ConfigState.SearchDestination destination = RuntimeConfig.searchDestinationKind();
@@ -109,8 +139,45 @@ public final class OpenSearchConnector {
         String key = cacheKey(baseUrl, resolvedAuth, insecure,
                 OpenSearchTlsSupport.currentTlsMode(destination),
                 OpenSearchTlsSupport.pinnedCertificateFingerprint(destination));
-        return classicClientCache.computeIfAbsent(
-                key, k -> buildClassicClient(baseUrl, resolvedAuth, insecure, destination));
+        synchronized (clientLifecycleLock) {
+            return classicClientCache.computeIfAbsent(
+                    key, k -> buildClassicClient(baseUrl, resolvedAuth, insecure, destination));
+        }
+    }
+
+    /**
+     * Returns a cached async HTTP client for certificate-auth bulk and related mTLS paths.
+     *
+     * <p>Clients are started on first use and reused for the export run. Do not close the returned
+     * client; {@link #closeAll()} owns lifecycle.</p>
+     *
+     * @param baseUrl configured database base URL
+     * @param auth resolved authentication descriptor (typically certificate mode)
+     * @return started async client owned by this connector
+     * @throws OpenSearchClientBuildException when TLS or client construction fails
+     */
+    public static CloseableHttpAsyncClient getAsyncHttpClient(String baseUrl, OpenSearchAuth auth) {
+        ConfigState.SearchDestination destination = RuntimeConfig.searchDestinationKind();
+        boolean insecure = isInsecureEnabled(destination);
+        OpenSearchAuth resolvedAuth = auth == null ? OpenSearchAuth.none() : auth;
+        String key = "async|" + cacheKey(baseUrl, resolvedAuth, insecure,
+                OpenSearchTlsSupport.currentTlsMode(destination),
+                OpenSearchTlsSupport.pinnedCertificateFingerprint(destination));
+        synchronized (clientLifecycleLock) {
+            return asyncClientCache.computeIfAbsent(key, k -> {
+                try {
+                    URI uri = URI.create(baseUrl == null ? "" : baseUrl.trim().replaceAll("/+$", ""));
+                    HttpHost host = new HttpHost(uri.getScheme(), uri.getHost(), uri.getPort());
+                    CloseableHttpAsyncClient client =
+                            OpenSearchRawGet.buildAsyncClientForBulk(host, resolvedAuth, insecure, destination);
+                    client.start();
+                    return client;
+                } catch (GeneralSecurityException | RuntimeException e) {
+                    throw new OpenSearchClientBuildException(
+                            "Failed to build async OpenSearch HTTP client for " + baseUrl, e);
+                }
+            });
+        }
     }
 
     private static final String INSECURE_PROP = "OPENSEARCH_INSECURE";
@@ -180,7 +247,10 @@ public final class OpenSearchConnector {
             boolean useHttps = "https".equalsIgnoreCase(uri.getScheme());
 
             PoolingHttpClientConnectionManagerBuilder connManagerBuilder =
-                    PoolingHttpClientConnectionManagerBuilder.create();
+                    PoolingHttpClientConnectionManagerBuilder.create()
+                            .setDefaultConnectionConfig(ConnectionConfig.custom()
+                                    .setConnectTimeout(CLASSIC_CONNECT_TIMEOUT)
+                                    .build());
             if (useHttps) {
                 OpenSearchHttpTlsSupport.configureClassicTls(connManagerBuilder, auth, insecure, destination);
             } else {
@@ -189,8 +259,16 @@ public final class OpenSearchConnector {
                         .build());
             }
 
+            // Sized for overlapping snapshot flushes + live traffic drain + retry drain.
+            connManagerBuilder.setMaxConnTotal(16).setMaxConnPerRoute(8);
             var httpBuilder = HttpClients.custom()
-                    .setConnectionManager(connManagerBuilder.build());
+                    .setConnectionManager(connManagerBuilder.build())
+                    .evictExpiredConnections()
+                    .evictIdleConnections(org.apache.hc.core5.util.TimeValue.ofSeconds(30L))
+                    .setDefaultRequestConfig(RequestConfig.custom()
+                            .setResponseTimeout(CLASSIC_BULK_RESPONSE_TIMEOUT)
+                            .setConnectionRequestTimeout(CLASSIC_CONNECTION_REQUEST_TIMEOUT)
+                            .build());
             org.apache.hc.core5.http.Header[] defaultHeaders = auth.defaultHeaders();
             if (defaultHeaders.length > 0) {
                 httpBuilder.setDefaultHeaders(Arrays.asList(defaultHeaders));
@@ -203,7 +281,7 @@ public final class OpenSearchConnector {
     }
 
     /**
-     * Closes every cached OpenSearch client and classic HTTP client, then clears both caches.
+     * Closes every cached OpenSearch, classic HTTP, and async HTTP client and clears their caches.
      *
      * <p>Each client owns a pooled connection manager, TLS session cache, and reactor/scheduler
      * threads that hold substantial off-heap state (direct {@code ByteBuffer}s, SSL session state).
@@ -214,6 +292,9 @@ public final class OpenSearchConnector {
      * prevent the other entries from being released. The method is idempotent: subsequent calls
      * on an already-empty cache are no-ops, and a later {@link #getClient(String)} rebuilds a
      * fresh client rather than returning a closed one.</p>
+     *
+     * <p>Safe for concurrent callers. A client requested after cache detachment belongs to a new
+     * cache generation and is not closed by the in-progress call.</p>
      */
     public static void closeAll() {
         AtomicInteger failures = new AtomicInteger();
@@ -222,8 +303,17 @@ public final class OpenSearchConnector {
         // a concurrent getClient(...) call (e.g., the async stop-reclaim thread racing with a later
         // request) could observe an entry whose transport was already closed and return that
         // instance to the caller, surfacing as "Connection pool shut down" on the next request.
-        List<Map.Entry<String, OpenSearchClient>> drainedClients = new ArrayList<>(clientCache.entrySet());
-        clientCache.clear();
+        List<Map.Entry<String, OpenSearchClient>> drainedClients;
+        List<Map.Entry<String, CloseableHttpClient>> drainedClassic;
+        List<Map.Entry<String, CloseableHttpAsyncClient>> drainedAsync;
+        synchronized (clientLifecycleLock) {
+            drainedClients = new ArrayList<>(clientCache.entrySet());
+            clientCache.clear();
+            drainedClassic = new ArrayList<>(classicClientCache.entrySet());
+            classicClientCache.clear();
+            drainedAsync = new ArrayList<>(asyncClientCache.entrySet());
+            asyncClientCache.clear();
+        }
         for (Map.Entry<String, OpenSearchClient> entry : drainedClients) {
             try {
                 entry.getValue()._transport().close();
@@ -235,14 +325,23 @@ public final class OpenSearchConnector {
             }
         }
 
-        List<Map.Entry<String, CloseableHttpClient>> drainedClassic = new ArrayList<>(classicClientCache.entrySet());
-        classicClientCache.clear();
         for (Map.Entry<String, CloseableHttpClient> entry : drainedClassic) {
             try {
                 entry.getValue().close();
             } catch (IOException | RuntimeException e) {
                 failures.incrementAndGet();
                 Logger.logDebug("[OpenSearch] OpenSearchConnector failed to close classic client for "
+                        + redactKey(entry.getKey()) + ": "
+                        + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+            }
+        }
+
+        for (Map.Entry<String, CloseableHttpAsyncClient> entry : drainedAsync) {
+            try {
+                entry.getValue().close();
+            } catch (IOException | RuntimeException e) {
+                failures.incrementAndGet();
+                Logger.logDebug("[OpenSearch] OpenSearchConnector failed to close async client for "
                         + redactKey(entry.getKey()) + ": "
                         + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
             }

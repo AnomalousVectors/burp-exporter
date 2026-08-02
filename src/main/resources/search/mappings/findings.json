@@ -1,5 +1,9 @@
 {
-  "settings": {},
+  "settings": {
+    "number_of_shards": 1,
+    "auto_expand_replicas": "0-1",
+    "refresh_interval": "5s"
+  },
   "mappings": {
     "dynamic": true,
     "properties": {
@@ -38,7 +42,8 @@
                         }
                       },
                       "offset": { "type": "integer" },
-                      "text": { "type": "text", "index_options": "offsets" }
+                      "text": { "type": "text", "index_options": "offsets" },
+                      "truncated": { "type": "boolean" }
                     }
                   },
                   "method": { "type": "keyword", "ignore_above": 8191 },
@@ -47,7 +52,8 @@
                     "properties": {
                       "name": { "type": "keyword", "ignore_above": 8191 },
                       "type": { "type": "keyword", "ignore_above": 8191 },
-                      "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } }
+                      "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
+                      "truncated": { "type": "boolean" }
                     }
                   },
                   "path": {
@@ -81,7 +87,8 @@
                       "name": { "type": "keyword", "ignore_above": 8191 },
                       "raw": { "type": "keyword", "ignore_above": 8191 },
                       "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                      "ordinal": { "type": "integer" }
+                      "ordinal": { "type": "integer" },
+                      "truncated": { "type": "boolean" }
                     }
                   },
                   "cookies": {
@@ -90,7 +97,8 @@
                       "name": { "type": "keyword", "ignore_above": 8191 },
                       "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
                       "raw": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                      "ordinal": { "type": "integer" }
+                      "ordinal": { "type": "integer" },
+                      "truncated": { "type": "boolean" }
                     }
                   },
                   "content_type": {
@@ -157,6 +165,7 @@
                       },
                       "offset": { "type": "integer" },
                       "text": { "type": "text", "index_options": "offsets" },
+                      "truncated": { "type": "boolean" },
                       "word_count": { "type": "integer" }
                     }
                   },
@@ -178,7 +187,8 @@
                       "name": { "type": "keyword", "ignore_above": 8191 },
                       "raw": { "type": "keyword", "ignore_above": 8191 },
                       "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                      "ordinal": { "type": "integer" }
+                      "ordinal": { "type": "integer" },
+                      "truncated": { "type": "boolean" }
                     }
                   },
                   "header_attributes": {
@@ -200,7 +210,8 @@
                       "same_site": { "type": "keyword", "ignore_above": 8191 },
                       "partitioned": { "type": "boolean" },
                       "raw": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                      "ordinal": { "type": "integer" }
+                      "ordinal": { "type": "integer" },
+                      "truncated": { "type": "boolean" }
                     }
                   },
                   "mime_type": {
@@ -284,7 +295,8 @@
                     }
                   },
                   "offset": { "type": "integer" },
-                  "text": { "type": "text", "index_options": "offsets" }
+                  "text": { "type": "text", "index_options": "offsets" },
+                  "truncated": { "type": "boolean" }
                 }
               },
               "method": { "type": "keyword", "ignore_above": 8191 },
@@ -293,7 +305,8 @@
                 "properties": {
                   "name": { "type": "keyword", "ignore_above": 8191 },
                   "type": { "type": "keyword", "ignore_above": 8191 },
-                  "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } }
+                  "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
+                  "truncated": { "type": "boolean" }
                 }
               },
               "path": {
@@ -327,7 +340,8 @@
                   "name": { "type": "keyword", "ignore_above": 8191 },
                   "raw": { "type": "keyword", "ignore_above": 8191 },
                   "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                  "ordinal": { "type": "integer" }
+                  "ordinal": { "type": "integer" },
+                  "truncated": { "type": "boolean" }
                 }
               },
               "cookies": {
@@ -336,7 +350,8 @@
                   "name": { "type": "keyword", "ignore_above": 8191 },
                   "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
                   "raw": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                  "ordinal": { "type": "integer" }
+                  "ordinal": { "type": "integer" },
+                  "truncated": { "type": "boolean" }
                 }
               },
               "content_type": {
@@ -402,6 +417,7 @@
                   },
                   "offset": { "type": "integer" },
                   "text": { "type": "text", "index_options": "offsets" },
+                  "truncated": { "type": "boolean" },
                   "word_count": { "type": "integer" }
                 }
               },
@@ -423,7 +439,8 @@
                   "name": { "type": "keyword", "ignore_above": 8191 },
                   "raw": { "type": "keyword", "ignore_above": 8191 },
                   "value": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                  "ordinal": { "type": "integer" }
+                  "ordinal": { "type": "integer" },
+                  "truncated": { "type": "boolean" }
                 }
               },
               "header_attributes": {
@@ -445,7 +462,8 @@
                   "same_site": { "type": "keyword", "ignore_above": 8191 },
                   "partitioned": { "type": "boolean" },
                   "raw": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },
-                  "ordinal": { "type": "integer" }
+                  "ordinal": { "type": "integer" },
+                  "truncated": { "type": "boolean" }
                 }
               },
               "mime_type": {

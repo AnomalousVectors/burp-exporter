@@ -10,11 +10,19 @@ import ai.anomalousvectors.tools.burp.utils.export.ExportLineCodec;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedBulkBodies;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
-/** Writes OpenSearch bulk-compatible NDJSON with explicit index metadata and stable IDs. */
+/** Writes compatible {@code _bulk} NDJSON with explicit index metadata and stable IDs. */
 final class BulkNdjsonFileSink extends RotatingLineFileSink {
 
-    BulkNdjsonFileSink(Path rootDirectory, String indexName) {
-        super(rootDirectory, indexName, ".ndjson");
+    BulkNdjsonFileSink(Path rootDirectory, String indexName, String indexKey) {
+        super(rootDirectory, indexName, indexKey, ".ndjson");
+    }
+
+    BulkNdjsonFileSink(
+            Path rootDirectory,
+            String indexName,
+            String indexKey,
+            FileAppendOperation appendOperation) {
+        super(rootDirectory, indexName, indexKey, ".ndjson", appendOperation);
     }
 
     @Override

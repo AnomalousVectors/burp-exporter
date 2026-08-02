@@ -34,6 +34,7 @@ final class ExportFieldTooltipsTraffic {
             Map.entry("websocket.payload.b64", "websocket.payload.b64"),
             Map.entry("websocket.payload.text", "websocket.payload.text"),
             Map.entry("websocket.payload.length", "websocket.payload.length"),
+            Map.entry("websocket.payload.truncated", "websocket.payload.truncated"),
             Map.entry("websocket.is_edited", "websocket.is_edited"),
             Map.entry("websocket.time", "websocket.time"));
     static String trafficDisplayName(String fieldKey) {
@@ -176,6 +177,10 @@ final class ExportFieldTooltipsTraffic {
             case "websocket.payload.length" -> Tooltips.textWithSource(
                     "Effective WebSocket payload length in bytes.",
                     "WebSocketTrafficDocumentBuilder.buildPayloadDoc() uses editedPayload() when the frame was edited, otherwise payload().");
+            case "websocket.payload.truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this WebSocket payload to fit the live bulk byte budget. "
+                            + "payload.length remains the original size; file export is not truncated by this path.",
+                    "SearchBodyPrefixFitter.fitToLiveBudget() sets payload.truncated when shortening b64/text under BulkByteBudget pressure.");
             case "websocket.is_edited" -> Tooltips.textWithSource(
                     "Whether the WebSocket frame payload was edited.",
                     "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.editedPayload() != null.");

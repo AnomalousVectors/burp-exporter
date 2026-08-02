@@ -36,6 +36,11 @@ class OpenSearchClientWrapperLoggingTest {
         Logger.unregisterListener(listener);
         Logger.resetState();
         SecureCredentialStore.clearAll();
+        RuntimeConfig.setExportRunning(false);
+        RuntimeConfig.setExportStarting(false);
+        RuntimeConfig.setExportStopping(false);
+        IndexingRetryCoordinator.getInstance().stopDrainThread();
+        IndexingRetryCoordinator.getInstance().clearPendingWork();
         RuntimeConfig.updateState(null);
         events.clear();
         while (latch.getCount() > 0) {
@@ -65,7 +70,7 @@ class OpenSearchClientWrapperLoggingTest {
     }
 
     @Test
-    void logPushOutcome_whenExportStopped_emitsTraceWithOpenSearchPrefix() throws Exception {
+    void logPushOutcome_whenExportStopped_benignShutdown_emitsTraceWithCause() throws Exception {
         Logger.resetState();
         Logger.registerListener(listener);
         RuntimeConfig.setExportRunning(false);
@@ -80,7 +85,7 @@ class OpenSearchClientWrapperLoggingTest {
                 assertThat(e.message())
                         .contains("[OpenSearch]")
                         .contains("doPushBulk cancelled")
-                        .contains("export stopped");
+                        .contains("Connection is closed");
             });
             assertThat(events).noneMatch(e -> e.message().contains("failed for"));
         } finally {
@@ -89,7 +94,31 @@ class OpenSearchClientWrapperLoggingTest {
     }
 
     @Test
-    void logPushOutcome_whenExportRunning_emitsDebugWithOpenSearchPrefix() throws Exception {
+    void logPushOutcome_whenExportStopped_realTransportFailure_emitsWarnWithCause() throws Exception {
+        Logger.resetState();
+        Logger.registerListener(listener);
+        RuntimeConfig.setExportRunning(false);
+        try {
+            invokeLogPushOutcomeOnEdt(
+                    "tool-burp-traffic",
+                    "doPushBulk",
+                    new IOException("target server failed to respond"));
+
+            assertThat(events).anySatisfy(e -> {
+                assertThat(e.level()).isEqualTo("WARN");
+                assertThat(e.message())
+                        .contains("[OpenSearch]")
+                        .contains("doPushBulk failed")
+                        .contains("failed to respond");
+            });
+            assertThat(events).noneMatch(e -> e.message().contains("cancelled"));
+        } finally {
+            cleanUp();
+        }
+    }
+
+    @Test
+    void logPushOutcome_whenExportRunning_emitsWarnWithOpenSearchPrefix() throws Exception {
         Logger.resetState();
         Logger.registerListener(listener);
         RuntimeConfig.updateState(new ConfigState.State(
@@ -109,7 +138,7 @@ class OpenSearchClientWrapperLoggingTest {
                     new IOException("mapper parsing exception"));
 
             assertThat(events).anySatisfy(e -> {
-                assertThat(e.level()).isEqualTo("DEBUG");
+                assertThat(e.level()).isEqualTo("WARN");
                 assertThat(e.message())
                         .contains("[OpenSearch]")
                         .contains("doPushDocument failed")

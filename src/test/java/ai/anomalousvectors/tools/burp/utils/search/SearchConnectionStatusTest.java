@@ -22,4 +22,22 @@ class SearchConnectionStatusTest {
                 .contains("Elasticsearch version: 8.14.3")
                 .doesNotContain("OpenSearch version");
     }
+
+    @Test
+    void formattedStatus_addsCredentialExpiryHintOnAuthFailure() {
+        SearchConnectionStatus status = new SearchConnectionStatus(
+                "OpenSearch",
+                false,
+                "",
+                "",
+                "HTTP 401 Unauthorized",
+                "Success",
+                "Failed",
+                "System trust store");
+
+        assertThat(status.formattedStatus())
+                .contains("Authentication: Failed")
+                .contains("Details: HTTP 401 Unauthorized")
+                .contains("bearer/API key/session token may have expired");
+    }
 }

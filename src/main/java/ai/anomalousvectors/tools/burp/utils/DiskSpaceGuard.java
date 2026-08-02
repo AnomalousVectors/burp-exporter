@@ -20,8 +20,11 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  * behavior for low-disk write refusals.</p>
  *
  * <p>When the disk/file sink is the only active sink, low disk stops export entirely via
- * {@link ExportReporterLifecycle#stopAndClearPendingExportWork()}. When OpenSearch remains
- * enabled, this guard refuses only the local disk write and leaves OpenSearch export running.</p>
+ * {@link ExportReporterLifecycle#stopAndClearPendingExportWork()}. When database export remains
+ * enabled, this guard refuses only the local disk write and leaves database export running.</p>
+ *
+ * <p>Thread-safe. Write checks perform filesystem I/O and should run off the EDT. The cached public
+ * probe supports frequent UI refreshes, although a cache miss can still query the filesystem.</p>
  */
 public final class DiskSpaceGuard {
 
@@ -30,9 +33,18 @@ public final class DiskSpaceGuard {
     /** Minimum free bytes that must remain on the destination volume after a write. */
     public static final long MIN_FREE_BYTES = 1024L * 1024L * 1024L;
     private static final long LOW_DISK_LOG_THROTTLE_MS = 30_000L;
+    /**
+     * TTL for {@link #usableSpacePublic(Path)} FileStore probes used by spill budgeting and
+     * Overview status. Write checks via {@link #ensureWritable} always query fresh usable space.
+     */
+    private static final long USABLE_SPACE_PUBLIC_CACHE_TTL_MS = 2_000L;
 
     private static final Map<String, Long> LAST_LOW_DISK_NOTIFICATION_MS = new ConcurrentHashMap<>();
     private static volatile Function<Path, Long> usableSpaceOverride;
+    private static final Object USABLE_SPACE_PUBLIC_CACHE_LOCK = new Object();
+    private static Path usableSpacePublicCacheDirectory;
+    private static long usableSpacePublicCacheBytes;
+    private static long usableSpacePublicCacheAtMs;
 
     private DiskSpaceGuard() { }
 
@@ -69,10 +81,17 @@ public final class DiskSpaceGuard {
      * logs the event, posts the appropriate control status, and may stop export when the current
      * sink selection means disk is the only active sink. Caller may invoke from any thread.</p>
      *
-     * @param target path being written, or its containing directory
+     * <p>A null target uses the exporter-managed root. A non-null target whose final path segment
+     * contains a dot is treated as a file and resolved to its parent; other targets are treated as
+     * directories.</p>
+     *
+     * @param target path being written, its containing directory, or {@code null} for the managed
+     *               root
      * @param bytesToWrite estimated write size in bytes
-     * @param context short context for logs and user-facing status
+     * @param context short context for logs and user-facing status; {@code null} is rendered as
+     *                literal diagnostic text
      * @throws IOException when the disk cannot be checked or the write should be refused
+     * @throws RuntimeException if a test override fails while serving a write check
      */
     public static void ensureWritable(Path target, long bytesToWrite, String context) throws IOException {
         Path directory = resolveDirectory(target);
@@ -93,15 +112,64 @@ public final class DiskSpaceGuard {
     }
 
     /**
+     * Returns usable free bytes on the volume for {@code target}, or {@code -1} when unknown.
+     *
+     * <p>Used by spill headroom budgeting and Overview Traffic Spill Status. Results are cached
+     * briefly so frequent Stats/admission probes do not repeatedly hit {@link FileStore} on the
+     * EDT or hot paths. Does not enforce the write reserve; callers that write must still call
+     * {@link #ensureWritable(Path, long, String)}, which always reads fresh usable space.</p>
+     *
+     * <p>A null target uses the exporter-managed root. A non-null target whose final path segment
+     * contains a dot is treated as a file and resolved to its parent; other targets are treated as
+     * directories. Probe and override failures are converted to {@code -1}.</p>
+     *
+     * @param target path or directory on the target volume, or {@code null} for the managed root
+     * @return usable bytes, or {@code -1} when the volume cannot be queried
+     */
+    public static long usableSpacePublic(Path target) {
+        Path directory = resolveDirectory(target);
+        Function<Path, Long> override = usableSpaceOverride;
+        if (override != null) {
+            try {
+                Long forced = override.apply(directory);
+                return forced == null ? -1L : forced;
+            } catch (RuntimeException e) {
+                return -1L;
+            }
+        }
+        long now = System.currentTimeMillis();
+        synchronized (USABLE_SPACE_PUBLIC_CACHE_LOCK) {
+            if (directory.equals(usableSpacePublicCacheDirectory)
+                    && now - usableSpacePublicCacheAtMs < USABLE_SPACE_PUBLIC_CACHE_TTL_MS) {
+                return usableSpacePublicCacheBytes;
+            }
+        }
+        long usable;
+        try {
+            usable = usableSpace(directory);
+        } catch (IOException | RuntimeException e) {
+            return -1L;
+        }
+        synchronized (USABLE_SPACE_PUBLIC_CACHE_LOCK) {
+            usableSpacePublicCacheDirectory = directory;
+            usableSpacePublicCacheBytes = usable;
+            usableSpacePublicCacheAtMs = now;
+        }
+        return usable;
+    }
+
+    /**
      * Visible-for-tests override for usable space calculation.
      *
      * <p>Tests may force low-disk scenarios without filling the real disk. Production code should
-     * leave this unset.</p>
+     * leave this unset. Installing or clearing an override also invalidates the public probe
+     * cache. The replacement may be invoked from any thread.</p>
      *
      * @param override replacement usable-space resolver, or {@code null} to clear
      */
     public static void setUsableSpaceOverride(Function<Path, Long> override) {
         usableSpaceOverride = override;
+        clearUsableSpacePublicCache();
     }
 
     /**
@@ -113,6 +181,15 @@ public final class DiskSpaceGuard {
     public static void resetForTests() {
         usableSpaceOverride = null;
         LAST_LOW_DISK_NOTIFICATION_MS.clear();
+        clearUsableSpacePublicCache();
+    }
+
+    private static void clearUsableSpacePublicCache() {
+        synchronized (USABLE_SPACE_PUBLIC_CACHE_LOCK) {
+            usableSpacePublicCacheDirectory = null;
+            usableSpacePublicCacheBytes = 0L;
+            usableSpacePublicCacheAtMs = 0L;
+        }
     }
 
     private static void notifyLowDisk(Path directory, String detail, String userMessage) {
@@ -128,6 +205,8 @@ public final class DiskSpaceGuard {
         if (RuntimeConfig.isExportRunning() && shouldStopAllExportForLowDisk()) {
             ExportReporterLifecycle.stopAndClearPendingExportWork();
             ControlStatusBridge.post("Stopped due to low disk space");
+            Logger.logInfoPanelOnly("[Export] Forced stop due to low disk space; syncing Start/Stop controls.");
+            ExportControlBridge.notifyForcedStopped();
             return;
         }
 
@@ -140,7 +219,7 @@ public final class DiskSpaceGuard {
             return false;
         }
         ConfigState.Sinks sinks = state.sinks();
-        return sinks.filesEnabled() && !sinks.osEnabled();
+        return sinks.filesEnabled() && !sinks.databaseEnabled();
     }
 
     private static String userMessageForLowDisk() {
@@ -151,9 +230,10 @@ public final class DiskSpaceGuard {
             return "Stopped due to low disk space";
         }
         ConfigState.State state = RuntimeConfig.getState();
-        boolean openSearchEnabled = state != null && state.sinks() != null && state.sinks().osEnabled();
-        if (openSearchEnabled) {
-            return "Local disk writes stopped due to low disk space; OpenSearch export continues.";
+        boolean databaseEnabled = state != null && state.sinks() != null && state.sinks().databaseEnabled();
+        if (databaseEnabled) {
+            return "Local disk writes stopped due to low disk space; "
+                    + RuntimeConfig.searchDestinationDisplayName() + " export continues.";
         }
         return "Write cancelled due to low disk space";
     }

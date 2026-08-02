@@ -3,12 +3,13 @@ package ai.anomalousvectors.tools.burp.ui;
 import java.awt.event.KeyEvent;
 import java.lang.reflect.InvocationTargetException;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
-import javax.swing.JComponent;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
+import javax.swing.JComponent;
 import javax.swing.JRadioButton;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
@@ -22,6 +23,7 @@ import static ai.anomalousvectors.tools.burp.testutils.Reflect.get;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.getComboBox;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.getStatic;
 import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
+import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 
@@ -68,7 +70,6 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         JTextField diskPercentField = JTextField.class.cast(get(panel, "fileDiskUsagePercentField"));
         JComponent formatsLabel = findByName(panel, "files.format.label");
         JComponent limitsLabel = findByName(panel, "files.limits.label");
-        JComponent formatsSeparator = findByName(panel, "files.format.separator");
 
         // OpenSearch row
         JCheckBox databaseEnable = JCheckBox.class.cast(get(panel, "databaseSinkCheckbox"));
@@ -92,7 +93,10 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         if (!databaseEnable.isSelected()) databaseEnable.doClick();
         if (!osDestination.isSelected()) osDestination.doClick();
 
+        JComponent filesDetails = findByName(panel, "files.details");
+
         // Enabled assertions
+        assertThat(filesDetails.isVisible()).isTrue();
         assertThat(filesPath.isEnabled()).isTrue();
         assertThat(jsonlEnable.isEnabled()).isTrue();
         assertThat(bulkNdjsonEnable.isEnabled()).isTrue();
@@ -102,7 +106,6 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(diskPercentField.isEnabled()).isTrue();
         assertThat(formatsLabel.isEnabled()).isTrue();
         assertThat(limitsLabel.isEnabled()).isTrue();
-        assertThat(formatsSeparator.isEnabled()).isTrue();
         assertThat(databaseEnable.isEnabled()).isTrue();
         assertThat(osDestination.isEnabled()).isTrue();
         assertThat(awsDestination.isEnabled()).isTrue();
@@ -121,7 +124,8 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         // Disable Files; search destinations remain mutually exclusive radios.
         if (filesEnable.isSelected()) filesEnable.doClick();
 
-        // Disabled assertions
+        // Hidden + disabled when Files is off (Path / Format / Disk Usage Limits collapse).
+        assertThat(filesDetails.isVisible()).isFalse();
         assertThat(filesPath.isEnabled()).isFalse();
         assertThat(jsonlEnable.isEnabled()).isFalse();
         assertThat(bulkNdjsonEnable.isEnabled()).isFalse();
@@ -131,7 +135,6 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(diskPercentField.isEnabled()).isFalse();
         assertThat(formatsLabel.isEnabled()).isFalse();
         assertThat(limitsLabel.isEnabled()).isFalse();
-        assertThat(formatsSeparator.isEnabled()).isFalse();
         assertThat(databaseEnable.isEnabled()).isTrue();
         assertThat(osDestination.isEnabled()).isTrue();
         assertThat(awsDestination.isEnabled()).isTrue();
@@ -177,10 +180,10 @@ class ConfigPanelDestinationEnablementHeadlessTest {
 
         assertThat(database.isSelected()).isTrue();
         assertThat(openSearch.isSelected()).isTrue();
-        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.openSearch.testSlot");
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.testSlot");
         assertThat(url.getText()).isEqualTo("https://opensearch.url:9200");
-        assertThat(awsUrl.getText()).isEqualTo("https://opensearch.url:9200");
-        assertThat(elasticUrl.getText()).isEqualTo("https://elasticsearch.url:443");
+        assertThat(awsUrl.getText()).isEqualTo("https://amazonopensearch.url");
+        assertThat(elasticUrl.getText()).isEqualTo("https://elasticsearch.url");
         assertThat(comboItems(authType)).containsExactly("API key", "Bearer token", "Certificate", "Basic", "None");
         assertThat(testConnection.isEnabled()).isTrue();
 
@@ -193,7 +196,7 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(comboItems(elasticAuthType)).containsExactly("API key", "Bearer token", "Certificate", "Basic", "None");
         assertThat(elasticTlsMode.isEnabled()).isTrue();
         assertThat(awsTlsMode.isEnabled()).isFalse();
-        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.elasticsearch.testSlot");
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.testSlot");
         assertThat(testConnection.isEnabled()).isTrue();
 
         aws.doClick();
@@ -202,16 +205,18 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(elastic.isSelected()).isFalse();
         assertThat(awsUrl.isEnabled()).isTrue();
         assertThat(elasticUrl.isEnabled()).isFalse();
-        assertThat(comboItems(awsAuthType)).containsExactly("IAM (sigV4)", "Basic", "None");
+        assertThat(comboItems(awsAuthType)).containsExactly(
+                "IAM SigV4 - Profile", "IAM SigV4 - Static credentials", "Basic", "None");
+        assertThat(awsAuthType.getSelectedItem()).isEqualTo("IAM SigV4 - Profile");
         assertThat(awsTlsMode.isEnabled()).isTrue();
         assertThat(elasticTlsMode.isEnabled()).isFalse();
-        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.amazon.testSlot");
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.testSlot");
         assertThat(testConnection.isEnabled()).isTrue();
 
         openSearch.doClick();
         assertThat(openSearch.isSelected()).isTrue();
         assertThat(url.getText()).isEqualTo("https://opensearch.url:9200");
-        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.openSearch.testSlot");
+        assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.testSlot");
         assertThat(testConnection.isEnabled()).isTrue();
 
         database.doClick();
@@ -346,7 +351,9 @@ class ConfigPanelDestinationEnablementHeadlessTest {
     void amazon_and_elasticsearch_auth_panels_show_only_selected_auth_card() {
         JComboBox<?> amazonAuthType = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
         JComboBox<?> elasticAuthType = getComboBox(panel, "elasticSearchAuthTypeCombo");
-        JComponent amazonIam = findByName(panel, "os.amazon.authCard.iam");
+        JComponent amazonStaticIam = findByName(panel, "os.amazon.authCard.iamStatic");
+        JComponent amazonProfileIam = findByName(panel, "os.amazon.authCard.iamProfile");
+        JComponent amazonIamCommon = findByName(panel, "os.amazon.iam.common");
         JComponent amazonBasic = findByName(panel, "os.amazon.authCard.basic");
         JComponent amazonNone = findByName(panel, "os.amazon.authCard.none");
         JComponent elasticApiKey = findByName(panel, "os.elasticsearch.authCard.apikey");
@@ -355,18 +362,33 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         JComponent elasticBasic = findByName(panel, "os.elasticsearch.authCard.basic");
         JComponent elasticNone = findByName(panel, "os.elasticsearch.authCard.none");
 
-        amazonAuthType.setSelectedItem("IAM (sigV4)");
-        assertThat(amazonIam.isVisible()).isTrue();
+        amazonAuthType.setSelectedItem("IAM SigV4 - Static credentials");
+        assertThat(amazonStaticIam.isVisible()).isTrue();
+        assertThat(amazonProfileIam.isVisible()).isFalse();
+        assertThat(amazonIamCommon.isVisible()).isTrue();
+        assertThat(amazonIamCommon.getParent()).isSameAs(amazonStaticIam);
+        assertThat(amazonBasic.isVisible()).isFalse();
+        assertThat(amazonNone.isVisible()).isFalse();
+
+        amazonAuthType.setSelectedItem("IAM SigV4 - Profile");
+        assertThat(amazonStaticIam.isVisible()).isFalse();
+        assertThat(amazonProfileIam.isVisible()).isTrue();
+        assertThat(amazonIamCommon.isVisible()).isTrue();
+        assertThat(amazonIamCommon.getParent()).isSameAs(amazonProfileIam);
         assertThat(amazonBasic.isVisible()).isFalse();
         assertThat(amazonNone.isVisible()).isFalse();
 
         amazonAuthType.setSelectedItem("Basic");
-        assertThat(amazonIam.isVisible()).isFalse();
+        assertThat(amazonStaticIam.isVisible()).isFalse();
+        assertThat(amazonProfileIam.isVisible()).isFalse();
+        assertThat(amazonIamCommon.isVisible()).isFalse();
         assertThat(amazonBasic.isVisible()).isTrue();
         assertThat(amazonNone.isVisible()).isFalse();
 
         amazonAuthType.setSelectedItem("None");
-        assertThat(amazonIam.isVisible()).isFalse();
+        assertThat(amazonStaticIam.isVisible()).isFalse();
+        assertThat(amazonProfileIam.isVisible()).isFalse();
+        assertThat(amazonIamCommon.isVisible()).isFalse();
         assertThat(amazonBasic.isVisible()).isFalse();
         assertThat(amazonNone.isVisible()).isTrue();
 
@@ -404,6 +426,76 @@ class ConfigPanelDestinationEnablementHeadlessTest {
         assertThat(elasticCertificate.isVisible()).isFalse();
         assertThat(elasticBasic.isVisible()).isFalse();
         assertThat(elasticNone.isVisible()).isTrue();
+    }
+
+    @Test
+    void endpointDetection_filtersAmazonAndElasticsearchAuthTypes() throws Exception {
+        JTextField amazonUrl = JTextField.class.cast(get(panel, "openSearchAmazonUrlField"));
+        JComboBox<?> amazonAuth = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+        JTextField elasticUrl = JTextField.class.cast(get(panel, "elasticSearchUrlField"));
+        JComboBox<?> elasticAuth = getComboBox(panel, "elasticSearchAuthTypeCombo");
+
+        SwingUtilities.invokeAndWait(() -> {
+            amazonUrl.setText("https://collection.us-east-1.aoss.amazonaws.com");
+            call(panel, "refreshAmazonAuthTypesForEndpoint");
+            elasticUrl.setText("https://project.us-east-1.aws.elastic.cloud");
+            call(panel, "refreshElasticsearchAuthTypesForEndpoint");
+        });
+
+        assertThat(comboItems(amazonAuth)).containsExactly(
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE,
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC);
+        assertThat(comboItems(elasticAuth)).containsExactly("API key", "Bearer token");
+
+        SwingUtilities.invokeAndWait(() -> {
+            amazonUrl.setText("https://search-domain.us-east-1.es.amazonaws.com");
+            call(panel, "refreshAmazonAuthTypesForEndpoint");
+        });
+        assertThat(comboItems(amazonAuth)).containsExactly(
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE,
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC,
+                "Basic",
+                "None");
+    }
+
+    @Test
+    void ambiguousAmazonEndpoint_requiresExplicitDeploymentSelectionOnce() throws Exception {
+        JTextField amazonUrl = JTextField.class.cast(get(panel, "openSearchAmazonUrlField"));
+        JComboBox<?> amazonAuth = getComboBox(panel, "openSearchAmazonAuthTypeCombo");
+        JComponent deploymentPanel =
+                JComponent.class.cast(get(panel, "openSearchAmazonDeploymentTypePanel"));
+        JComboBox<?> deployment = getComboBox(panel, "openSearchAmazonDeploymentTypeCombo");
+        List<String> warnings = new CopyOnWriteArrayList<>();
+        Logger.LogListener listener = (level, message) -> {
+            if ("WARN".equals(level) && message.startsWith("[Amazon OpenSearch]")) {
+                warnings.add(message);
+            }
+        };
+        Logger.registerListener(listener);
+        try {
+            AtomicReference<Boolean> first = new AtomicReference<>();
+            AtomicReference<Boolean> resolved = new AtomicReference<>();
+            SwingUtilities.invokeAndWait(() -> {
+                amazonUrl.setText("https://custom-search.example");
+                amazonAuth.setSelectedItem(ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE);
+                call(panel, "updateAmazonDeploymentTypeVisibility", false);
+                first.set((Boolean) call(
+                        panel, "ensureAmazonDeploymentTypeResolvedForTest"));
+                deployment.setSelectedItem("Serverless");
+                resolved.set((Boolean) call(
+                        panel, "ensureAmazonDeploymentTypeResolvedForTest"));
+            });
+            SwingUtilities.invokeAndWait(() -> {});
+
+            assertThat(first.get()).isFalse();
+            assertThat(deploymentPanel.isVisible()).isTrue();
+            assertThat(resolved.get()).isTrue();
+            assertThat(warnings).singleElement().asString()
+                    .contains("Select Hosted or Serverless to continue");
+        } finally {
+            Logger.unregisterListener(listener);
+            Logger.resetState();
+        }
     }
 
     private static JComponent findByName(JComponent root, String name) {

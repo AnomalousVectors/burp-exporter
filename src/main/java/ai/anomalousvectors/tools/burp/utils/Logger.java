@@ -21,28 +21,28 @@ import org.slf4j.LoggerFactory;
 /**
  * Centralizes extension logging for SLF4J, Burp, and Swing listeners.
  *
- * <p>This helper writes to SLF4J, mirrors selected messages to Burp's logging APIs when available,
- * and exposes a listener bus used by the Log panel and tests.</p>
+ * <p>This helper writes to SLF4J and exposes a listener bus used by the Log panel and tests. Only
+ * explicit extension-lifecycle methods mirror messages to Burp's logging APIs.</p>
  *
  * <p>A bounded replay buffer lets newly registered listeners reconstruct recent history after UI
  * removal or recreation. Listener callbacks are always delivered on the EDT.</p>
  *
- * <h2>Choosing a log method</h2>
- * <p>Use a stable {@code [Component]} prefix on every message so support can grep the Log tab and
- * log files. Prefer {@code *PanelOnly} for routine operator messages so Burp's Extensions
- * Output/Error consoles stay quiet.</p>
- * <table border="1">
- *   <caption>Logger API levels and destinations</caption>
- *   <tr><th>Method</th><th>SLF4J</th><th>Log tab</th><th>Burp console</th><th>Typical use</th></tr>
- *   <tr><td>{@link #logInfoPanelOnly}</td><td>INFO</td><td>yes</td><td>no</td><td>Start/Stop, index create, backlog export start, one-shot snapshot complete, connection recovered</td></tr>
- *   <tr><td>{@link #logInfoPanelAndBurp}</td><td>INFO</td><td>yes (panel text)</td><td>yes (burp text)</td><td>Extension load banner: clean Burp Extensions Output, prefixed Log tab line</td></tr>
- *   <tr><td>{@link #logDebug}</td><td>DEBUG</td><td>yes</td><td>no</td><td>Snapshot pacing summaries, OpenSearch push detail</td></tr>
- *   <tr><td>{@link #logWarnPanelOnly}</td><td>WARN</td><td>yes</td><td>no</td><td>Recoverable sink degradation (push failed, retry pressure)</td></tr>
- *   <tr><td>{@link #logErrorPanelOnly}</td><td>ERROR</td><td>yes</td><td>no</td><td>Start aborted, index init failed, retry queue full</td></tr>
- *   <tr><td>{@link #logInfo} / {@link #logWarn} / {@link #logError}</td><td>matching</td><td>yes</td><td>yes</td><td>Extension load, severe file I/O loss, must appear in Burp console</td></tr>
- *   <tr><td>{@link #logTrace}</td><td>TRACE</td><td>yes</td><td>no</td><td>High-volume diagnostics (Repeater tab capture, cancelled OpenSearch push)</td></tr>
- *   <tr><td>{@link #internalDebug} / {@link #internalTrace}</td><td>DEBUG/TRACE</td><td>no</td><td>no</td><td>LogPanel internals; avoid feedback loops</td></tr>
- * </table>
+ * <p>Use a stable {@code [Component]} prefix on every message so support can search the Log tab
+ * and log files. Choose destinations as follows:</p>
+ * <ul>
+ *   <li>{@link #logInfoPanelOnly}, {@link #logWarnPanelOnly}, and
+ *       {@link #logErrorPanelOnly}: SLF4J and Log tab only, for operator runtime messages.</li>
+ *   <li>{@link #logInfoPanelAndBurp}: SLF4J, Log tab, and Burp Output, for extension
+ *       load/unload lifecycle only.</li>
+ *   <li>{@link #logErrorPanelAndBurp}: SLF4J, Log tab, and Burp Error, for extension
+ *       initialization failures only.</li>
+ *   <li>{@link #logDebug} and {@link #logTrace}: SLF4J and Log tab only, for detailed or
+ *       high-volume diagnostics.</li>
+ *   <li>{@link #logInfo}, {@link #logWarn}, and {@link #logError}: SLF4J and Log tab only, for
+ *       general runtime messages.</li>
+ *   <li>{@link #internalDebug} and {@link #internalTrace}: SLF4J only, for Log panel internals
+ *       that must not feed back into the listener bus.</li>
+ * </ul>
  * <p>Do not use {@link #logError} for recoverable per-document OpenSearch failures; record stats and
  * emit {@link #logWarnPanelOnly} at the reporter plus {@link #logDebug} in
  * {@link ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper}. User-initiated
@@ -57,7 +57,17 @@ public final class Logger {
      * <p>Callbacks are invoked on the EDT, even when the originating log call comes from a worker
      * thread.</p>
      */
-    public interface LogListener { void onLog(String level, String message); }
+    public interface LogListener {
+        /**
+         * Receives one normalized log event on the EDT.
+         *
+         * <p>Runtime exceptions are isolated and logged at internal DEBUG level.</p>
+         *
+         * @param level log level label
+         * @param message non-null message text
+         */
+        void onLog(String level, String message);
+    }
 
     private static final String INTERNAL_LOGGER_NAME = "ai.anomalousvectors.tools.burp";
     private static final int REPLAY_BUFFER_SIZE = 500;
@@ -83,7 +93,7 @@ public final class Logger {
     /**
      * Wires Burp's logging sink.
      *
-     * @param montoyaLogging Burp logging handle
+     * @param montoyaLogging Burp logging handle, or {@code null} to clear the sink
      */
     public static void initialize(Logging montoyaLogging) { BURP_LOGGER.set(montoyaLogging); }
 
@@ -91,6 +101,8 @@ public final class Logger {
      * Registers a UI/log listener. If the listener is a {@link ReplayableLogListener},
      * recent buffered messages are replayed so the panel shows full history (e.g. after
      * switching back to the extension tab when Burp had removed the panel).
+     * Replay runs immediately on the EDT or is queued asynchronously when registration occurs on
+     * another thread. Listener exceptions are isolated from the caller.
      *
      * @param listener listener to add (nullable ignored)
      */
@@ -135,14 +147,13 @@ public final class Logger {
     // -------- Public API (mirrored to UI listener bus) --------
 
     /**
-     * Logs at INFO and mirrors to Burp and UI listeners.
+     * Logs at INFO to SLF4J and UI listeners without writing to Burp's console.
      *
      * @param msg message to log
      */
     public static void logInfo(String msg)  {
         final String m = safe(msg);
         LOG.info(m);
-        toBurpOut(m);
         notifyListeners("INFO",  m);
     }
 
@@ -178,6 +189,28 @@ public final class Logger {
     }
 
     /**
+     * Logs an extension lifecycle failure with separate panel and Burp error-console text.
+     *
+     * <p>This is reserved for extension initialization failures. Runtime export errors belong in
+     * the extension Log tab and must use {@link #logError} or {@link #logErrorPanelOnly}.</p>
+     *
+     * @param panelMessage message for SLF4J and Log tab listeners
+     * @param burpMessage concise extension-lifecycle message for Burp's error console
+     * @param failure initialization failure; may be {@code null}
+     */
+    public static void logErrorPanelAndBurp(
+            String panelMessage, String burpMessage, Throwable failure) {
+        final String panel = safe(panelMessage);
+        final String burp = safe(burpMessage);
+        final String detail = failure != null
+                ? " :: " + failure.getClass().getSimpleName() + ": " + safe(failure.getMessage())
+                : "";
+        LOG.error(panel, failure);
+        toBurpErr(burp + detail);
+        notifyListeners("ERROR", panel + detail);
+    }
+
+    /**
      * Logs at WARN to SLF4J and UI listeners only; does not send to Burp's output/error consoles.
      *
      * <p>Use for recoverable degradation or operator-visible warning conditions that should be easy
@@ -203,14 +236,13 @@ public final class Logger {
     }
 
     /**
-     * Logs at WARN and mirrors to Burp and UI listeners.
+     * Logs at WARN to SLF4J and UI listeners without writing to Burp's console.
      *
      * @param msg message to log
      */
     public static void logWarn(String msg)  {
         final String m = safe(msg);
         LOG.warn(m);
-        toBurpOut(m);
         notifyListeners("WARN",  m);
     }
 
@@ -237,19 +269,18 @@ public final class Logger {
     }
 
     /**
-     * Logs at ERROR and mirrors to Burp and UI listeners.
+     * Logs at ERROR to SLF4J and UI listeners without writing to Burp's console.
      *
      * @param msg message to log
      */
     public static void logError(String msg) {
         final String m = safe(msg);
         LOG.error(m);
-        toBurpErr(m);
         notifyListeners("ERROR", m);
     }
 
     /**
-     * Logs at ERROR with throwable, mirrors concise summary to Burp/UI listeners.
+     * Logs at ERROR with throwable and sends a concise summary to UI listeners only.
      *
      * @param msg message to log
      * @param t   throwable (nullable)
@@ -259,7 +290,6 @@ public final class Logger {
         final String detail = (t != null ? " :: " + t.getClass().getSimpleName() + ": " + safe(t.getMessage()) : "");
         final String uiMessage = base + detail;
         LOG.error(base, t);                    // stack trace handled by backend
-        toBurpErr(uiMessage);                  // concise summary mirrored to UI
         notifyListeners("ERROR", uiMessage);
     }
 
@@ -432,7 +462,7 @@ public final class Logger {
         /**
          * Forwards the event to UI listeners, skipping internal logger entries.
          *
-         * @param event logback event
+         * @param event logback event; {@code null} is ignored
          */
         @Override
         protected void append(ILoggingEvent event) {

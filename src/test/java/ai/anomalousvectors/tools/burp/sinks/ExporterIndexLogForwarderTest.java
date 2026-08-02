@@ -147,6 +147,49 @@ class ExporterIndexLogForwarderTest {
         }
     }
 
+    @Test
+    void onLog_skipsExporterStatsAndBulkLifecycleNoise() throws Exception {
+        ExporterIndexLogForwarder forwarder = null;
+        try {
+            Path root = TestPathSupport.createDirectory("exporter-log-noise-filter");
+            RuntimeConfig.updateState(new ConfigState.State(
+                    java.util.List.of(ConfigKeys.SRC_SETTINGS, ConfigKeys.SRC_EXPORTER),
+                    ConfigKeys.SCOPE_ALL,
+                    java.util.List.of(),
+                    new ConfigState.Sinks(true, root.toString(), false, true,
+                            false, "https://opensearch.url:9200", "", "", false),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                    ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                    null
+            ));
+            RuntimeConfig.setExportRunning(true);
+            RuntimeConfig.setExportStarting(false);
+            forwarder = new ExporterIndexLogForwarder();
+
+            forwarder.onLog("INFO", "[PeriodicExport] Exporter stats: push failed index=tool-burp-exporter reason=busy.");
+            forwarder.onLog("INFO", "[Amazon OpenSearch] Bulk HTTP slow response: requestId=1 index=tool-burp-exporter.");
+            forwarder.onLog("INFO", "keep this operator line");
+            java.util.concurrent.TimeUnit.MILLISECONDS.sleep(250L);
+
+            Path ndjsonPath = root.resolve(IndexNaming.indexNameForShortName("exporter") + ".ndjson");
+            assertThat(ndjsonPath).exists();
+            String body = Files.readString(ndjsonPath);
+            assertThat(body).contains("keep this operator line");
+            assertThat(body).doesNotContain("Exporter stats: push failed");
+            assertThat(body).doesNotContain("Bulk HTTP slow response");
+        } finally {
+            if (forwarder != null) {
+                forwarder.stop();
+            }
+            RuntimeConfig.setExportRunning(false);
+            BurpRuntimeMetadata.clear();
+            MontoyaApiProvider.set(null);
+        }
+    }
+
     private static ExecutorService workerOf(ExporterIndexLogForwarder forwarder) throws Exception {
         Field field = ExporterIndexLogForwarder.class.getDeclaredField("worker");
         field.setAccessible(true);

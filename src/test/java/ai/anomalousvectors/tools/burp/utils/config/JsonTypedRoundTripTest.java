@@ -1,13 +1,12 @@
 package ai.anomalousvectors.tools.burp.utils.config;
 
-import org.junit.jupiter.api.Test;
-
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
 
 class JsonTypedRoundTripTest {
 
@@ -226,6 +225,128 @@ class JsonTypedRoundTripTest {
         assertThat(parsed.sinks().openSearchOptions().pinnedTlsCertificateSourcePath()).isEqualTo("c:/tls/opensearch.pem");
         assertThat(parsed.sinks().openSearchOptions().pinnedTlsCertificateFingerprintSha256()).isEqualTo("fingerprint-123");
         assertThat(parsed.sinks().openSearchOptions().pinnedTlsCertificateEncodedBase64()).isEqualTo("ZmFrZWNlcnQ=");
+    }
+
+    @Test
+    void build_and_parse_preserves_nonSecret_amazon_openSearch_metadata() throws IOException {
+        ConfigState.OpenSearchAmazonOptions amazonOptions = new ConfigState.OpenSearchAmazonOptions(
+                "IAM SigV4 - Profile",
+                "",
+                "us-east-1",
+                "prod-profile",
+                "C:/Users/pr/.aws/credentials",
+                "C:/Users/pr/.aws/config",
+                ConfigState.DEPLOYMENT_SERVERLESS,
+                ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                "",
+                "",
+                "");
+        var state = new ConfigState.State(
+                List.of("settings"),
+                "all",
+                List.of(),
+                new ConfigState.Sinks(
+                        false,
+                        "",
+                        false,
+                        false,
+                        true,
+                        ConfigState.DEFAULT_FILE_TOTAL_CAP_GB,
+                        true,
+                        ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT,
+                        true,
+                        "https://opensearch.url:9200",
+                        "",
+                        "",
+                        ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                        ConfigState.defaultOpenSearchOptions(),
+                        ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(),
+                        "https://00000000000000abc123.us-east-1.aoss.amazonaws.com",
+                        amazonOptions,
+                        "",
+                        ConfigState.defaultElasticsearchOptions()),
+                ConfigState.DEFAULT_SETTINGS_SUB,
+                ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                null);
+
+        String json = ConfigJsonMapper.build(state);
+        ConfigState.State parsed = ConfigJsonMapper.parseState(json);
+
+        assertThat(json).contains("\"type\" : \"openSearchAmazon\"");
+        assertThat(json).contains("\"auth\" : {");
+        assertThat(json).contains("\"type\" : \"IAM SigV4 - Profile\"");
+        assertThat(json).contains("\"region\" : \"us-east-1\"");
+        assertThat(json).contains("\"profile\" : \"prod-profile\"");
+        assertThat(json).contains("\"credentialsFilePath\" : \"C:/Users/pr/.aws/credentials\"");
+        assertThat(json).contains("\"configFilePath\" : \"C:/Users/pr/.aws/config\"");
+        assertThat(json).contains("\"deploymentType\" : \"serverless\"");
+        assertThat(json).doesNotContain("secretAccessKey");
+        assertThat(json).doesNotContain("sessionToken");
+
+        ConfigState.OpenSearchAmazonOptions parsedOptions = parsed.sinks().openSearchAmazonOptions();
+        assertThat(parsed.sinks().searchDestinationKind()).isEqualTo(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON);
+        assertThat(parsedOptions.authType()).isEqualTo("IAM SigV4 - Profile");
+        assertThat(parsedOptions.region()).isEqualTo("us-east-1");
+        assertThat(parsedOptions.profile()).isEqualTo("prod-profile");
+        assertThat(parsedOptions.credentialsFilePath()).isEqualTo("C:/Users/pr/.aws/credentials");
+        assertThat(parsedOptions.configFilePath()).isEqualTo("C:/Users/pr/.aws/config");
+        assertThat(parsedOptions.deploymentType()).isEqualTo(ConfigState.DEPLOYMENT_SERVERLESS);
+    }
+
+    @Test
+    void build_and_parse_preserves_elasticsearch_deployment_type() throws IOException {
+        ConfigState.ElasticsearchOptions elasticsearchOptions = new ConfigState.ElasticsearchOptions(
+                "API key",
+                "",
+                "",
+                "",
+                ConfigState.DEPLOYMENT_SERVERLESS,
+                ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                "",
+                "",
+                "");
+        ConfigState.State state = new ConfigState.State(
+                List.of(ConfigKeys.SRC_SETTINGS),
+                ConfigKeys.SCOPE_ALL,
+                List.of(),
+                new ConfigState.Sinks(
+                        false,
+                        "",
+                        false,
+                        false,
+                        true,
+                        ConfigState.DEFAULT_FILE_TOTAL_CAP_GB,
+                        true,
+                        ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT,
+                        true,
+                        "https://opensearch.url:9200",
+                        "",
+                        "",
+                        ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                        ConfigState.defaultOpenSearchOptions(),
+                        ConfigState.SearchDestination.ELASTICSEARCH.configKey(),
+                        "",
+                        ConfigState.defaultOpenSearchAmazonOptions(),
+                        "https://example.es.us-central1.gcp.elastic.cloud",
+                        elasticsearchOptions),
+                ConfigState.DEFAULT_SETTINGS_SUB,
+                ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                null);
+
+        String json = ConfigJsonMapper.build(state);
+        ConfigState.State parsed = ConfigJsonMapper.parseState(json);
+
+        assertThat(json).contains("\"deploymentType\" : \"serverless\"");
+        assertThat(parsed.sinks().searchDestinationKind())
+                .isEqualTo(ConfigState.SearchDestination.ELASTICSEARCH);
+        assertThat(parsed.sinks().elasticSearchOptions().deploymentType())
+                .isEqualTo(ConfigState.DEPLOYMENT_SERVERLESS);
     }
 
     @Test

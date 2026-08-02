@@ -65,8 +65,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
             assertThat(startStop.getText()).isEqualTo("Start");
             assertThat(controlStatus.getText()).contains("Start aborted");
             assertThat(controlStatus.getText())
-                    .contains("Amazon OpenSearch is not wired for Start/export yet.");
-            waitForLogMessage(events, "Amazon OpenSearch is not wired for Start/export yet.");
+                    .contains("Amazon OpenSearch preflight failed: AWS region could not be detected from the endpoint. Enter the region to continue.");
+            waitForLogMessage(events,
+                    "Amazon OpenSearch preflight failed: AWS region could not be detected from the endpoint. Enter the region to continue.");
         } finally {
             Logger.unregisterListener(listener);
             ExportReporterLifecycle.resetForTests();
@@ -89,9 +90,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
-                if (!awsDestination.isSelected()) {
-                    awsDestination.doClick();
+                JCheckBox databaseEnabled = JCheckBox.class.cast(get(p, "databaseSinkCheckbox"));
+                if (databaseEnabled.isSelected()) {
+                    databaseEnabled.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -145,9 +146,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
-                if (!awsDestination.isSelected()) {
-                    awsDestination.doClick();
+                JCheckBox databaseEnabled = JCheckBox.class.cast(get(p, "databaseSinkCheckbox"));
+                if (databaseEnabled.isSelected()) {
+                    databaseEnabled.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -327,9 +328,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
-                if (!awsDestination.isSelected()) {
-                    awsDestination.doClick();
+                JCheckBox databaseEnabled = JCheckBox.class.cast(get(p, "databaseSinkCheckbox"));
+                if (databaseEnabled.isSelected()) {
+                    databaseEnabled.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -376,9 +377,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
-                if (!awsDestination.isSelected()) {
-                    awsDestination.doClick();
+                JCheckBox databaseEnabled = JCheckBox.class.cast(get(p, "databaseSinkCheckbox"));
+                if (databaseEnabled.isSelected()) {
+                    databaseEnabled.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));
@@ -423,9 +424,9 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 p.setSize(1000, 700);
                 p.doLayout();
 
-                javax.swing.AbstractButton awsDestination = javax.swing.AbstractButton.class.cast(get(p, "openSearchAmazonDestinationRadio"));
-                if (!awsDestination.isSelected()) {
-                    awsDestination.doClick();
+                JCheckBox databaseEnabled = JCheckBox.class.cast(get(p, "databaseSinkCheckbox"));
+                if (databaseEnabled.isSelected()) {
+                    databaseEnabled.doClick();
                 }
 
                 JCheckBox filesEnabled = JCheckBox.class.cast(get(p, "fileSinkCheckbox"));

@@ -1,7 +1,6 @@
 package ai.anomalousvectors.tools.burp.ui;
 
 import java.awt.Component;
-import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
@@ -13,10 +12,8 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import javax.swing.JSeparator;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
-import javax.swing.SwingConstants;
 
 import ai.anomalousvectors.tools.burp.ui.primitives.StatusViews;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
@@ -26,9 +23,52 @@ import net.miginfocom.swing.MigLayout;
  * Builds the "Destinations" section panel used by ConfigPanel.
  *
  * <p>Components are owned by {@link ConfigPanel} and injected to keep a single source of state.
- * The section has one shared status box, used for OpenSearch test-connection results.</p>
+ * Layout is a vertical stack: Files details under Files, then Database radios (OpenSearch first)
+ * with collapsed per-destination details, then one shared Test Connection control and status.</p>
  */
 public final class ConfigDestinationPanel {
+
+    /**
+     * Shared MigLayout columns for destination label/value rows.
+     *
+     * <p>The label column width is the preferred width of the longest destination label so nested
+     * Base URL / auth / TLS panels keep the same input left edge without an oversized fixed gap.
+     * The value column is {@code pref} so auto-sizing text fields and prototype-sized combos stay
+     * content-wide instead of stretching across the window.</p>
+     */
+    static final String FIELD_COLS = "[" + sharedDestinationLabelColumnWidth() + "!, left]6[pref]";
+
+    /**
+     * Returns the preferred width used for every destination label column.
+     *
+     * <p>Nested auth/TLS panels each run their own MigLayout, so a per-panel {@code pref!} column
+     * would size to that panel's longest label only and misalign inputs. Measuring the global
+     * longest label once keeps all destination blocks on one shared width.</p>
+     *
+     * @return label-column width in pixels
+     */
+    private static int sharedDestinationLabelColumnWidth() {
+        String[] samples = {
+            "Disk Usage Limits:",
+            "Secret Access Key:",
+            "Credentials file:",
+            "Amazon Username:",
+            "Deployment type:",
+            "Bearer Token:",
+            "Session Token:",
+            "Access Key ID:",
+            "Base URL:",
+            "Auth type:",
+            "TLS mode:"
+        };
+        JLabel probe = new JLabel();
+        int width = 0;
+        for (String sample : samples) {
+            probe.setText(sample);
+            width = Math.max(width, probe.getPreferredSize().width);
+        }
+        return width;
+    }
 
     // Files destination
     private final JCheckBox fileSinkCheckbox;
@@ -63,7 +103,8 @@ public final class ConfigDestinationPanel {
 
     private static final String GAPLEFT = "gapleft ";
     private static final String ALIGN_LEFT_TOP = "alignx left, top";
-    private static final int DESTINATION_LABEL_COLUMN_WIDTH = 250;
+    /** Extra indent that preserves the visual hierarchy under Files and Database checkboxes. */
+    private static final int NESTED_INDENT_PX = 42;
 
     /**
      * Creates a destination section backed by controls owned by {@link ConfigPanel}.
@@ -75,7 +116,7 @@ public final class ConfigDestinationPanel {
      * @param fileSinkCheckbox enables file export
      * @param filePathField file root directory field
      * @param fileJsonlCheckbox selects JSONL file output
-     * @param fileBulkNdjsonCheckbox selects OpenSearch bulk NDJSON file output
+     * @param fileBulkNdjsonCheckbox selects search database bulk NDJSON file output
      * @param fileLimitsPanel file export safety-limit controls
      * @param databaseSinkCheckbox enables database export
      * @param openSearchSinkCheckbox selects the OpenSearch destination
@@ -132,11 +173,14 @@ public final class ConfigDestinationPanel {
         this.databaseSinkCheckbox = Objects.requireNonNull(databaseSinkCheckbox, "databaseSinkCheckbox");
         this.openSearchSinkCheckbox = Objects.requireNonNull(openSearchSinkCheckbox, "openSearchSinkCheckbox");
         this.openSearchUrlField = Objects.requireNonNull(openSearchUrlField, "openSearchUrlField");
-        this.openSearchAmazonDestinationRadio = Objects.requireNonNull(openSearchAmazonDestinationRadio, "openSearchAmazonDestinationRadio");
+        this.openSearchAmazonDestinationRadio = Objects.requireNonNull(
+                openSearchAmazonDestinationRadio, "openSearchAmazonDestinationRadio");
         this.openSearchAmazonUrlField = Objects.requireNonNull(openSearchAmazonUrlField, "openSearchAmazonUrlField");
-        this.openSearchAmazonOptionsPanel = Objects.requireNonNull(openSearchAmazonOptionsPanel, "openSearchAmazonOptionsPanel");
+        this.openSearchAmazonOptionsPanel = Objects.requireNonNull(
+                openSearchAmazonOptionsPanel, "openSearchAmazonOptionsPanel");
         this.openSearchAmazonTlsPanel = Objects.requireNonNull(openSearchAmazonTlsPanel, "openSearchAmazonTlsPanel");
-        this.elasticSearchDestinationRadio = Objects.requireNonNull(elasticSearchDestinationRadio, "elasticSearchDestinationRadio");
+        this.elasticSearchDestinationRadio = Objects.requireNonNull(
+                elasticSearchDestinationRadio, "elasticSearchDestinationRadio");
         this.elasticSearchUrlField = Objects.requireNonNull(elasticSearchUrlField, "elasticSearchUrlField");
         this.elasticSearchOptionsPanel = Objects.requireNonNull(elasticSearchOptionsPanel, "elasticSearchOptionsPanel");
         this.elasticSearchTlsPanel = Objects.requireNonNull(elasticSearchTlsPanel, "elasticSearchTlsPanel");
@@ -154,84 +198,82 @@ public final class ConfigDestinationPanel {
     /**
      * Builds the Destination section containing Files and search-destination controls.
      *
-     * <p>Caller must invoke on the EDT. Layout keeps all Files controls on one row and places the
-     * shared destination status box beneath the search row.</p>
+     * <p>Caller must invoke on the EDT. Files and Database nest their details vertically. Database
+     * radios are ordered OpenSearch, Amazon OpenSearch, then Elasticsearch; inactive radios collapse
+     * URL/auth/TLS. Test Connection and status sit once under the Database block.</p>
      *
      * @return assembled panel with destination controls and the shared status area
      */
     public JPanel build() {
-        JPanel panel = new JPanel(new MigLayout("insets 0, wrap 1", "[grow]", "[]"+rowGap+"[]"+rowGap+"[]"+rowGap+"[]"+rowGap+"[]"));
+        JPanel panel = new JPanel(new MigLayout(
+                "insets 0, wrap 1, hidemode 3, gapy " + rowGap, "[grow]", "[]"));
         panel.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         JLabel header = Tooltips.label("Destinations",
-                Tooltips.html("Configure export destination(s)."));
+                Tooltips.htmlRaw(
+                        "<b>Destinations</b>",
+                        "Choose where Burp Exporter writes selected sources.",
+                        "Enable <b>Files</b>, one <b>Database</b> destination, or both.",
+                        "Database choices are OpenSearch (recommended), Amazon OpenSearch, or Elasticsearch."));
         header.setFont(header.getFont().deriveFont(Font.BOLD, 18f));
         panel.add(header, "gapbottom 6, wrap");
 
-        JPanel destinationRows = new JPanel(new MigLayout(
-                "insets 0, wrap 8, hidemode 2, gapy " + rowGap,
-                "[" + DESTINATION_LABEL_COLUMN_WIDTH + "!, left]20[pref]18[pref]8[pref]8[pref]22[pref]12[pref]12[pref]"));
-        destinationRows.setAlignmentX(Component.LEFT_ALIGNMENT);
+        int nestedIndent = indentPx + NESTED_INDENT_PX;
+        int detailIndent = nestedIndent + NESTED_INDENT_PX;
 
-        JLabel formatsLabel = Tooltips.label("Format:",
-                Tooltips.html("Select the on-disk export format."));
-        formatsLabel.setName("files.format.label");
-        JLabel safetyLabel = Tooltips.label("Disk Usage Limits:",
-                Tooltips.html("Configure file-export safety limits.", "These controls stop file export before the destination grows too large."));
-        safetyLabel.setName("files.limits.label");
-        JSeparator formatsSafetySeparator = buildInlineVerticalSeparator();
-        formatsSafetySeparator.setName("files.format.separator");
+        panel.add(fileSinkCheckbox, GAPLEFT + indentPx + ", " + ALIGN_LEFT_TOP);
 
-        destinationRows.add(fileSinkCheckbox, GAPLEFT + indentPx + ", " + ALIGN_LEFT_TOP);
-        destinationRows.add(filePathField,    ALIGN_LEFT_TOP);
-        destinationRows.add(formatsLabel, ALIGN_LEFT_TOP);
-        destinationRows.add(fileJsonlCheckbox, ALIGN_LEFT_TOP);
-        destinationRows.add(fileBulkNdjsonCheckbox, "gapright 6, " + ALIGN_LEFT_TOP);
-        destinationRows.add(formatsSafetySeparator, "growy, h 18!, " + ALIGN_LEFT_TOP);
-        destinationRows.add(safetyLabel, ALIGN_LEFT_TOP);
-        destinationRows.add(fileLimitsPanel, ALIGN_LEFT_TOP);
+        JPanel filesDetails = buildFilesDetailsPanel();
+        filesDetails.setName("files.details");
+        panel.add(filesDetails, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
 
         Runnable syncFileRowDecorations = () -> {
             boolean enabled = fileSinkCheckbox.isSelected();
-            formatsLabel.setEnabled(enabled);
-            formatsSafetySeparator.setEnabled(enabled);
-            safetyLabel.setEnabled(enabled);
-            setEnabledRecursively(fileLimitsPanel, enabled);
+            filesDetails.setVisible(enabled);
+            setEnabledRecursively(filesDetails, enabled);
+            panel.revalidate();
+            panel.repaint();
         };
         fileSinkCheckbox.getModel().addChangeListener(e -> syncFileRowDecorations.run());
         syncFileRowDecorations.run();
 
-        int databaseOptionIndentPx = 72;
+        panel.add(databaseSinkCheckbox, GAPLEFT + indentPx + ", " + ALIGN_LEFT_TOP);
 
-        // Database rows share the destination grid so every URL starts in the same column.
-        destinationRows.add(databaseSinkCheckbox, GAPLEFT + indentPx + ", span 8, " + ALIGN_LEFT_TOP);
+        JPanel openSearchDetails = buildDestinationDetails(
+                "os.destination.openSearch.details",
+                openSearchUrlField,
+                "os.url.baseLabel",
+                openSearchAuthFormPanel,
+                openSearchTlsPanel);
+        JPanel amazonDetails = buildDestinationDetails(
+                "os.destination.amazon.details",
+                openSearchAmazonUrlField,
+                "os.amazon.url.baseLabel",
+                openSearchAmazonOptionsPanel,
+                openSearchAmazonTlsPanel);
+        JPanel elasticDetails = buildDestinationDetails(
+                "os.destination.elasticsearch.details",
+                elasticSearchUrlField,
+                "os.elasticsearch.url.baseLabel",
+                elasticSearchOptionsPanel,
+                elasticSearchTlsPanel);
 
-        JSeparator amazonTlsSeparator = buildInlineVerticalSeparator();
-        JPanel amazonTestConnectionSlot = buildTestConnectionSlot("os.destination.amazon.testSlot");
-        destinationRows.add(openSearchAmazonDestinationRadio, GAPLEFT + databaseOptionIndentPx + ", " + ALIGN_LEFT_TOP);
-        destinationRows.add(openSearchAmazonUrlField, ALIGN_LEFT_TOP);
-        destinationRows.add(openSearchAmazonOptionsPanel, "span 3, " + ALIGN_LEFT_TOP);
-        destinationRows.add(amazonTlsSeparator, "growy, h 18!, " + ALIGN_LEFT_TOP);
-        destinationRows.add(openSearchAmazonTlsPanel, ALIGN_LEFT_TOP);
-        destinationRows.add(amazonTestConnectionSlot, ALIGN_LEFT_TOP);
+        panel.add(openSearchSinkCheckbox, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
+        panel.add(openSearchDetails, GAPLEFT + detailIndent + ", " + ALIGN_LEFT_TOP);
 
-        JSeparator elasticTlsSeparator = buildInlineVerticalSeparator();
-        JPanel elasticTestConnectionSlot = buildTestConnectionSlot("os.destination.elasticsearch.testSlot");
-        destinationRows.add(elasticSearchDestinationRadio, GAPLEFT + databaseOptionIndentPx + ", " + ALIGN_LEFT_TOP);
-        destinationRows.add(elasticSearchUrlField, ALIGN_LEFT_TOP);
-        destinationRows.add(elasticSearchOptionsPanel, "span 3, " + ALIGN_LEFT_TOP);
-        destinationRows.add(elasticTlsSeparator, "growy, h 18!, " + ALIGN_LEFT_TOP);
-        destinationRows.add(elasticSearchTlsPanel, ALIGN_LEFT_TOP);
-        destinationRows.add(elasticTestConnectionSlot, ALIGN_LEFT_TOP);
+        panel.add(openSearchAmazonDestinationRadio, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
+        panel.add(amazonDetails, GAPLEFT + detailIndent + ", " + ALIGN_LEFT_TOP);
 
-        JSeparator tlsSeparator = buildInlineVerticalSeparator();
-        JPanel openSearchTestConnectionSlot = buildTestConnectionSlot("os.destination.openSearch.testSlot");
-        destinationRows.add(openSearchSinkCheckbox, GAPLEFT + databaseOptionIndentPx + ", " + ALIGN_LEFT_TOP);
-        destinationRows.add(openSearchUrlField, ALIGN_LEFT_TOP);
-        destinationRows.add(openSearchAuthFormPanel, "span 3, " + ALIGN_LEFT_TOP);
-        destinationRows.add(tlsSeparator, "growy, h 18!, " + ALIGN_LEFT_TOP);
-        destinationRows.add(openSearchTlsPanel, ALIGN_LEFT_TOP);
-        destinationRows.add(openSearchTestConnectionSlot, ALIGN_LEFT_TOP);
+        panel.add(elasticSearchDestinationRadio, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
+        panel.add(elasticDetails, GAPLEFT + detailIndent + ", " + ALIGN_LEFT_TOP);
+
+        JPanel testConnectionSlot = buildTestConnectionSlot("os.destination.testSlot");
+        testConnectionSlot.add(testConnectionButton, ALIGN_LEFT_TOP);
+        panel.add(testConnectionSlot, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
+
+        statusConfigurer.accept(databaseStatus);
+        StatusViews.configureWrapper(statusWrapper, databaseStatus);
+        panel.add(statusWrapper, GAPLEFT + nestedIndent + ", hidemode 3, alignx left, w pref!, wrap");
 
         boolean[] openSearchHttpsDetected = { isHttpsEndpoint(openSearchUrlField) };
         boolean[] amazonHttpsDetected = { isHttpsEndpoint(openSearchAmazonUrlField) };
@@ -245,36 +287,28 @@ public final class ConfigDestinationPanel {
             boolean openSearchTlsVisible = openSearchSelected && openSearchHttpsDetected[0];
             boolean amazonTlsVisible = amazonSelected && amazonHttpsDetected[0];
             boolean elasticSearchTlsVisible = elasticSearchSelected && elasticHttpsDetected[0];
+            boolean anyDestination = openSearchSelected || amazonSelected || elasticSearchSelected;
 
+            openSearchDetails.setVisible(openSearchSelected);
             openSearchUrlField.setVisible(openSearchSelected);
             openSearchAuthFormPanel.setVisible(openSearchSelected);
-            tlsSeparator.setVisible(openSearchTlsVisible);
             openSearchTlsPanel.setVisible(openSearchTlsVisible);
-            openSearchTestConnectionSlot.setVisible(openSearchSelected);
 
+            amazonDetails.setVisible(amazonSelected);
             openSearchAmazonUrlField.setVisible(amazonSelected);
             openSearchAmazonOptionsPanel.setVisible(amazonSelected);
-            amazonTlsSeparator.setVisible(amazonTlsVisible);
             openSearchAmazonTlsPanel.setVisible(amazonTlsVisible);
-            amazonTestConnectionSlot.setVisible(amazonSelected);
 
+            elasticDetails.setVisible(elasticSearchSelected);
             elasticSearchUrlField.setVisible(elasticSearchSelected);
             elasticSearchOptionsPanel.setVisible(elasticSearchSelected);
-            elasticTlsSeparator.setVisible(elasticSearchTlsVisible);
             elasticSearchTlsPanel.setVisible(elasticSearchTlsVisible);
-            elasticTestConnectionSlot.setVisible(elasticSearchSelected);
 
-            if (openSearchSelected) {
-                moveTestConnectionButton(openSearchTestConnectionSlot);
-            } else if (amazonSelected) {
-                moveTestConnectionButton(amazonTestConnectionSlot);
-            } else if (elasticSearchSelected) {
-                moveTestConnectionButton(elasticTestConnectionSlot);
-            }
-            testConnectionButton.setVisible(openSearchSelected || amazonSelected || elasticSearchSelected);
+            testConnectionSlot.setVisible(databaseSelected && anyDestination);
+            testConnectionButton.setVisible(databaseSelected && anyDestination);
 
-            destinationRows.revalidate();
-            destinationRows.repaint();
+            panel.revalidate();
+            panel.repaint();
         };
         databaseSinkCheckbox.getModel().addChangeListener(e -> syncDatabaseRowDetails.run());
         openSearchSinkCheckbox.getModel().addChangeListener(e -> syncDatabaseRowDetails.run());
@@ -285,21 +319,76 @@ public final class ConfigDestinationPanel {
         installHttpsDetector(elasticSearchUrlField, elasticHttpsDetected, syncDatabaseRowDetails);
         syncDatabaseRowDetails.run();
 
-        panel.add(destinationRows, "growx, wrap");
-
-        // Search status (below the row), left-aligned with checkboxes
-        statusConfigurer.accept(databaseStatus);
-        StatusViews.configureWrapper(statusWrapper, databaseStatus);
-        panel.add(statusWrapper, "gapleft " + indentPx + ", hidemode 3, alignx left, w pref!, wrap");
-
         return panel;
     }
 
-    private static JSeparator buildInlineVerticalSeparator() {
-        JSeparator separator = new JSeparator(SwingConstants.VERTICAL);
-        separator.setPreferredSize(new Dimension(8, 18));
-        separator.setMinimumSize(new Dimension(8, 18));
-        return separator;
+    private JPanel buildFilesDetailsPanel() {
+        JPanel details = new JPanel(new MigLayout(
+                "insets 0, wrap 2, hidemode 3, gapy " + rowGap, FIELD_COLS, "[]"));
+        details.setOpaque(false);
+
+        String pathTip = Tooltips.htmlRaw(
+                "<b>Path</b>",
+                "Root directory for file export when Files is enabled.");
+        JLabel pathLabel = Tooltips.label("Path:", pathTip);
+        pathLabel.setName("files.path.label");
+        Tooltips.apply(filePathField, pathTip);
+
+        JLabel formatsLabel = Tooltips.label("Format:",
+                Tooltips.htmlRaw(
+                        "<b>Format</b>",
+                        "Select the on-disk export format used when Files is enabled.",
+                        "Only <b>NDJSON</b> can be imported directly into OpenSearch later.",
+                        "<b>JSONL</b> writes one document per line for local analysis.",
+                        "<b>NDJSON</b> writes bulk action + document pairs for later <code>_bulk</code> re-import."));
+        formatsLabel.setName("files.format.label");
+        JPanel formatChoices = new JPanel(new MigLayout("insets 0", "[pref][pref]", "[]"));
+        formatChoices.setOpaque(false);
+        formatChoices.setName("files.format.choices");
+        formatChoices.add(fileJsonlCheckbox, ALIGN_LEFT_TOP);
+        formatChoices.add(fileBulkNdjsonCheckbox, ALIGN_LEFT_TOP);
+
+        JLabel safetyLabel = Tooltips.label("Disk Usage Limits:",
+                Tooltips.htmlRaw(
+                        "<b>Disk Usage Limits</b>",
+                        "Optional safety stops for file export under the selected root.",
+                        "Use a combined GiB cap and/or a volume used-percent threshold to stop file writes before the destination grows too large.",
+                        "These limits do not replace the built-in low-disk free-space reserve.",
+                        "When Database remains enabled, database export can continue after file export stops."));
+        safetyLabel.setName("files.limits.label");
+
+        details.add(pathLabel, ALIGN_LEFT_TOP);
+        details.add(filePathField, ALIGN_LEFT_TOP);
+        details.add(formatsLabel, ALIGN_LEFT_TOP);
+        details.add(formatChoices, ALIGN_LEFT_TOP);
+        details.add(safetyLabel, ALIGN_LEFT_TOP);
+        details.add(fileLimitsPanel, ALIGN_LEFT_TOP);
+        return details;
+    }
+
+    private static JPanel buildDestinationDetails(
+            String name,
+            JTextField urlField,
+            String baseUrlLabelName,
+            JPanel authPanel,
+            JPanel tlsPanel) {
+        JPanel details = new JPanel(new MigLayout(
+                "insets 0, wrap 2, hidemode 3, gapy 6", FIELD_COLS, "[]"));
+        details.setName(name);
+        details.setOpaque(false);
+
+        String baseUrlTip = Tooltips.htmlRaw(
+                "<b>Base URL</b>",
+                "HTTPS or HTTP base URL for the selected database destination.");
+        JLabel baseUrlLabel = Tooltips.label("Base URL:", baseUrlTip);
+        baseUrlLabel.setName(baseUrlLabelName);
+        Tooltips.apply(urlField, baseUrlTip);
+
+        details.add(baseUrlLabel, ALIGN_LEFT_TOP);
+        details.add(urlField, ALIGN_LEFT_TOP);
+        details.add(authPanel, "span 2, " + ALIGN_LEFT_TOP);
+        details.add(tlsPanel, "span 2, " + ALIGN_LEFT_TOP);
+        return details;
     }
 
     private static JPanel buildTestConnectionSlot(String name) {
@@ -325,18 +414,6 @@ public final class ConfigDestinationPanel {
     private static boolean isHttpsEndpoint(JTextField field) {
         String text = field == null ? "" : field.getText();
         return text != null && text.trim().regionMatches(true, 0, "https://", 0, "https://".length());
-    }
-
-    private void moveTestConnectionButton(JPanel target) {
-        if (testConnectionButton.getParent() == target) {
-            return;
-        }
-        if (testConnectionButton.getParent() != null) {
-            testConnectionButton.getParent().remove(testConnectionButton);
-        }
-        target.add(testConnectionButton, ALIGN_LEFT_TOP);
-        target.revalidate();
-        target.repaint();
     }
 
     private static void setEnabledRecursively(Component component, boolean enabled) {

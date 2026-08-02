@@ -8,12 +8,20 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import javax.swing.SwingUtilities;
+
 import ai.anomalousvectors.tools.burp.sinks.TrafficQueueEntry;
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
+import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
@@ -48,6 +56,8 @@ class ChunkedBulkSenderTest {
         ChunkedBulkSender.Result r = ChunkedBulkSender.parseBulkResponse("", 5);
         assertThat(r.successCount).isZero();
         assertThat(r.attemptedCount).isEqualTo(5);
+        assertThat(r.failedItems).extracting(item -> Objects.requireNonNull(item).index())
+                .containsExactly(0, 1, 2, 3, 4);
     }
 
     @Test
@@ -55,6 +65,8 @@ class ChunkedBulkSenderTest {
         ChunkedBulkSender.Result r = ChunkedBulkSender.parseBulkResponse(null, 3);
         assertThat(r.successCount).isZero();
         assertThat(r.attemptedCount).isEqualTo(3);
+        assertThat(r.failedItems).extracting(item -> Objects.requireNonNull(item).index())
+                .containsExactly(0, 1, 2);
     }
 
     @Test
@@ -89,6 +101,53 @@ class ChunkedBulkSenderTest {
         assertThat(r.successCount).isEqualTo(1);
         assertThat(r.attemptedCount).isEqualTo(2);
         assertThat(r.isFullSuccess()).isFalse();
+    }
+
+    @Test
+    void parseBulkResponse_incompleteItems_marksOmittedAttemptsFailed() {
+        String body = "{\"items\":[{\"index\":{\"_index\":\"t\",\"status\":201}}]}";
+
+        ChunkedBulkSender.Result result = ChunkedBulkSender.parseBulkResponse(body, 2);
+
+        assertThat(result.successCount).isEqualTo(1);
+        assertThat(result.breakdown.failed()).isEqualTo(1);
+        assertThat(result.failedItems).singleElement().satisfies(item -> {
+            assertThat(item.index()).isEqualTo(1);
+            assertThat(item.type()).isEqualTo("bulk_response_incomplete");
+        });
+    }
+
+    @Test
+    void noteTrafficPrefixTruncation_logsOncePerOperation() throws Exception {
+        ExportStats.resetForTests();
+        List<String> messages = new CopyOnWriteArrayList<>();
+        Logger.LogListener listener = (level, message) -> {
+            if ("INFO".equals(level) && message.contains("Prefix-truncated traffic document")) {
+                messages.add(message);
+            }
+        };
+        Logger.registerListener(listener);
+        try {
+            PreparedExportDocument first = ExportDocumentIdentity.prepare(
+                    "tool-burp-traffic", "traffic", trafficDoc("Proxy"));
+            PreparedExportDocument second = ExportDocumentIdentity.prepare(
+                    "tool-burp-traffic", "traffic", trafficDoc("Repeater"));
+
+            ChunkedBulkSender.noteTrafficPrefixTruncation(first, 524_288L);
+            ChunkedBulkSender.noteTrafficPrefixTruncation(first, 524_288L);
+            ChunkedBulkSender.noteTrafficPrefixTruncation(second, 524_288L);
+            SwingUtilities.invokeAndWait(() -> {});
+
+            assertThat(ExportStats.getSearchBodyPrefixTruncations("traffic")).isEqualTo(2L);
+            assertThat(messages).hasSize(2).allSatisfy(message ->
+                    assertThat(message).contains(
+                            "524288 bytes",
+                            "search path only; files sink unchanged"));
+        } finally {
+            Logger.unregisterListener(listener);
+            Logger.resetState();
+            ExportStats.resetForTests();
+        }
     }
 
     @Test
@@ -268,6 +327,32 @@ class ChunkedBulkSenderTest {
         meta.put("schema_version", "1");
         doc.put("meta", meta);
         return doc;
+    }
+
+    @Test
+    void formatFailureAttribution_includesDocsToolsAndFirstError() {
+        ChunkedBulkSender.Result result = new ChunkedBulkSender.Result(
+                0,
+                4,
+                100,
+                0,
+                Map.of(),
+                Map.of("REPEATER_TABS", 4),
+                Map.of(),
+                Map.of(),
+                BulkOutcomeBreakdown.classified(0, 4),
+                List.of(new OpenSearchClientWrapper.FailedItem(0, "es_rejected_execution_exception", "rejected")));
+
+        assertThat(ChunkedBulkSender.formatFailureAttribution(result))
+                .contains("docs=4")
+                .contains("tools=REPEATER_TABS=4")
+                .contains("firstError=es_rejected_execution_exception:rejected");
+    }
+
+    @Test
+    void formatFailureAttribution_emptyWhenNoAttempts() {
+        ChunkedBulkSender.Result result = new ChunkedBulkSender.Result(0, 0, 0, 0);
+        assertThat(ChunkedBulkSender.formatFailureAttribution(result)).isEmpty();
     }
 
     private static StreamHarness newStreamHarness(

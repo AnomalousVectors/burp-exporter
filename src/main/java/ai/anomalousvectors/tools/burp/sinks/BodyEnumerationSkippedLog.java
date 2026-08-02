@@ -238,7 +238,8 @@ public final class BodyEnumerationSkippedLog {
     /**
      * Emits DEBUG summaries for live suspects accumulated since the last periodic flush.
      *
-     * <p>No-op when export is stopped or the pending bucket is empty.</p>
+     * <p>No-op when export is stopped or the pending bucket is empty. Log text uses phase
+     * {@code periodic/live} so operators can distinguish scheduled rollups from startup/stop.</p>
      */
     public static void flushPeriodicSummary() {
         if (!RuntimeConfig.isExportRunning()) {
@@ -253,7 +254,7 @@ public final class BodyEnumerationSkippedLog {
             }
             docCount = livePendingDocCount;
             urlSnapshot = new LinkedHashMap<>(LIVE_PENDING_URLS);
-            line = formatMisgateSummaryLocked("live", docCount, urlSnapshot);
+            line = formatMisgateSummaryLocked("periodic/live", docCount, urlSnapshot);
             LIVE_PENDING_URLS.clear();
             livePendingDocCount = 0;
         }

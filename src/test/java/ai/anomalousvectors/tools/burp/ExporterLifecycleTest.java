@@ -10,12 +10,16 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.awt.Component;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
+
+import javax.swing.PopupFactory;
 
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +32,7 @@ import ai.anomalousvectors.tools.burp.sinks.SitemapIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter;
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
 import ai.anomalousvectors.tools.burp.ui.ConfigPanel;
+import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -83,6 +88,33 @@ class ExporterLifecycleTest {
             verify(fixture.logging).logToOutput(argThat(msg ->
                     msg.contains("initialized successfully") && !msg.startsWith("[")));
         } finally {
+            Tooltips.restoreSharedPopupFactory();
+            ExportReporterLifecycle.resetForTests();
+            Logger.resetState();
+        }
+    }
+
+    @Test
+    void initialize_failureLogsOneConciseBurpErrorAndCleansPartialState() {
+        try {
+            ApiFixture fixture = new ApiFixture();
+            when(fixture.userInterface.registerSuiteTab(
+                    eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class)))
+                    .thenThrow(new IllegalStateException("boom"));
+
+            new Exporter().initialize(fixture.api);
+
+            verify(fixture.logging).logToError(argThat((String message) ->
+                    message.contains("initialization failed")
+                            && message.contains("IllegalStateException: boom")
+                            && message.indexOf("boom") == message.lastIndexOf("boom")));
+            verify(fixture.logging, never()).logToOutput(
+                    argThat(message -> message.contains("initialized successfully")));
+            verify(fixture.unloadRegistration).deregister();
+            assertThat(MontoyaApiProvider.get()).isNull();
+            assertThat(getStaticList(Logger.class, "LISTENERS")).isEmpty();
+        } finally {
+            Tooltips.restoreSharedPopupFactory();
             ExportReporterLifecycle.resetForTests();
             Logger.resetState();
         }
@@ -90,6 +122,8 @@ class ExporterLifecycleTest {
 
     @Test
     void unloadingHandler_deregistersResources_and_stopsBackgroundWork() {
+        Tooltips.restoreSharedPopupFactory();
+        PopupFactory popupFactoryBeforeInitialize = PopupFactory.getSharedInstance();
         try {
             ApiFixture fixture = new ApiFixture();
             new Exporter().initialize(fixture.api);
@@ -109,13 +143,17 @@ class ExporterLifecycleTest {
             assertThat(MontoyaApiProvider.get()).isNull();
             assertThat(BurpRuntimeMetadata.burpVersion()).isNull();
             assertThat(BurpRuntimeMetadata.projectId()).isNull();
+            assertThat(PopupFactory.getSharedInstance()).isSameAs(popupFactoryBeforeInitialize);
             assertAllWorkersTerminated(startupExecutorBeforeUnload);
             assertThat(getStaticList(Logger.class, "LISTENERS")).isEmpty();
 
             verify(fixture.httpRegistration).deregister();
             verify(fixture.suiteTabRegistration).deregister();
             verify(fixture.unloadRegistration, atLeastOnce()).deregister();
+            verify(fixture.logging).logToOutput(argThat(msg ->
+                    msg.contains("unloaded") && !msg.startsWith("[")));
         } finally {
+            Tooltips.restoreSharedPopupFactory();
             ExportReporterLifecycle.resetForTests();
             Logger.resetState();
         }
@@ -139,7 +177,11 @@ class ExporterLifecycleTest {
             assertThat(BurpRuntimeMetadata.burpVersion()).isNull();
             assertThat(BurpRuntimeMetadata.projectId()).isNull();
             assertAllWorkersTerminated(startupExecutorBeforeUnload);
+            verify(fixture.logging, times(1)).logToOutput(
+                    argThat(message -> message.contains("unloaded")));
+            verify(fixture.logging, never()).logToError(any(String.class));
         } finally {
+            Tooltips.restoreSharedPopupFactory();
             ExportReporterLifecycle.resetForTests();
             Logger.resetState();
         }
@@ -199,7 +241,7 @@ class ExporterLifecycleTest {
                 unloadHandler.set(invocation.getArgument(0));
                 return unloadRegistration;
             });
-            when(userInterface.registerSuiteTab(eq("Exporter"), any(Component.class)))
+            when(userInterface.registerSuiteTab(eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class)))
                     .thenReturn(suiteTabRegistration);
             when(http.registerHttpHandler(any())).thenReturn(httpRegistration);
             when(webSockets.registerWebSocketCreatedHandler(any())).thenReturn(webSocketRegistration);

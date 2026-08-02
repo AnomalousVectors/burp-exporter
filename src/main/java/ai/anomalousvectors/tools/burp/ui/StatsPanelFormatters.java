@@ -1,7 +1,9 @@
 package ai.anomalousvectors.tools.burp.ui;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 
 import java.text.DecimalFormat;
@@ -27,6 +29,9 @@ import org.jfree.data.time.TimeSeriesCollection;
  * <p>All methods read from {@link ExportStats} (no Swing state) and return plain strings.
  * Returned values are ready to drop into a {@code JLabel}; callers do not need to format
  * further.</p>
+ *
+ * <p>This class is not thread-safe because its shared decimal formatter is mutable. Stats-panel
+ * refresh and Stop/clipboard snapshot formatting must not invoke it concurrently.</p>
  */
 final class StatsPanelFormatters {
 
@@ -84,9 +89,32 @@ final class StatsPanelFormatters {
      * (e.g. raw 3.9 GiB → 4 GiB → {@code 4 * 1024} MiB).
      */
     static double rangeUpperInBaseUnits(double maxInBaseUnits, double headroomMultiplier, ChartAxisScale scale) {
-        double rawUpper = maxInBaseUnits * headroomMultiplier;
-        double niceDisplayUpper = nicePositiveUpperBound(rawUpper / scale.displayDivisor());
+        double niceDisplayUpper = rangeCeiling(
+                maxInBaseUnits / scale.displayDivisor(),
+                headroomMultiplier);
         return niceDisplayUpper * scale.displayDivisor();
+    }
+
+    /**
+     * Y-axis ceiling in the same units as {@code maxValue}: headroom, then a nice tick that stays
+     * strictly above the padded peak so spline overshoot cannot paint through the plot top.
+     *
+     * @param maxValue largest visible sample (docs/s, KiB/s, MiB, …)
+     * @param headroomMultiplier multiplier applied before choosing a nice tick
+     * @return positive axis upper bound
+     */
+    static double rangeCeiling(double maxValue, double headroomMultiplier) {
+        if (maxValue <= 0.0) {
+            return 1.0;
+        }
+        double headroom = headroomMultiplier > 0.0 ? headroomMultiplier : 1.0;
+        double rawUpper = maxValue * headroom;
+        double bound = nicePositiveUpperBound(rawUpper);
+        // When max*headroom lands on (or within 0.5% of) a nice tick, step to the next tick.
+        if (bound <= rawUpper * 1.005) {
+            bound = nicePositiveUpperBound(bound + Math.max(bound * 0.05, 0.05));
+        }
+        return bound;
     }
 
     /**
@@ -220,7 +248,7 @@ final class StatsPanelFormatters {
     }
 
     /**
-     * Summarizes OpenSearch export totals on one line: docs, size, and failure count.
+     * Summarizes database export totals on one line: docs, size, and failure count.
      */
     static String formatExportedSummary(long docs, String sizeHuman, long failures) {
         return formatWhole(docs) + " docs · " + sizeHuman + " · " + formatWhole(failures) + " failures";
@@ -235,6 +263,29 @@ final class StatsPanelFormatters {
                 indexKey -> (long) IndexingRetryCoordinator.getInstance()
                         .getQueueSize(RuntimeConfig.indexNameForKey(indexKey)),
                 value -> formatWhole(value) + " queued");
+    }
+
+    /** Lists unique search-document prefix truncations by index, omitting indexes at zero. */
+    static String formatBodyTruncationsByIndex() {
+        return formatPerIndexNonZero(ExportStats::getSearchBodyPrefixTruncations, StatsPanelFormatters::formatWhole);
+    }
+
+    /** Formats current reserved snapshot build-ahead capacity and its fixed envelope. */
+    static String formatSnapshotBuildAhead() {
+        return formatBytesHuman(ExportStats.getSnapshotBuildAheadReservedBytes())
+                + " / " + formatBytesHuman(SnapshotExportEngine.maxBuildAheadBytes())
+                + " (" + formatWhole(ExportStats.getSnapshotBuildAheadReservedPermits())
+                + " / " + formatWhole(SnapshotExportEngine.maxBuildAheadPermits()) + " permits)";
+    }
+
+    /** Formats the run peak of reserved snapshot build-ahead capacity. */
+    static String formatPeakSnapshotBuildAhead() {
+        long bytes = ExportStats.getPeakSnapshotBuildAheadReservedBytes();
+        int permits = ExportStats.getPeakSnapshotBuildAheadReservedPermits();
+        if (bytes <= 0L && permits <= 0) {
+            return "—";
+        }
+        return formatBytesHuman(bytes) + " (" + formatWhole(permits) + " permits)";
     }
 
     /**
@@ -305,7 +356,19 @@ final class StatsPanelFormatters {
      * {@link ExportStats#getSkipReasonCounts()}.
      */
     static String formatSkipReasons() {
-        Map<String, Long> reasons = ExportStats.getSkipReasonCounts();
+        return formatReasons(ExportStats.getSkipReasonCounts());
+    }
+
+    /**
+     * Builds a compact stable summary of permanent-drop reason totals.
+     *
+     * @return space-separated {@code reason=count} values, or {@code "-"} when empty
+     */
+    static String formatPermanentDropReasons() {
+        return formatReasons(ExportStats.getPermanentDropReasonCounts());
+    }
+
+    private static String formatReasons(Map<String, Long> reasons) {
         if (reasons.isEmpty()) {
             return "-";
         }
@@ -347,6 +410,103 @@ final class StatsPanelFormatters {
         }
         double gib = mib / 1024.0;
         return DECIMAL_ONE.format(gib) + " GiB";
+    }
+
+    /**
+     * Formats remaining shared capacity cooldown for Misc Stats.
+     *
+     * @param remainingMs milliseconds remaining; {@code <= 0} renders as an em dash
+     * @return human-readable cooldown remainder
+     */
+    static String formatCooldownRemaining(long remainingMs) {
+        if (remainingMs <= 0L) {
+            return "—";
+        }
+        if (remainingMs < 1_000L) {
+            return remainingMs + " ms";
+        }
+        return DECIMAL_ONE.format(remainingMs / 1_000.0) + " s";
+    }
+
+    /**
+     * Returns the live bulk byte budget, or the last active value after Stop reset the controller.
+     */
+    static long displayedBulkByteBudget() {
+        long lastActive = ExportStats.getLastActiveBulkByteBudget();
+        return !RuntimeConfig.isExportRunning() && lastActive > 0L
+                ? lastActive
+                : BulkByteBudget.currentMaxBytes();
+    }
+
+    /**
+     * Returns the live snapshot flush cap, or the last active value after Stop reset the controller.
+     */
+    static int displayedSnapshotFlushCap() {
+        int lastActive = ExportStats.getLastActiveSnapshotFlushCap();
+        return !RuntimeConfig.isExportRunning() && lastActive > 0
+                ? lastActive
+                : BulkByteBudget.maxInFlightFlushes();
+    }
+
+    /**
+     * Formats the Yes/No Soft Outage gauge.
+     *
+     * @param active whether soft capacity outage mode is active
+     * @return {@code Yes} or {@code No}
+     */
+    static String formatSoftOutage(boolean active) {
+        return active ? "Yes" : "No";
+    }
+
+    /**
+     * Formats the recoverable database-authorization pause.
+     *
+     * @return {@code No} when inactive, otherwise pause duration, retained backlog, and next probe
+     */
+    static String formatAuthorizationRecovery() {
+        IndexingRetryCoordinator coordinator = IndexingRetryCoordinator.getInstance();
+        if (!coordinator.isAuthorizationRecoveryPaused()) {
+            return "No";
+        }
+        long now = System.currentTimeMillis();
+        long pausedSeconds = Math.max(0L, (now - coordinator.getAuthorizationPausedAtMs()) / 1_000L);
+        long nextProbeSeconds = Math.max(
+                0L,
+                (coordinator.getNextAuthorizationProbeAtMs() - now + 999L) / 1_000L);
+        int retained = coordinator.getTotalQueueSize()
+                + ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSize()
+                + ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSpillSize();
+        return "Paused " + formatDurationSeconds(pausedSeconds)
+                + " · " + formatWhole(retained) + " retained"
+                + " · probe " + nextProbeSeconds + "s";
+    }
+
+    private static String formatDurationSeconds(long seconds) {
+        if (seconds < 60L) {
+            return seconds + "s";
+        }
+        long minutes = seconds / 60L;
+        if (minutes < 60L) {
+            return minutes + "m";
+        }
+        return (minutes / 60L) + "h " + (minutes % 60L) + "m";
+    }
+
+    /**
+     * Formats Overview Traffic Spill status.
+     *
+     * @param status spill status; {@code null} treated as Ready
+     * @return {@code Ready}, {@code In use}, or {@code Full}
+     */
+    static String formatSpillStatus(ai.anomalousvectors.tools.burp.utils.ExportAdmissionController.SpillStatus status) {
+        if (status == null) {
+            return "Ready";
+        }
+        return switch (status) {
+            case READY -> "Ready";
+            case IN_USE -> "In use";
+            case FULL -> "Full";
+        };
     }
 
 }

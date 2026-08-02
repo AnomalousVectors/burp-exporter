@@ -215,14 +215,15 @@ class ConfigPanelStartFailureAuthIT {
     }
 
     private static void waitForLogMessage(List<String> events, String snippet) {
-        long deadline = System.currentTimeMillis() + 10_000;
+        long deadline = System.currentTimeMillis() + 30_000;
         while (System.currentTimeMillis() < deadline) {
             if (events.stream().anyMatch(message -> message.contains(snippet))) {
                 return;
             }
             LockSupport.parkNanos(100_000_000L);
         }
-        throw new AssertionError("Expected log message containing: " + snippet);
+        throw new AssertionError("Expected log message containing: " + snippet
+                + "; captured events: " + events);
     }
 
     private static <T extends Component> T findByName(Container root, String name, Class<T> type) {

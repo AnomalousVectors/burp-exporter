@@ -3,12 +3,12 @@ package ai.anomalousvectors.tools.burp.sinks;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -19,12 +19,15 @@ import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
+import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
@@ -45,13 +48,15 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueConfidence;
 import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity;
 
 /**
- * Pushes Burp audit issues (findings) to the findings index when export is running and
+ * Pushes Burp Scanner audit issues to the {@code findings} index when export is running and
  * {@code findings} is selected.
  *
- * <p>Initial push on Start exports the backlog in parallel; every 30 seconds exports only issues
- * whose {@link SnapshotExportFingerprints#findingItemKey} was not yet seen this run. Severity
- * filtering uses {@link FindingsSeverityFilter}: {@code FALSE_POSITIVE} and {@code null}
- * severities never export and are reported as backlog {@code skipped_non_exportable};
+ * <p>Initial push on Start exports the backlog in cooperative slices so Sitemap / Proxy History /
+ * WebSocket startup steps can interleave on {@link StartupSnapshotCoordinator} while
+ * {@link SnapshotExportEngine} still runs one heavy prepare/flush at a time. Every 30 seconds
+ * exports only issues whose {@link SnapshotExportFingerprints#findingItemKey} was not yet seen this
+ * run. Severity filtering uses {@link FindingsSeverityFilter}: {@code FALSE_POSITIVE} and
+ * {@code null} severities never export and are reported as backlog {@code skipped_non_exportable};
  * configured tokens (for example {@code informational}) gate the rest and increment
  * {@code skipped_severity} when excluded by operator selection.</p>
  *
@@ -60,23 +65,23 @@ import burp.api.montoya.scanner.audit.issues.AuditIssueSeverity;
 public final class FindingsIndexReporter {
 
     private static final int INTERVAL_SECONDS = 30;
-    /** Flush when batch exceeds this approximate payload size (bytes) so large request/response bodies don't produce huge bulk requests. */
-    private static final long BULK_MAX_BYTES = 5L * 1024 * 1024; // 5 MB
     private static final String SCHEMA_VERSION = "1";
     private static final String REPORTING_TOOL = "Scanner";
 
     /**
-     * Single-owner scheduler for findings push work.
+     * Single-owner scheduler for periodic findings polling.
      *
-     * <p>Created lazily by {@link LazyScheduler#getOrStart()} for startup snapshot work or
-     * recurring polling registration, and torn down by {@link #stop()} during UI stop or extension
-     * unload. A subsequent {@link #pushSnapshotNow()} lazily recreates the executor.</p>
+     * <p>Startup backlog slices run through {@link StartupSnapshotCoordinator}. This scheduler is
+     * created only for recurring polling and is torn down by {@link #stop()} during UI stop or
+     * extension unload.</p>
      */
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-findings-reporter");
     private static final PeriodicExportSeenKeys PERIODIC_EXPORT_SEEN_KEYS =
             new PeriodicExportSeenKeys();
     private static final AtomicBoolean issuesAccessFailureLogged = new AtomicBoolean();
+    private static final Object STARTUP_BACKLOG_LOCK = new Object();
+    private static volatile StartupBacklogState startupBacklog;
     private static volatile boolean runInProgress;
     private static volatile boolean periodicPollingRequested;
     private static volatile boolean startupSnapshotFinished;
@@ -88,12 +93,16 @@ public final class FindingsIndexReporter {
     }
 
     /**
-     * Pushes all current issues once (for example on Start).
+     * Queues startup export of current Burp Scanner audit issues (for example on Start).
      *
      * <p>Safe to call from any thread. No-op when export is stopped, no sink is enabled, or
      * findings is not selected. Applies {@link FindingsSeverityFilter}, records
-     * {@code skipped_non_exportable} for findings Burp will not export, and records
+     * {@code skipped_non_exportable} for issues Burp will not export, and records
      * {@code skipped_severity} when operator severity selection excludes an issue.</p>
+     *
+     * <p>Captures the issue list once, then uses the shared adaptive
+     * {@link StartupSnapshotCoordinator} item allowance so Sitemap, Proxy History, and WebSocket
+     * can run between slices.</p>
      */
     public static void pushSnapshotNow() {
         try {
@@ -110,18 +119,13 @@ public final class FindingsIndexReporter {
             if (api == null) {
                 return;
             }
-            ScheduledExecutorService exec = SCHEDULER.getOrStart();
-            exec.submit(() -> {
-                try {
-                    pushIssues(api, true);
-                } catch (RuntimeException e) {
-                    String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    Logger.logWarnPanelOnly("[SnapshotExport] Findings: push failed: " + msg);
-                } finally {
-                    startupSnapshotFinished = true;
-                    startPeriodicIfReady();
-                }
-            });
+            ExportRunToken token = RuntimeConfig.currentExportRunToken();
+            // Ordered with other startup snapshots; slices re-submit so Sitemap/Proxy can interleave.
+            StartupSnapshotCoordinator.submit(
+                    StartupSnapshotCoordinator.Lane.FINDINGS,
+                    token,
+                    "Findings",
+                    () -> runStartupBacklogSlice(api, token));
         } catch (RuntimeException e) {
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             Logger.logWarnPanelOnly("[SnapshotExport] Findings: push failed: " + msg);
@@ -143,8 +147,13 @@ public final class FindingsIndexReporter {
         if (!periodicPollingRequested || !startupSnapshotFinished) {
             return;
         }
+        ExportRunToken token = RuntimeConfig.currentExportRunToken();
         SCHEDULER.startRecurring(
-                FindingsIndexReporter::pushNewIssuesOnly,
+                () -> {
+                    if (RuntimeConfig.isExportRunActive(token)) {
+                        pushNewIssuesOnly();
+                    }
+                },
                 INTERVAL_SECONDS,
                 INTERVAL_SECONDS,
                 TimeUnit.SECONDS);
@@ -161,6 +170,7 @@ public final class FindingsIndexReporter {
         runInProgress = false;
         periodicPollingRequested = false;
         startupSnapshotFinished = false;
+        clearStartupBacklog();
         PERIODIC_EXPORT_SEEN_KEYS.clear();
     }
 
@@ -201,6 +211,7 @@ public final class FindingsIndexReporter {
             boolean filterBySeverity = severities != null && !severities.isEmpty();
             Set<String> selectedSeverities = filterBySeverity ? Set.copyOf(severities) : Set.of();
             if (pushAll) {
+                // Legacy full-list path kept for direct tests; Start uses sliced coordinator path.
                 pushAllIssuesParallel(api, issues, state, filterBySeverity, selectedSeverities);
             } else {
                 pushIncrementalIssues(api, issues, state, filterBySeverity, selectedSeverities);
@@ -211,6 +222,284 @@ public final class FindingsIndexReporter {
     }
 
     private record FindingWorkItem(AuditIssue issue, boolean burpInScope) {
+    }
+
+    /**
+     * One cooperative Findings startup slice on the startup coordinator thread.
+     *
+     * <p>Captures the Burp issue list once, exports one shared adaptive allowance through
+     * {@link SnapshotExportEngine}, then re-queues a continuation so Sitemap / Proxy History can
+     * run before the next Findings slice. Marks startup finished only after the last slice.</p>
+     */
+    private static void runStartupBacklogSlice(MontoyaApi api, ExportRunToken token) {
+        if (!RuntimeConfig.isExportRunActive(token)) {
+            finishStartupBacklog(false);
+            return;
+        }
+        StartupBacklogState state;
+        List<AuditIssue> slice;
+        int sliceStart;
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            state = startupBacklog;
+            if (state == null) {
+                List<AuditIssue> issues = safeIssues(api);
+                if (issues == null) {
+                    finishStartupBacklogLocked(false);
+                    return;
+                }
+                var config = RuntimeConfig.getState();
+                var severities = config.findingsSeverities();
+                boolean filterBySeverity = severities != null && !severities.isEmpty();
+                // Preserve null AuditIssue slots (counted as skipped_non_exportable);
+                // List.copyOf forbids nulls.
+                state = new StartupBacklogState(
+                        Collections.unmodifiableList(new ArrayList<>(issues)),
+                        config,
+                        filterBySeverity,
+                        filterBySeverity ? Set.copyOf(severities) : Set.of(),
+                        new SnapshotScopeCache(api),
+                        SnapshotSummary.forIndexKey("findings"),
+                        token);
+                startupBacklog = state;
+                Logger.logInfoPanelOnly("[StartupExport] Findings: exporting backlog: "
+                        + state.issues.size() + " issue(s) with adaptive startup slices.");
+                SnapshotPacing.resetCountersForSnapshot();
+            }
+            if (state.offset >= state.issues.size()) {
+                finishStartupBacklogLocked(true);
+                return;
+            }
+            int sliceTarget = StartupSnapshotCoordinator.nextSliceItemCount(
+                    StartupSnapshotCoordinator.Lane.FINDINGS);
+            sliceStart = state.offset;
+            int end = Math.min(state.offset + sliceTarget, state.issues.size());
+            slice = state.issues.subList(state.offset, end);
+        }
+
+        if (runInProgress) {
+            // Another Findings push is active; re-queue so we do not drop the remainder.
+            StartupSnapshotCoordinator.submit(
+                    StartupSnapshotCoordinator.Lane.FINDINGS,
+                    token,
+                    "Findings",
+                    () -> runStartupBacklogSlice(api, token));
+            return;
+        }
+        runInProgress = true;
+        SnapshotExportEngine.Result result;
+        long sliceStartedNanos = System.nanoTime();
+        try {
+            result = exportStartupSlice(state, slice);
+        } catch (RuntimeException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            Logger.logWarnPanelOnly("[SnapshotExport] Findings: push failed: " + msg);
+            finishStartupBacklog(true);
+            return;
+        } finally {
+            runInProgress = false;
+        }
+
+        boolean more;
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            if (startupBacklog != state) {
+                return;
+            }
+            state.offset += slice.size();
+            more = state.offset < state.issues.size() && RuntimeConfig.isExportRunActive(token);
+            if (!more) {
+                finishStartupBacklogLocked(true);
+            }
+        }
+        long elapsedMs = (System.nanoTime() - sliceStartedNanos) / 1_000_000L;
+        StartupSnapshotCoordinator.recordSliceOutcome(
+                StartupSnapshotCoordinator.Lane.FINDINGS,
+                "Findings",
+                sliceStart,
+                slice.size(),
+                result.totalChunkBytes(),
+                elapsedMs,
+                more);
+        if (more) {
+            StartupSnapshotCoordinator.submit(
+                    StartupSnapshotCoordinator.Lane.FINDINGS,
+                    token,
+                    "Findings",
+                    () -> runStartupBacklogSlice(api, token));
+        }
+    }
+
+    private static SnapshotExportEngine.Result exportStartupSlice(
+            StartupBacklogState state,
+            List<AuditIssue> slice) {
+        boolean openSearchActive = RuntimeConfig.isSearchActive();
+        String indexName = findingsIndexName();
+        String activeBaseUrl = RuntimeConfig.searchBaseUrl();
+        int batchSize = SnapshotBatchTuning.initialTarget();
+        int buildWorkers = SnapshotExportEngine.defaultBuildWorkers();
+
+        SnapshotExportEngine.Result exportResult = SnapshotExportEngine.run(
+                state.token,
+                slice,
+                buildWorkers,
+                BulkByteBudget.currentMaxBytes(),
+                batchSize,
+                SnapshotBatchTuning::applyLiveBackpressure,
+                SnapshotBatchTuning.chunkTargetAdjuster(),
+                activeBaseUrl,
+                indexName,
+                "findings",
+                issue -> {
+                    FindingWorkItem work = toStartupWorkItem(
+                            issue,
+                            state.config,
+                            state.scopeCache,
+                            state.filterBySeverity,
+                            state.selectedSeverities,
+                            state.processed,
+                            state.skippedNonExportable,
+                            state.skippedSeverity,
+                            state.skippedScope);
+                    if (work == null) {
+                        return null;
+                    }
+                    Map<String, Object> doc = buildFindingDoc(work.issue(), work.burpInScope());
+                    if (doc == null) {
+                        return null;
+                    }
+                    return ExportDocumentIdentity.prepare(indexName, "findings", doc);
+                },
+                (chunk, outcome, nextChunkTarget) ->
+                        BulkOutcomeRecorder.record(
+                                "findings", "Findings", "Bulk push", outcome, openSearchActive));
+        state.addEngineResult(exportResult);
+        return exportResult;
+    }
+
+    /**
+     * Acquires the startup lock and completes or abandons the current backlog.
+     */
+    private static void finishStartupBacklog(boolean logSummary) {
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            finishStartupBacklogLocked(logSummary);
+        }
+    }
+
+    /**
+     * Finalizes startup state while {@link #STARTUP_BACKLOG_LOCK} is held.
+     *
+     * <p>Only an active run may publish summary counters or enable periodic polling.</p>
+     */
+    private static void finishStartupBacklogLocked(boolean logSummary) {
+        StartupBacklogState state = startupBacklog;
+        startupBacklog = null;
+        if (logSummary && state != null && RuntimeConfig.isExportRunActive(state.token)) {
+            long durationMs = (System.nanoTime() - state.startNs) / 1_000_000L;
+            boolean openSearchActive = RuntimeConfig.isSearchActive();
+            boolean fileActive = RuntimeConfig.isAnyFileExportEnabled();
+            ExportStats.recordSnapshotLastRun(
+                    ExportStats.SNAPSHOT_FINDINGS,
+                    state.attempted,
+                    state.success,
+                    durationMs,
+                    state.finalChunkTarget,
+                    state.chunks,
+                    state.totalChunkBytes,
+                    state.buildWallMs,
+                    state.buildCpuMs,
+                    state.flushMs,
+                    state.fileFlushMs,
+                    state.openSearchFlushMs,
+                    state.buildWorkers);
+            SnapshotSummary.logInfo(
+                    "Findings",
+                    state.baseline,
+                    state.attempted,
+                    durationMs,
+                    state.buildWallMs,
+                    state.flushMs,
+                    openSearchActive,
+                    fileActive);
+            Logger.logInfoPanelOnly("[SnapshotExport] Findings: backlog filters: seen=" + state.issues.size()
+                    + " exported=" + state.attempted
+                    + " skipped_scope=" + state.skippedScope.get()
+                    + " skipped_severity=" + state.skippedSeverity.get()
+                    + " skipped_non_exportable=" + state.skippedNonExportable.get()
+                    + " in " + durationMs + "ms.");
+        }
+        if (state != null && RuntimeConfig.isExportRunActive(state.token)) {
+            startupSnapshotFinished = true;
+            startPeriodicIfReady();
+        }
+    }
+
+    private static void clearStartupBacklog() {
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            startupBacklog = null;
+        }
+    }
+
+    /**
+     * Mutable aggregate owned by the serialized Findings coordinator lane.
+     *
+     * <p>Offset and lifecycle transitions are guarded by {@link #STARTUP_BACKLOG_LOCK}; result
+     * accumulation occurs on the lane owner before the next slice is submitted.</p>
+     */
+    private static final class StartupBacklogState {
+        private final List<AuditIssue> issues;
+        private final ConfigState.State config;
+        private final boolean filterBySeverity;
+        private final Set<String> selectedSeverities;
+        private final SnapshotScopeCache scopeCache;
+        private final SnapshotSummary.Baseline baseline;
+        private final ExportRunToken token;
+        private final AtomicInteger processed = new AtomicInteger();
+        private final AtomicInteger skippedNonExportable = new AtomicInteger();
+        private final AtomicInteger skippedSeverity = new AtomicInteger();
+        private final AtomicInteger skippedScope = new AtomicInteger();
+        private final long startNs = System.nanoTime();
+        private int offset;
+        private int attempted;
+        private int success;
+        private int chunks;
+        private long totalChunkBytes;
+        private long buildWallMs;
+        private long buildCpuMs;
+        private long flushMs;
+        private long fileFlushMs;
+        private long openSearchFlushMs;
+        private int finalChunkTarget;
+        private int buildWorkers;
+
+        private StartupBacklogState(
+                List<AuditIssue> issues,
+                ConfigState.State config,
+                boolean filterBySeverity,
+                Set<String> selectedSeverities,
+                SnapshotScopeCache scopeCache,
+                SnapshotSummary.Baseline baseline,
+                ExportRunToken token) {
+            this.issues = issues;
+            this.config = config;
+            this.filterBySeverity = filterBySeverity;
+            this.selectedSeverities = selectedSeverities;
+            this.scopeCache = scopeCache;
+            this.baseline = baseline;
+            this.token = token;
+        }
+
+        private void addEngineResult(SnapshotExportEngine.Result exportResult) {
+            attempted += exportResult.attempted();
+            success += exportResult.success();
+            chunks += exportResult.chunks();
+            totalChunkBytes += exportResult.totalChunkBytes();
+            buildWallMs += exportResult.buildWallMs();
+            buildCpuMs += exportResult.buildCpuMs();
+            flushMs += exportResult.flushMs();
+            fileFlushMs += exportResult.fileFlushMs();
+            openSearchFlushMs += exportResult.openSearchFlushMs();
+            finalChunkTarget = exportResult.finalChunkTarget();
+            buildWorkers = exportResult.buildWorkers();
+        }
     }
 
     private static void pushAllIssuesParallel(
@@ -225,11 +514,11 @@ public final class FindingsIndexReporter {
         AtomicInteger skippedSeverity = new AtomicInteger();
         AtomicInteger skippedScope = new AtomicInteger();
         SnapshotSummary.Baseline baseline = SnapshotSummary.forIndexKey("findings");
-        boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
+        boolean openSearchActive = RuntimeConfig.isSearchActive();
         boolean fileActive = RuntimeConfig.isAnyFileExportEnabled();
         long startNs = System.nanoTime();
         String indexName = findingsIndexName();
-        String activeBaseUrl = RuntimeConfig.openSearchUrl();
+        String activeBaseUrl = RuntimeConfig.searchBaseUrl();
         int batchSize = SnapshotBatchTuning.initialTarget();
         int buildWorkers = SnapshotExportEngine.defaultBuildWorkers();
         Logger.logInfoPanelOnly("[StartupExport] Findings: exporting backlog: " + issues.size() + " issue(s).");
@@ -238,7 +527,7 @@ public final class FindingsIndexReporter {
         SnapshotExportEngine.Result exportResult = SnapshotExportEngine.run(
                 issues,
                 buildWorkers,
-                BULK_MAX_BYTES,
+                BulkByteBudget.currentMaxBytes(),
                 batchSize,
                 SnapshotBatchTuning::applyLiveBackpressure,
                 SnapshotBatchTuning.chunkTargetAdjuster(),
@@ -380,7 +669,7 @@ public final class FindingsIndexReporter {
             runningBatchBytes += prepared.estimatedBulkBytes();
             exported++;
 
-            if (batchDocs.size() >= batchSize || runningBatchBytes >= BULK_MAX_BYTES) {
+            if (batchDocs.size() >= batchSize || runningBatchBytes >= BulkByteBudget.currentMaxBytes()) {
                 flushPreparedBatch(batchDocs);
                 batchDocs.clear();
                 runningBatchBytes = 0;
@@ -446,8 +735,8 @@ public final class FindingsIndexReporter {
     }
 
     private static void flushPreparedBatch(List<PreparedExportDocument> batchDocs) {
-        String activeBaseUrl = RuntimeConfig.openSearchUrl();
-        boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
+        String activeBaseUrl = RuntimeConfig.searchBaseUrl();
+        boolean openSearchActive = RuntimeConfig.isSearchActive();
         String indexName = findingsIndexName();
         var outcome = OpenSearchClientWrapper.pushPreparedBulk(activeBaseUrl, indexName, "findings", batchDocs);
         BulkOutcomeRecorder.record("findings", "Findings", "Bulk push", outcome, openSearchActive);

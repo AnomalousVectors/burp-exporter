@@ -1,5 +1,5 @@
 /**
- * Sinks (reporters) that turn Burp sources into exporter output for the OpenSearch and file sinks.
+ * Turns Burp sources into exporter output for search database and file destinations.
  *
  * <p>This package houses:</p>
  * <ul>
@@ -23,6 +23,8 @@
  *   <li><b>Shared infrastructure</b> —
  *       {@link ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue} bounded queue and spill,
  *       {@link ai.anomalousvectors.tools.burp.sinks.FileExportService} file-sink writer,
+ *       {@link ai.anomalousvectors.tools.burp.sinks.SearchRecoveryBootstrap} search authorization
+ *       recovery and reproducible snapshot replay,
  *       {@link ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket} route mapping for
  *       traffic counters, {@link ai.anomalousvectors.tools.burp.sinks.BulkOutcomeRecorder}
  *       bulk success/failure accounting,
@@ -32,12 +34,15 @@
  * </ul>
  *
  * <p>One-shot snapshot backlogs (Proxy History, Sitemap initial, Findings backlog, Proxy WebSocket
- * historic) use {@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine} with
+ * historic) run in cooperative slices through
+ * {@link ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator} and use
+ * {@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine} with
  * {@link ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper#pushPreparedBulk}
  * (pre-serialized NDJSON). Live traffic uses
  * {@link ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue} and
  * {@link ai.anomalousvectors.tools.burp.utils.opensearch.ChunkedBulkSender}. Incremental reporters
  * (Sitemap 30s, Findings 30s) batch prepared documents directly. All paths converge on
- * {@link ai.anomalousvectors.tools.burp.sinks.FileExportService} for file output.</p>
+ * {@link ai.anomalousvectors.tools.burp.sinks.FileExportService} for file output, where run-scoped
+ * directory ownership and artifact identity/size checks protect append integrity.</p>
  */
 package ai.anomalousvectors.tools.burp.sinks;

@@ -12,26 +12,42 @@ import java.util.concurrent.TimeUnit;
  * <p>{@link #flushExecutor()} runs whole-chunk flushes (multi-flight). {@link #dualSinkExecutor()}
  * runs parallel file + OpenSearch work inside one flush. They must stay separate: nesting
  * dual-sink tasks on the flush pool deadlocks when a flush thread blocks on {@code get()}.</p>
+ *
+ * <p>The shared daemon pools live for the extension process. Accessors are safe from any thread;
+ * callers may submit work but must not shut down the returned executors.</p>
  */
 public final class SnapshotFlushExecutor {
 
-    private static final ThreadPoolExecutor FLUSH_EXECUTOR = newFixedPool(2, "burp-exporter-snapshot-flush-");
+    /** Sized for adaptive headroom in-flight flushes (up to 3) plus one spare. */
+    private static final ThreadPoolExecutor FLUSH_EXECUTOR = newFixedPool(4, "burp-exporter-snapshot-flush-");
     private static final ThreadPoolExecutor DUAL_SINK_EXECUTOR =
             newFixedPool(2, "burp-exporter-snapshot-dual-sink-");
 
     private SnapshotFlushExecutor() {}
 
-    /** Pool for overlapping snapshot chunk flushes ({@link SnapshotExportEngine}). */
+    /**
+     * Returns the shared pool for overlapping snapshot chunk flushes.
+     *
+     * @return process-wide snapshot flush executor; callers must not shut it down
+     */
     public static ExecutorService flushExecutor() {
         return FLUSH_EXECUTOR;
     }
 
-    /** Pool for parallel file + OpenSearch work within one prepared bulk push. */
+    /**
+     * Returns the shared pool for parallel file and OpenSearch work within one bulk push.
+     *
+     * @return process-wide dual-sink executor; callers must not shut it down
+     */
     public static ExecutorService dualSinkExecutor() {
         return DUAL_SINK_EXECUTOR;
     }
 
-    /** Returns point-in-time pressure metrics for both snapshot flush pools. */
+    /**
+     * Returns point-in-time pressure metrics for both snapshot flush pools.
+     *
+     * @return non-atomic pressure snapshot suitable for operational statistics
+     */
     public static Snapshot stats() {
         return new Snapshot(poolStats(FLUSH_EXECUTOR), poolStats(DUAL_SINK_EXECUTOR));
     }

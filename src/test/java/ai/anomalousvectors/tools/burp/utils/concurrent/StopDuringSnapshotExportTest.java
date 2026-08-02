@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Timeout;
 import ai.anomalousvectors.tools.burp.sinks.ExportReporterLifecycle;
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 
@@ -65,6 +66,8 @@ class StopDuringSnapshotExportTest {
             assertThat(awaitFlushPoolsIdle(10_000L))
                     .as("snapshot flush pools must return to idle after cooperative stop")
                     .isTrue();
+            assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
+            assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
         } finally {
             ExportReporterLifecycle.resetForTests();
         }
@@ -100,6 +103,8 @@ class StopDuringSnapshotExportTest {
             assertThat(RuntimeConfig.isExportRunning()).isFalse();
             assertThat(TrafficExportQueue.getCurrentSize()).isNotNegative();
             assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
+            assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
+            assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
         } finally {
             ExportReporterLifecycle.resetForTests();
         }
@@ -133,6 +138,60 @@ class StopDuringSnapshotExportTest {
             assertThat(snapshotThread.isAlive()).isFalse();
             assertThat(RuntimeConfig.isExportRunning()).isFalse();
             assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
+        } finally {
+            ExportReporterLifecycle.resetForTests();
+        }
+    }
+
+    @Test
+    void staleRunDoesNotDeliverLateObserverOutcomeIntoNextStart() throws Exception {
+        try {
+            Path root = TestPathSupport.createDirectory("snapshot-next-run-isolation");
+            RuntimeConfig.updateState(fileOnlyTrafficState(root));
+            RuntimeConfig.setExportRunning(true);
+            RuntimeConfig.ExportRunToken oldToken = RuntimeConfig.currentExportRunToken();
+            String indexName = IndexNaming.indexNameForShortName("traffic");
+            CountDownLatch prepareStarted = new CountDownLatch(1);
+            CountDownLatch releasePrepare = new CountDownLatch(1);
+            AtomicInteger observerCalls = new AtomicInteger();
+
+            Thread snapshotThread = new Thread(
+                    () -> SnapshotExportEngine.run(
+                            oldToken,
+                            List.of(1),
+                            1,
+                            5_000_000L,
+                            1,
+                            null,
+                            null,
+                            "",
+                            indexName,
+                            "traffic",
+                            item -> {
+                                prepareStarted.countDown();
+                                try {
+                                    releasePrepare.await();
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                }
+                                return preparedTrafficDoc(indexName, item, 512L);
+                            },
+                            (chunk, outcome, nextTarget) -> observerCalls.incrementAndGet()),
+                    "test-snapshot-next-run-isolation");
+            snapshotThread.start();
+
+            assertThat(prepareStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            RuntimeConfig.setExportRunning(false);
+            SnapshotExportEngine.cancelRun(oldToken);
+            RuntimeConfig.setExportRunning(true);
+            RuntimeConfig.ExportRunToken newToken = RuntimeConfig.currentExportRunToken();
+            releasePrepare.countDown();
+
+            snapshotThread.join(5_000L);
+            assertThat(snapshotThread.isAlive()).isFalse();
+            assertThat(observerCalls).hasValue(0);
+            assertThat(RuntimeConfig.isExportRunActive(oldToken)).isFalse();
+            assertThat(RuntimeConfig.isExportRunActive(newToken)).isTrue();
         } finally {
             ExportReporterLifecycle.resetForTests();
         }

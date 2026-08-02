@@ -2,7 +2,7 @@
 
 > ⚠️ This extension is in early development. Expect breaking changes and partial functionality.
 
-This Burp Suite extension continuously exports settings, sitemap, issues, and traffic into index databases to support agentic penetration testing.
+This Burp Suite extension continuously exports settings, sitemap, issues, and traffic into index databases to support agentic penetration testing and research.
 
 By externalizing Burp’s insights into searchable, semantically indexed stores, this extension enables advanced querying, cross-project correlation, and integration with agentic pentesting workflows. This allows autonomous or assisted systems to reason over historical findings, surface patterns, and drive automated reconnaissance and exploitation logic.
 
@@ -12,8 +12,8 @@ Burp Exporter is part of a larger research framework being developed by Anomalou
 
 - Wiki: [https://github.com/AnomalousVectors/burp-exporter/wiki](../../wiki)
 - Javadocs: [https://AnomalousVectors.github.io/burp-exporter](https://AnomalousVectors.github.io/burp-exporter/)
-- Contributing: [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md)
-- Security policy: [`.github/SECURITY.md`](.github/SECURITY.md)
+- Contributing: `[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md)`
+- Security policy: `[.github/SECURITY.md](.github/SECURITY.md)`
 
 ## Support
 

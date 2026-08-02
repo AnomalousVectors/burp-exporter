@@ -11,6 +11,7 @@ import java.awt.MultipleGradientPaint.CycleMethod;
 import java.awt.RadialGradientPaint;
 import java.awt.RenderingHints;
 import java.awt.geom.Ellipse2D;
+import java.io.Serial;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -24,8 +25,10 @@ import javax.swing.SwingUtilities;
 
 import ai.anomalousvectors.tools.burp.ui.primitives.ButtonStyles;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
+import ai.anomalousvectors.tools.burp.utils.ExportControlBridge;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import net.miginfocom.swing.MigLayout;
 
 /**
@@ -34,9 +37,11 @@ import net.miginfocom.swing.MigLayout;
  * <p><strong>Responsibilities:</strong> render control panel and expose the assembled panel.
  * Callers supply actions and a status configurator for consistent text-area setup. A single
  * Start/Stop button toggles {@link RuntimeConfig#setExportRunning(boolean)}; its label and
- * tooltip show "Start" when stopped and "Stop" when running. The indicator shows starting
+ * tooltip show "Start" when stopped and "Stop" when running or stopping. While stopping, a second
+ * Stop click requests force-abort of long remote waits. The indicator shows starting
  * (yellow), running (green), stopping (yellow), or stopped (red), and the control status
- * reflects those states.</p>
+ * reflects those states. Forced stops outside the click path sync via
+ * {@link ExportControlBridge}.</p>
  *
  * <p><strong>Threading:</strong> created/used on the EDT. {@link #build()} mounts status text areas
  * into their wrapper panels so callers can update them via
@@ -55,6 +60,8 @@ public final class ConfigControlPanel {
 
     /** Paints a 3D-style circle: red/green fill with top-left gloss and a thin black border; transparent background. */
     private static final class IndicatorDot extends JComponent {
+        @Serial private static final long serialVersionUID = 1L;
+
         private final int size;
         private State state = State.STOPPED;
 
@@ -75,6 +82,11 @@ public final class ConfigControlPanel {
             putClientProperty("html.disable", Boolean.FALSE);
         }
 
+        /**
+         * Creates an HTML-enabled tooltip owned by this indicator.
+         *
+         * @return tooltip configured for shared exporter HTML rendering
+         */
         @Override
         public javax.swing.JToolTip createToolTip() {
             return Tooltips.createHtmlToolTip(this);
@@ -94,6 +106,11 @@ public final class ConfigControlPanel {
             }));
         }
 
+        /**
+         * Paints the current lifecycle state indicator.
+         *
+         * @param g Swing paint context
+         */
         @Override
         protected void paintComponent(Graphics g) {
             super.paintComponent(g);
@@ -145,7 +162,13 @@ public final class ConfigControlPanel {
     /**
      * Start lifecycle UI hooks. {@link #snapshot()} is captured on the EDT when Start is clicked;
      * {@link #onStartProgress()} receives status lines during bootstrap; {@link #onStartSuccess()}
-     * runs on the EDT when startup finishes (final running status is posted separately).
+     * runs when startup finishes (final running status is posted separately). All callbacks are
+     * invoked on the EDT.
+     *
+     * @param onStartFailure restores stopped controls after startup failure
+     * @param onStartSuccess applies running controls after successful startup
+     * @param onStartProgress displays one startup phase message
+     * @param snapshot destination selection captured at Start time
      */
     public record StartUiCallbacks(
             Runnable onStartFailure,
@@ -157,7 +180,11 @@ public final class ConfigControlPanel {
     /**
      * Stop lifecycle UI hooks. {@link #snapshot()} is captured on the EDT when Stop is clicked;
      * {@link #onStopProgress()} receives status lines during wind-down; {@link #onStopComplete()}
-     * runs on the EDT when shutdown is fully finished.
+     * runs when shutdown is fully finished. All callbacks are invoked on the EDT.
+     *
+     * @param onStopComplete applies stopped controls after shutdown
+     * @param onStopProgress displays one shutdown phase message
+     * @param snapshot queue depths captured at Stop time
      */
     public record StopUiCallbacks(
             Runnable onStopComplete,
@@ -165,7 +192,24 @@ public final class ConfigControlPanel {
             ExportShutdownStatus.Snapshot snapshot
     ) {}
 
-    /** Canonical constructor with null checks. */
+    /**
+     * Creates the Config Control section from caller-owned components and actions.
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @param importExportStatus import/export status text area
+     * @param importExportStatusWrapper wrapper that controls import/export status visibility
+     * @param controlStatus Start/Stop status text area
+     * @param controlStatusWrapper wrapper that controls Start/Stop status visibility
+     * @param indent left indentation for nested rows
+     * @param rowGap MigLayout row-gap expression
+     * @param statusConfigurator shared text-area configuration callback
+     * @param importAction configuration import action
+     * @param exportAction configuration export action
+     * @param startAction asynchronous Start action
+     * @param stopAction asynchronous Stop action
+     * @throws NullPointerException if a component or callback is {@code null}
+     */
     public ConfigControlPanel(
             JTextArea importExportStatus,
             JPanel importExportStatusWrapper,
@@ -192,7 +236,13 @@ public final class ConfigControlPanel {
         this.stopAction = Objects.requireNonNull(stopAction, "stopAction");
     }
 
-    /** Builds and returns the Config Control panel. */
+    /**
+     * Builds the Config Control panel.
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @return assembled control panel
+     */
     public JPanel build() {
         JPanel root = new JPanel(new MigLayout("insets 0, wrap 1", "[left]"));
         root.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -210,6 +260,7 @@ public final class ConfigControlPanel {
         ButtonStyles.normalize(importBtn);
         ButtonStyles.normalize(exportBtn);
         ButtonStyles.normalize(startStopBtn);
+        Tooltips.preferTipToRight(startStopBtn);
         updateStartStopButton(startStopBtn, RuntimeConfig.isExportRunning());
 
         int btnHeight = startStopBtn.getPreferredSize().height;
@@ -221,19 +272,37 @@ public final class ConfigControlPanel {
         importBtn.addActionListener(e -> importAction.run());
         exportBtn.addActionListener(e -> exportAction.run());
         startStopBtn.addActionListener(e -> {
+            if (RuntimeConfig.isExportStopping()) {
+                if (RuntimeConfig.requestExportStopForceAbort()) {
+                    Logger.logWarnPanelOnly(
+                            "[Export] Force-stop requested; skipping remaining shutdown waits.");
+                    updateControlStatus(ExportShutdownStatus.forceStoppingMessage());
+                }
+                return;
+            }
             boolean wasRunning = RuntimeConfig.isExportRunning();
             if (wasRunning) {
-                RuntimeConfig.setExportRunning(false);
+                RuntimeConfig.ExportRunToken stoppedRun = RuntimeConfig.currentExportRunToken();
+                RuntimeConfig.beginExportStop();
                 RuntimeConfig.setExportStopping(true);
+                RuntimeConfig.setExportRunning(false);
+                StartupSnapshotCoordinator.cancelRun(stoppedRun);
                 Logger.logDebug("[Control] Stop clicked; running=true -> false");
-                updateStartStopButton(startStopBtn, false);
+                // Keep Stop label so a second click can force-abort a hung graceful shutdown.
+                updateStartStopButton(startStopBtn, true);
+                Tooltips.apply(startStopBtn, forceStopExportTooltip());
                 indicator.setState(IndicatorDot.State.STOPPING);
                 ExportShutdownStatus.Snapshot snapshot = ExportShutdownStatus.capture();
                 updateControlStatus(ExportShutdownStatus.initialStoppingMessage(snapshot));
                 Runnable markStoppedUi = () -> {
+                    boolean forced = RuntimeConfig.isExportStopForceAbortRequested();
                     RuntimeConfig.setExportStopping(false);
+                    RuntimeConfig.clearExportStopForceAbort();
+                    updateStartStopButton(startStopBtn, false);
                     indicator.setState(IndicatorDot.State.STOPPED);
-                    updateControlStatus(ExportShutdownStatus.stoppedMessage());
+                    updateControlStatus(forced
+                            ? ExportShutdownStatus.forceStoppedMessage()
+                            : ExportShutdownStatus.stoppedMessage());
                 };
                 StopUiCallbacks callbacks = new StopUiCallbacks(
                         markStoppedUi,
@@ -265,6 +334,21 @@ public final class ConfigControlPanel {
                         this::updateControlStatus,
                         snapshot);
                 SwingUtilities.invokeLater(() -> startAction.accept(callbacks));
+            }
+        });
+
+        ExportControlBridge.registerForcedStopped(() -> {
+            Runnable sync = () -> {
+                RuntimeConfig.setExportStopping(false);
+                RuntimeConfig.clearExportStopForceAbort();
+                updateStartStopButton(startStopBtn, false);
+                indicator.setState(IndicatorDot.State.STOPPED);
+                Logger.logDebug("[Control] Forced-stop UI sync: indicator=stopped button=Start");
+            };
+            if (SwingUtilities.isEventDispatchThread()) {
+                sync.run();
+            } else {
+                SwingUtilities.invokeLater(sync);
             }
         });
 
@@ -322,9 +406,44 @@ public final class ConfigControlPanel {
 
     private static void updateStartStopButton(JButton btn, boolean running) {
         btn.setText(runningButtonLabel(running));
-        Tooltips.apply(btn, running
-                ? Tooltips.html("Stop exporting.", "The current in-memory configuration remains active until changed.")
-                : Tooltips.html("Start exporting to the configured destination(s)."));
+        Tooltips.apply(btn, running ? stopExportTooltip() : startExportTooltip());
+    }
+
+    private static String startExportTooltip() {
+        String spillPath = Tooltips.escapeHtml(
+                ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths.spillDirectory().toString());
+        return Tooltips.htmlRaw(
+                "<b>Start</b>",
+                "Start exporting to the configured destination(s).",
+                "",
+                "<b>During export</b>",
+                "Repeated push failures trigger a health check. Authentication failures (HTTP 401/403) or connectivity failures can disable the database destination for the current run.",
+                "If Files remains enabled, file export continues; otherwise export stops.",
+                "Live traffic overflow can spill under <code>" + spillPath + "</code> when the in-memory queue is full.");
+    }
+
+    private static String stopExportTooltip() {
+        return Tooltips.htmlRaw(
+                "<b>Stop</b>",
+                "Stop exporting.",
+                "Drains in-flight work where possible, pushes final exporter stats, validates Files,",
+                "and closes database connections without reading database counts back.",
+                "The current in-memory configuration remains active until changed.",
+                "",
+                "<b>If Stop hangs</b>",
+                "Click Stop again to force-abort remaining remote waits",
+                "(retry drain, final stats, file validation, connection close).",
+                "",
+                "<b>If the database destination was disabled mid-run</b>",
+                "Authentication or connectivity failures can leave Files-only export running until Stop.",
+                "Update credentials or connectivity, then Start again to resume database export.");
+    }
+
+    private static String forceStopExportTooltip() {
+        return Tooltips.htmlRaw(
+                "<b>Stop (in progress)</b>",
+                "Graceful shutdown is finishing in-flight work.",
+                "Click Stop again to force-abort remaining remote waits.");
     }
 
     /**

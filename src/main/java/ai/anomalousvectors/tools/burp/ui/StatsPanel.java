@@ -14,10 +14,12 @@ import java.awt.GridLayout;
 import java.awt.Paint;
 import java.awt.RenderingHints;
 import java.awt.Shape;
+import java.awt.event.MouseEvent;
 import java.awt.geom.Ellipse2D;
 import java.awt.geom.Line2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
+import java.io.Serial;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.text.SimpleDateFormat;
@@ -37,10 +39,13 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JTable;
 import javax.swing.SwingConstants;
+import javax.swing.JToolTip;
 import javax.swing.Timer;
 import javax.swing.UIManager;
 import javax.swing.table.DefaultTableCellRenderer;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.JTableHeader;
+import javax.swing.table.TableColumnModel;
 import javax.swing.table.TableRowSorter;
 
 import org.jfree.chart.ChartFactory;
@@ -65,6 +70,7 @@ import org.jfree.data.time.TimeSeriesCollection;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -72,6 +78,8 @@ import ai.anomalousvectors.tools.burp.utils.SystemMetrics;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff;
+import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 
 /**
  * Panel that displays live export charts and dashboard metrics.
@@ -80,8 +88,13 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
  * charts, per-index and per-source traffic tables, and a compact "Misc Stats" card with the
  * current export state. Sink-specific chart/table sections are shown only when that destination is
  * selected at runtime. Caller must construct on the EDT.</p>
+ *
+ * <p>The runtime-state listener is transient and final and is not rebuilt after deserialization.
+ * A deserialized panel must not be attached to a display hierarchy; construct a new panel for
+ * continued use.</p>
  */
 public class StatsPanel extends JPanel {
+    @Serial private static final long serialVersionUID = 1L;
 
     private static final String[] CHART_STYLE_NAMES = { "Simple", "Smooth", "Accessible" };
 
@@ -95,13 +108,17 @@ public class StatsPanel extends JPanel {
     private static final int SMOOTH_LEGEND_BOTTOM_ALPHA_DARK = 62;
     private static final int SMOOTH_LEGEND_BOTTOM_ALPHA_LIGHT = 72;
     /**
-     * Spline segments between samples for Smooth style (JFree default is 5). Lower than the
-     * previous 12 so curves stay closer to the data and look less heavily rounded.
+     * Spline segments between samples for Smooth style (JFree default is 5). Higher precision
+     * keeps Database/Files rate charts as fluid as the JVM heap chart; too low (5) reads as
+     * faceted straight segments between 3 s samples.
      */
-    private static final int SMOOTH_SPLINE_PRECISION = 5;
-    /** Modest headroom above sample max for spline overshoot (range ceiling also rounds up to nice ticks). */
-    private static final double SPLINE_RANGE_HEADROOM_MULTIPLIER = 1.12;
-    private static final double LINE_RANGE_HEADROOM_MULTIPLIER = 1.06;
+    private static final int SMOOTH_SPLINE_PRECISION = 12;
+    /**
+     * Headroom above sample max for Smooth style. Must cover {@link XYSplineRenderer} peak
+     * overshoot on spiky docs/sec and KiB/sec series (heap levels overshoot less, but share this).
+     */
+    private static final double SPLINE_RANGE_HEADROOM_MULTIPLIER = 1.22;
+    private static final double LINE_RANGE_HEADROOM_MULTIPLIER = 1.08;
     /** Range max is computed explicitly; do not add JFreeChart margin on top. */
     private static final double RANGE_AXIS_UPPER_MARGIN = 0.0;
     /** {@link ExportStats#getIndexKeys()} order: traffic is series 0, sitemap is series 3. */
@@ -118,16 +135,16 @@ public class StatsPanel extends JPanel {
     /**
      * Skip factor applied to {@link #refreshVisibleStats} when no export is running. With the 3 s
      * base interval and factor 5, idle refreshes happen every 15 s instead of every 3 s. This
-     * matches the E4 quiesce-idle-allocation goal: when Stop has been pressed but the panel is
-     * still on screen, we want minimal background churn until the next Start.
+     * minimizes allocation and refresh churn while the visible panel is idle after Stop.
      */
     private static final int IDLE_REFRESH_SKIP_FACTOR = 5;
-    /** Misc Stats groups toggled with the OpenSearch destination section. */
-    private static final List<String> MISC_OPEN_SEARCH_SECTIONS = List.of(
-            "OpenSearch Session", "Parameter Integrity", "OpenSearch Traffic", "OpenSearch Spill",
-            "OpenSearch Retry",
-            "OpenSearch Run Peaks");
-    private static final int ERROR_COL_MAX = 50;
+    /** Misc Stats groups toggled with the database destination section. */
+    private static final List<String> MISC_DATABASE_SECTIONS = List.of(
+            "Database Session", "Parameter Integrity", "Database Traffic",
+            "Database Retry", "Database Capacity",
+            "Database Run Peaks");
+    /** Misc Stats group for live traffic spill (files and/or database traffic export). */
+    private static final String MISC_TRAFFIC_SPILL_SECTION = "Traffic Spill";
     private static final long CHART_WINDOW_MAX_MS = 60L * 60L * 1000L;
     private static final int CHART_MAX_POINTS = (int) (CHART_WINDOW_MAX_MS / REFRESH_INTERVAL_MS) + 5;
     private static final int CHART_PANEL_HEIGHT = 360;
@@ -387,6 +404,12 @@ public class StatsPanel extends JPanel {
     private final JLabel gcCountTimeValue;
     private final JLabel processCpuLoadValue;
     private final JLabel permanentDropsTotalValue;
+    private final JLabel permanentDropReasonsValue;
+    private final JLabel countBasisValue;
+    private final JLabel bodyTruncationsTotalValue;
+    private final JLabel bodyTruncationsByIndexValue;
+    private final JLabel recoveredFailuresTotalValue;
+    private final JLabel retryAttemptsTotalValue;
     private final JLabel openSearchLastSuccessValue;
     private final JLabel openSearchConsecutiveFailuresValue;
     private final JLabel oldestQueuedAgeValue;
@@ -397,8 +420,21 @@ public class StatsPanel extends JPanel {
     private final JLabel peakRetryQueueValue;
     private final JLabel peakSnapshotChunkTargetValue;
     private final JLabel peakSnapshotFlushMsValue;
+    private final JLabel peakSnapshotBuildAheadValue;
+    private final JLabel peakCooldownWaitMsValue;
+    private final JLabel peakFlushSlotWaitMsValue;
     private final JLabel pendingOrphansValue;
     private final JLabel bulkInFlightValue;
+    private final JLabel softOutageValue;
+    private final JLabel authorizationRecoveryValue;
+    private final JLabel trafficSpillStatusValue;
+    private final JLabel bulkByteBudgetValue;
+    private final JLabel snapshotFlushCapValue;
+    private final JLabel snapshotBuildAheadValue;
+    private final JLabel cooldownRemainingValue;
+    private final JLabel pressureStreakValue;
+    private final JLabel softOutageEntriesValue;
+    private final JLabel capacityEventsValue;
     private final JLabel misgateSuspectsValue;
     private final JLabel skippedBodyEnumerationValue;
     private final JLabel wireBodyReplacedValue;
@@ -471,7 +507,7 @@ public class StatsPanel extends JPanel {
         String memoryChartTooltip = memoryChartTooltip();
         Tooltips.apply(memoryLegendPanel, memoryChartTooltip);
         fileChartsSectionHeaderLabel = createChartSectionHeaderLabel("File Export", false);
-        openSearchChartsSectionHeaderLabel = createChartSectionHeaderLabel("OpenSearch Export", false);
+        openSearchChartsSectionHeaderLabel = createChartSectionHeaderLabel("Database Export", false);
         fileChartsSectionHeader = wrapChartSectionHeader(fileChartsSectionHeaderLabel);
         openSearchChartsSectionHeader = wrapChartSectionHeader(openSearchChartsSectionHeaderLabel);
         fileChartsSectionPanel = buildChartSection(
@@ -500,8 +536,12 @@ public class StatsPanel extends JPanel {
         cardsRow.setOpaque(false);
 
         MetricCardState miscState = addGroupedMetricCard(cardsRow, "Misc Stats", List.of(
-                new MetricSection("Global", new String[] {
-                        "Export Running"
+                new MetricSection("Overview", new String[] {
+                        "Export Running",
+                        "Soft Outage",
+                        "Database Exported Size",
+                        "Files Exported Size",
+                        "Traffic Spill Status"
                 }),
                 new MetricSection("Process", new String[] {
                         "Heap Used / Max", "Heap Committed",
@@ -509,9 +549,12 @@ public class StatsPanel extends JPanel {
                         "Threads (Live / Peak)",
                         "GC (Count / Time)", "Process CPU Load"
                 }),
-                new MetricSection("OpenSearch Session", new String[] {
-                        "Throughput (10s)", "Exported Docs", "Exported Size", "Exported Failures",
-                        "Last Success", "Consecutive Failures", "Permanent Drops"
+                new MetricSection("Database Session", new String[] {
+                        "Throughput (10s)", "Exported Docs", "Exported Failures",
+                        "Count Basis", "Authorization Recovery",
+                        "Last Success", "Consecutive Failures", "Permanent Drops", "Permanent Drop Reasons",
+                        "Body Truncations", "Body Truncations by Index",
+                        "Recovered Failures", "Retry Drain Pushes"
                 }),
                 new MetricSection("Parameter Integrity", new String[] {
                         "Mis-gate Suspects",
@@ -522,24 +565,30 @@ public class StatsPanel extends JPanel {
                         "Supplemental Rejected (non-form)",
                         "Wire BODY Dropped (entries)"
                 }),
-                new MetricSection("OpenSearch Traffic", new String[] {
+                new MetricSection("Database Traffic", new String[] {
                         "Bulk In-Flight",
                         "Shared Batch Size", "Proxy History Chunk Target",
                         "Traffic Queue Size", "Traffic Queue Bytes (est.)",
                         "Queue Drops", "Pending Orphans", "Repeater Metadata Sources"
                 }),
-                new MetricSection("OpenSearch Spill", new String[] {
+                new MetricSection(MISC_TRAFFIC_SPILL_SECTION, new String[] {
                         "Queue", "Oldest Age (s)", "Enqueued / Dequeued / Dropped", "Drop Reasons"
                 }),
-                new MetricSection("OpenSearch Retry", new String[] {
+                new MetricSection("Database Retry", new String[] {
                         "Queue Depth", "Oldest Queued Age"
                 }),
-                new MetricSection("OpenSearch Run Peaks", new String[] {
-                        "Peak Traffic Queue", "Peak Spill Queue", "Peak Retry Queue",
-                        "Peak Snapshot Chunk Target", "Peak Snapshot Flush (ms)"
+                new MetricSection("Database Capacity", new String[] {
+                        "Bulk Byte Budget", "Snapshot Flush Cap", "Snapshot Build-Ahead",
+                        "Cooldown Remaining", "Pressure Streak",
+                        "Soft Outage Entries", "Capacity Events"
+                }),
+                new MetricSection("Database Run Peaks", new String[] {
+                        "Peak Traffic Queue", "Peak Traffic Spill", "Peak Retry Queue",
+                        "Peak Snapshot Chunk Target", "Peak Snapshot Flush (ms)", "Peak Snapshot Build-Ahead",
+                        "Peak Cooldown Wait (ms)", "Peak Flush Slot Wait (ms)"
                 }),
                 new MetricSection("Files", new String[] {
-                        "File Total Size Exported", "File Total Docs Exported", "File Total Failures"
+                        "File Total Docs Exported", "File Total Failures"
                 })
         ));
         miscStatsCard = miscState.card();
@@ -547,6 +596,9 @@ public class StatsPanel extends JPanel {
         miscSectionComponents = miscState.sections();
         final Map<String, JLabel> miscValues = miscState.values();
         exportRunningValue = miscValues.get("Export Running");
+        softOutageValue = miscValues.get("Soft Outage");
+        authorizationRecoveryValue = miscValues.get("Authorization Recovery");
+        trafficSpillStatusValue = miscValues.get("Traffic Spill Status");
         sharedBatchSizeValue = miscValues.get("Shared Batch Size");
         proxyHistoryChunkTargetValue = miscValues.get("Proxy History Chunk Target");
         applyMiscStatTooltips(miscSectionComponents);
@@ -559,9 +611,9 @@ public class StatsPanel extends JPanel {
         dropReasonValue = miscValues.get("Drop Reasons");
         throughputValue = miscValues.get("Throughput (10s)");
         exportedDocsValue = miscValues.get("Exported Docs");
-        exportedSizeValue = miscValues.get("Exported Size");
+        exportedSizeValue = miscValues.get("Database Exported Size");
         exportedFailuresValue = miscValues.get("Exported Failures");
-        fileTotalExportedValue = miscValues.get("File Total Size Exported");
+        fileTotalExportedValue = miscValues.get("Files Exported Size");
         fileTotalDocsPushedValue = miscValues.get("File Total Docs Exported");
         fileTotalFailuresValue = miscValues.get("File Total Failures");
         heapUsedMaxValue = miscValues.get("Heap Used / Max");
@@ -573,18 +625,34 @@ public class StatsPanel extends JPanel {
         gcCountTimeValue = miscValues.get("GC (Count / Time)");
         processCpuLoadValue = miscValues.get("Process CPU Load");
         permanentDropsTotalValue = miscValues.get("Permanent Drops");
+        permanentDropReasonsValue = miscValues.get("Permanent Drop Reasons");
+        countBasisValue = miscValues.get("Count Basis");
+        bodyTruncationsTotalValue = miscValues.get("Body Truncations");
+        bodyTruncationsByIndexValue = miscValues.get("Body Truncations by Index");
+        recoveredFailuresTotalValue = miscValues.get("Recovered Failures");
+        retryAttemptsTotalValue = miscValues.get("Retry Drain Pushes");
         openSearchLastSuccessValue = miscValues.get("Last Success");
         openSearchConsecutiveFailuresValue = miscValues.get("Consecutive Failures");
         oldestQueuedAgeValue = miscValues.get("Oldest Queued Age");
         trafficQueueBytesValue = miscValues.get("Traffic Queue Bytes (est.)");
         retryQueueDepthValue = miscValues.get("Queue Depth");
         peakTrafficQueueValue = miscValues.get("Peak Traffic Queue");
-        peakSpillQueueValue = miscValues.get("Peak Spill Queue");
+        peakSpillQueueValue = miscValues.get("Peak Traffic Spill");
         peakRetryQueueValue = miscValues.get("Peak Retry Queue");
         peakSnapshotChunkTargetValue = miscValues.get("Peak Snapshot Chunk Target");
         peakSnapshotFlushMsValue = miscValues.get("Peak Snapshot Flush (ms)");
+        peakSnapshotBuildAheadValue = miscValues.get("Peak Snapshot Build-Ahead");
+        peakCooldownWaitMsValue = miscValues.get("Peak Cooldown Wait (ms)");
+        peakFlushSlotWaitMsValue = miscValues.get("Peak Flush Slot Wait (ms)");
         pendingOrphansValue = miscValues.get("Pending Orphans");
         bulkInFlightValue = miscValues.get("Bulk In-Flight");
+        bulkByteBudgetValue = miscValues.get("Bulk Byte Budget");
+        snapshotFlushCapValue = miscValues.get("Snapshot Flush Cap");
+        snapshotBuildAheadValue = miscValues.get("Snapshot Build-Ahead");
+        cooldownRemainingValue = miscValues.get("Cooldown Remaining");
+        pressureStreakValue = miscValues.get("Pressure Streak");
+        softOutageEntriesValue = miscValues.get("Soft Outage Entries");
+        capacityEventsValue = miscValues.get("Capacity Events");
         misgateSuspectsValue = miscValues.get("Mis-gate Suspects");
         skippedBodyEnumerationValue = miscValues.get("Skipped BODY Enumeration");
         wireBodyReplacedValue = miscValues.get("Wire BODY Replaced");
@@ -596,26 +664,28 @@ public class StatsPanel extends JPanel {
         // Merged sink-counts model: index rows on top, traffic-source sub-rows nested directly
         // under the Traffic index row (visually distinguished by SUBROW_INDENT on column 0),
         // followed by a trailing Total row that aggregates only the index rows. The OpenSearch
-        // table carries Queued / Retry Drops / Permanent Drops because the sink genuinely
-        // queues, retries, and permanently drops; sub-rows fill those columns with "-" because
-        // those counters live at the index level only. The File schema deliberately omits all
-        // three -- file writes are synchronous to disk with no queue, no retry path, and no
-        // permanent-drop concept, so those columns would always read 0 across every row and
-        // would only steal horizontal space from the Last Error column.
+        // table carries Failures / Queued / Recovered Failures / terminal drops because the sink genuinely
+        // queues, retries, permanently drops, and recovers via the retry drain; traffic source sub-rows
+        // attribute those counters by route. File writes are synchronous and have bounded immediate
+        // retries, but no queue, retry-drain recovery, or terminal-drop concepts.
         byIndexModel = new DefaultTableModel(
-                new String[] { "Index", "Exported", "Queued", "Retry Drops",
-                        "Permanent Drops", "Failures", "Last Bulk (ms)", "Last Error" }, 0);
+                new String[] { "Index", "Exported", "Failures", "Queued",
+                        "Recovered Failures", "Retry Drops", "Permanent Drops", "Last Bulk (ms)", "Last Error" }, 0);
         byIndexTable = createStatsTable(byIndexModel);
         fileByIndexModel = new DefaultTableModel(
-                new String[] { "Index", "Written", "Failures", "Last Write (ms)", "Last Error" }, 0);
+                new String[] { "Index", "Written", "Failures", "Retry Attempts",
+                        "Baseline", "Appended", "Final Size", "Integrity",
+                        "Last Append (ms)", "Last Error" }, 0);
         fileByIndexTable = createStatsTable(fileByIndexModel);
+        applyColumnHeaderTooltips(byIndexTable, databaseCountsHeaderTooltips());
+        applyColumnHeaderTooltips(fileByIndexTable, fileCountsHeaderTooltips());
 
         // One titled card per sink wrapped in a 1x1 GridLayout row so the card always fills the
         // panel width (matches the cardsRow / Misc Stats pattern). The card's body is a single
         // table because traffic-source rows are now nested directly under the Traffic index row,
         // freeing horizontal room for long Last-Error strings.
         fileSinkCard = createSinkCard("File Counts", "fileSinkCard", fileByIndexTable);
-        openSearchSinkCard = createSinkCard("OpenSearch Counts", "openSearchSinkCard", byIndexTable);
+        openSearchSinkCard = createSinkCard("Database Counts", "openSearchSinkCard", byIndexTable);
         fileSinkRow = wrapSinkCardInFullWidthRow(fileSinkCard, "fileSinkRow");
         openSearchSinkRow = wrapSinkCardInFullWidthRow(openSearchSinkCard, "openSearchSinkRow");
 
@@ -624,7 +694,7 @@ public class StatsPanel extends JPanel {
         lowerPanel.setLayout(new javax.swing.BoxLayout(lowerPanel, javax.swing.BoxLayout.Y_AXIS));
         lowerPanel.setOpaque(false);
         JPanel statsCopyToolbar = CardCopySupport.buildCopyOnlyToolbar(
-                "Copy File Counts, OpenSearch Counts, and Misc Stats to the clipboard",
+                "Copy File Counts, Database Counts, and Misc Stats to the clipboard",
                 this::renderAllStatsForClipboard);
         lowerPanel.add(statsCopyToolbar);
         lowerPanel.add(javax.swing.Box.createVerticalStrut(4));
@@ -690,6 +760,10 @@ public class StatsPanel extends JPanel {
         exportRunningValue.setText(exportRunning ? "Yes" : "No");
         exportRunningValue.setForeground(exportRunning ? SERIES_STYLES[0].paint() : SERIES_STYLES[4].paint());
         exportRunningValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        long dbExportedBytes = ExportStats.getTotalExportedBytes();
+        long fileExportedBytes = FileExportStats.getTotalExportedBytes();
+        exportedSizeValue.setForeground(TEXT_FG);
+        fileTotalExportedValue.setForeground(TEXT_FG);
         sharedBatchSizeValue.setText(formatWhole(BatchSizeController.getInstance().getCurrentBatchSize()));
         int proxyChunkTarget = ExportStats.getCurrentProxyHistoryChunkTarget();
         if (proxyChunkTarget >= 0) {
@@ -712,16 +786,20 @@ public class StatsPanel extends JPanel {
                 formatWhole(ExportStats.getTrafficSpillEnqueued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDequeued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDrops()));
+        long spillRejectNew = ExportStats.getTrafficDropReasonCount("spill_full_reject_new")
+                + ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_new")
+                + ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")
+                + ExportStats.getTrafficDropReasonCount("spill_low_disk_drop_oldest");
         dropReasonValue.setText(
-                formatWhole(ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")) + " / "
-                        + formatWhole(ExportStats.getTrafficDropReasonCount("queue_contention_drop")) + " / "
-                        + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")) + " / "
+                formatWhole(spillRejectNew) + " / "
+                        + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")
+                                + ExportStats.getTrafficDropReasonCount("spill_requeue_low_disk_drop")) + " / "
                         + formatWhole(ExportStats.getTrafficSpillExpiredPruned()));
         throughputValue.setText(DECIMAL_ONE.format(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
         exportedDocsValue.setText(formatWhole(totalSuccess) + " docs");
-        exportedSizeValue.setText(formatHumanReadableBytes(ExportStats.getTotalExportedBytes()));
-        exportedFailuresValue.setText(formatWhole(totalFailure) + " failures");
-        fileTotalExportedValue.setText(formatHumanReadableBytes(FileExportStats.getTotalExportedBytes()));
+        exportedSizeValue.setText(formatHumanReadableBytes(dbExportedBytes));
+        exportedFailuresValue.setText(formatWhole(totalFailure));
+        fileTotalExportedValue.setText(formatHumanReadableBytes(fileExportedBytes));
         long fallbackHits = ExportStats.getTrafficToolSourceFallbacks();
         if (RuntimeConfig.isExportRunning()
                 && fallbackHits > 0
@@ -733,6 +811,12 @@ public class StatsPanel extends JPanel {
         fileTotalDocsPushedValue.setText(formatWhole(FileExportStats.getTotalSuccessCount()));
         fileTotalFailuresValue.setText(formatWhole(FileExportStats.getTotalFailureCount()));
         permanentDropsTotalValue.setText(formatWhole(ExportStats.getTotalPermanentDrops()));
+        permanentDropReasonsValue.setText(StatsPanelFormatters.formatPermanentDropReasons());
+        countBasisValue.setText("Session counters; no Stop readback");
+        bodyTruncationsTotalValue.setText(formatWhole(ExportStats.getSearchBodyPrefixTruncations()));
+        bodyTruncationsByIndexValue.setText(StatsPanelFormatters.formatBodyTruncationsByIndex());
+        recoveredFailuresTotalValue.setText(formatWhole(ExportStats.getTotalRecoveredFailureCount()));
+        retryAttemptsTotalValue.setText(formatWhole(ExportStats.getTotalRetryAttempts()));
         openSearchLastSuccessValue.setText(StatsPanelFormatters.formatRelativeTime(ExportStats.getOpenSearchLastSuccessAtMs()));
         openSearchConsecutiveFailuresValue.setText(formatWhole(ExportStats.getOpenSearchConsecutiveFailures()));
         oldestQueuedAgeValue.setText(StatsPanelFormatters.formatOldestQueuedAgeSummary());
@@ -748,9 +832,38 @@ public class StatsPanel extends JPanel {
         peakSnapshotChunkTargetValue.setText(peakChunkTarget > 0 ? formatWhole(peakChunkTarget) : "—");
         long peakFlushMs = ExportStats.getPeakSnapshotFlushMs();
         peakSnapshotFlushMsValue.setText(peakFlushMs > 0 ? formatWhole(peakFlushMs) : "—");
+        peakSnapshotBuildAheadValue.setText(StatsPanelFormatters.formatPeakSnapshotBuildAhead());
+        long peakCooldownWaitMs = ExportStats.getPeakCooldownWaitMs();
+        peakCooldownWaitMsValue.setText(peakCooldownWaitMs > 0 ? formatWhole(peakCooldownWaitMs) : "—");
+        long peakFlushSlotWaitMs = ExportStats.getPeakFlushSlotWaitMs();
+        peakFlushSlotWaitMsValue.setText(peakFlushSlotWaitMs > 0 ? formatWhole(peakFlushSlotWaitMs) : "—");
+        snapshotBuildAheadValue.setText(StatsPanelFormatters.formatSnapshotBuildAhead());
         pendingOrphansValue.setText(formatWhole(
                 ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler.pendingOrphansSize()));
         bulkInFlightValue.setText(formatWhole(ExportStats.getBulkInFlight()));
+        boolean softOutage = IndexingRetryCoordinator.getInstance().isSoftCapacityOutage();
+        softOutageValue.setText(StatsPanelFormatters.formatSoftOutage(softOutage));
+        softOutageValue.setForeground(softOutage ? SERIES_STYLES[3].paint() : SERIES_STYLES[0].paint());
+        softOutageValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        boolean authorizationPaused =
+                IndexingRetryCoordinator.getInstance().isAuthorizationRecoveryPaused();
+        authorizationRecoveryValue.setText(StatsPanelFormatters.formatAuthorizationRecovery());
+        authorizationRecoveryValue.setForeground(
+                authorizationPaused ? SERIES_STYLES[3].paint() : SERIES_STYLES[0].paint());
+        authorizationRecoveryValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        ExportAdmissionController.SpillStatus spillStatus =
+                ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.currentSpillStatus();
+        trafficSpillStatusValue.setText(StatsPanelFormatters.formatSpillStatus(spillStatus));
+        trafficSpillStatusValue.setForeground(spillStatusColor(spillStatus));
+        trafficSpillStatusValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        bulkByteBudgetValue.setText(
+                StatsPanelFormatters.formatBytesHuman(StatsPanelFormatters.displayedBulkByteBudget()));
+        snapshotFlushCapValue.setText(formatWhole(StatsPanelFormatters.displayedSnapshotFlushCap()));
+        cooldownRemainingValue.setText(
+                StatsPanelFormatters.formatCooldownRemaining(BulkRateLimitBackoff.remainingCooldownMs()));
+        pressureStreakValue.setText(formatWhole(BulkRateLimitBackoff.pressureStreak()));
+        softOutageEntriesValue.setText(formatWhole(ExportStats.getSoftOutageEntries()));
+        capacityEventsValue.setText(formatWhole(ExportStats.getCapacityPressureEvents()));
         misgateSuspectsValue.setText(formatWhole(ExportStats.getDocsBodyEnumerationMisgateSuspect()));
         skippedBodyEnumerationValue.setText(formatWhole(ExportStats.getDocsWithSkippedBodyEnumeration()));
         wireBodyReplacedValue.setText(formatWhole(ExportStats.getDocsWireBodyParamsReplaced()));
@@ -775,8 +888,9 @@ public class StatsPanel extends JPanel {
      *
      * <p>Row order is: index rows in alphabetical order, the Traffic row, traffic-source
      * sub-rows directly under it (indented via {@link #SUBROW_INDENT}), then a Total row that
-     * aggregates only the index rows. Sub-rows fill non-source columns with {@code "-"} since
-     * queue / retry / permanent-drop counters live at the index level only.</p>
+     * aggregates only the index rows. Sub-rows show route-attributed Failures, Queued, Recovered
+     * Failures, Retry Drops, and Permanent Drops; Last Bulk / Last Error stay {@code "-"}
+     * because those are index-level only.</p>
      */
     private void rebuildByIndexTable() {
         byIndexModel.setRowCount(0);
@@ -787,12 +901,14 @@ public class StatsPanel extends JPanel {
         long totalRetryDrops = 0;
         long totalPermanentDrops = 0;
         long totalFailure = 0;
+        long totalRecovered = 0;
         for (String indexKey : sortedKeys) {
             long exported = ExportStats.getExportedCount(indexKey);
             int queued = ExportStats.getQueueSize(indexKey);
             long retryDrops = ExportStats.getRetryQueueDrops(indexKey);
             long permanentDrops = ExportStats.getPermanentDrops(indexKey);
             long failure = ExportStats.getFailureCount(indexKey);
+            long recovered = ExportStats.getRecoveredFailureCount(indexKey);
             String lastBulkStr = "-";
             if ("traffic".equalsIgnoreCase(indexKey)) {
                 long lastBulkMs = ExportStats.getLastLiveBulkDurationMs(indexKey);
@@ -807,17 +923,18 @@ public class StatsPanel extends JPanel {
             totalRetryDrops += retryDrops;
             totalPermanentDrops += permanentDrops;
             totalFailure += failure;
+            totalRecovered += recovered;
             byIndexModel.addRow(new Object[] {
-                    formatKeyLabel(indexKey), exported, queued, retryDrops,
-                    permanentDrops, failure, lastBulkStr, errStr
+                    formatKeyLabel(indexKey), exported, failure, queued,
+                    recovered, retryDrops, permanentDrops, lastBulkStr, errStr
             });
             if ("traffic".equalsIgnoreCase(indexKey)) {
                 appendOpenSearchTrafficSourceSubRows();
             }
         }
         byIndexModel.addRow(new Object[] {
-                "Total", totalSuccess, totalQueued, totalRetryDrops,
-                totalPermanentDrops, totalFailure, "-", "-"
+                "Total", totalSuccess, totalFailure, totalQueued,
+                totalRecovered, totalRetryDrops, totalPermanentDrops, "-", "-"
         });
     }
 
@@ -828,18 +945,29 @@ public class StatsPanel extends JPanel {
                 continue;
             }
             long sourceSuccess = resolveSourceSuccess(sourceKey);
+            int sourceQueued = ExportStats.getTrafficDisplaySourceQueueSize(sourceKey);
+            long sourceRetryDrops = TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops(sourceKey);
+            long sourcePermanentDrops = TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops(sourceKey);
             long sourceFailure = resolveSourceFailure(sourceKey);
+            long sourceRecovered = TrafficRouteBucket.resolveOpenSearchSourceRecovery(sourceKey);
             byIndexModel.addRow(new Object[] {
                     SUBROW_INDENT + formatKeyLabel(sourceKey),
-                    sourceSuccess, "-", "-", "-", sourceFailure, "-", "-"
+                    sourceSuccess,
+                    sourceFailure,
+                    sourceQueued,
+                    sourceRecovered,
+                    sourceRetryDrops,
+                    sourcePermanentDrops,
+                    "-",
+                    "-"
             });
         }
     }
 
     /**
      * Rebuilds the merged File counts table; mirrors {@link #rebuildByIndexTable} but uses
-     * the trimmed 5-column file schema. Queue / retry-drop / permanent-drop columns are
-     * omitted entirely because file writes are synchronous and have no such concepts.
+     * the trimmed file schema. Queue / retry-drop / permanent-drop columns are omitted because
+     * file writes use bounded immediate retries rather than an asynchronous retry queue.
      */
     private void rebuildFileByIndexTable() {
         fileByIndexModel.setRowCount(0);
@@ -847,25 +975,81 @@ public class StatsPanel extends JPanel {
         sortedKeys.sort((left, right) -> left.compareToIgnoreCase(right));
         long totalSuccess = 0;
         long totalFailure = 0;
+        long totalRetryAttempts = 0;
+        long totalBaselineBytes = 0;
+        long totalAppendedBytes = 0;
+        long totalFinalBytes = 0;
+        boolean anyArtifacts = false;
+        boolean anyIntegrityFailure = false;
+        boolean anyIntegrityPending = false;
         for (String indexKey : sortedKeys) {
             long written = FileExportStats.getWrittenCount(indexKey);
             long failure = FileExportStats.getFailureCount(indexKey);
+            long retryAttempts = FileExportStats.getRetryAttemptCount(indexKey);
+            long artifactCount = FileExportStats.getArtifactCount(indexKey);
+            long baselineBytes = FileExportStats.getArtifactBaselineBytes(indexKey);
+            long appendedBytes = FileExportStats.getExportedBytes(indexKey);
+            long finalBytes = FileExportStats.getArtifactFinalBytes(indexKey);
+            FileExportStats.ArtifactIntegrity integrity =
+                    FileExportStats.getArtifactIntegrity(indexKey);
+            boolean selected = artifactCount > 0L;
             long lastWriteMs = FileExportStats.getLastWriteDurationMs(indexKey);
             String lastWriteStr = lastWriteMs >= 0 ? String.valueOf(lastWriteMs) : "-";
             String lastError = FileExportStats.getLastError(indexKey);
             String errStr = lastError != null ? lastError : "-";
             totalSuccess += written;
             totalFailure += failure;
+            totalRetryAttempts += retryAttempts;
+            totalBaselineBytes += baselineBytes;
+            totalAppendedBytes += appendedBytes;
+            totalFinalBytes += finalBytes;
+            anyArtifacts |= selected;
+            anyIntegrityFailure |= integrity == FileExportStats.ArtifactIntegrity.FAILED;
+            anyIntegrityPending |= integrity == FileExportStats.ArtifactIntegrity.PENDING;
             fileByIndexModel.addRow(new Object[] {
-                    formatKeyLabel(indexKey), written, failure, lastWriteStr, errStr
+                    formatKeyLabel(indexKey),
+                    written,
+                    failure,
+                    retryAttempts,
+                    selected ? StatsPanelFormatters.formatBytesHuman(baselineBytes) : "-",
+                    selected ? StatsPanelFormatters.formatBytesHuman(appendedBytes) : "-",
+                    integrity == FileExportStats.ArtifactIntegrity.OK
+                                    || integrity == FileExportStats.ArtifactIntegrity.FAILED
+                            ? StatsPanelFormatters.formatBytesHuman(finalBytes)
+                            : "-",
+                    fileIntegrityLabel(integrity),
+                    lastWriteStr,
+                    errStr
             });
             if ("traffic".equalsIgnoreCase(indexKey)) {
                 appendFileTrafficSourceSubRows();
             }
         }
         fileByIndexModel.addRow(new Object[] {
-                "Total", totalSuccess, totalFailure, "-", "-"
+                "Total",
+                totalSuccess,
+                totalFailure,
+                totalRetryAttempts,
+                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalBaselineBytes) : "-",
+                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalAppendedBytes) : "-",
+                !anyArtifacts || anyIntegrityPending
+                        ? "-"
+                        : StatsPanelFormatters.formatBytesHuman(totalFinalBytes),
+                !anyArtifacts
+                        ? "Not selected"
+                        : anyIntegrityFailure ? "Failed" : anyIntegrityPending ? "Pending" : "OK",
+                "-",
+                "-"
         });
+    }
+
+    private static String fileIntegrityLabel(FileExportStats.ArtifactIntegrity integrity) {
+        return switch (integrity) {
+            case PENDING -> "Pending";
+            case OK -> "OK";
+            case FAILED -> "Failed";
+            case NOT_SELECTED -> "Not selected";
+        };
     }
 
     /** Appends per-source sub-rows for File traffic right after the Traffic index row. */
@@ -878,7 +1062,7 @@ public class StatsPanel extends JPanel {
             long sourceFailure = resolveFileSourceFailure(sourceKey);
             fileByIndexModel.addRow(new Object[] {
                     SUBROW_INDENT + formatKeyLabel(sourceKey),
-                    sourceSuccess, sourceFailure, "-", "-"
+                    sourceSuccess, sourceFailure, "-", "-", "-", "-", "-", "-", "-", "-"
             });
         }
     }
@@ -1004,6 +1188,8 @@ public class StatsPanel extends JPanel {
     private static JTable createStatsTable(DefaultTableModel model) {
         model.setRowCount(0);
         JTable table = new JTable(model) {
+            @Serial private static final long serialVersionUID = 1L;
+
             @Override
             public boolean isCellEditable(int row, int column) {
                 return false;
@@ -1029,6 +1215,118 @@ public class StatsPanel extends JPanel {
         }
         updateTablePreferredHeight(table);
         return table;
+    }
+
+    /**
+     * Installs per-column header tooltips on a counts table.
+     *
+     * <p>Caller must invoke on the EDT. Tips are looked up by the model column name. Uses
+     * {@link Tooltips#apply(JComponent, String)} and {@link Tooltips#createHtmlToolTip(JComponent)}
+     * so Burp LAF renders {@link Tooltips#htmlRaw(String...)} markup instead of showing tags
+     * literally.</p>
+     *
+     * @param table counts table
+     * @param tipsByColumnName HTML tooltips keyed by exact header label
+     */
+    private static void applyColumnHeaderTooltips(JTable table, Map<String, String> tipsByColumnName) {
+        if (table == null || tipsByColumnName == null || tipsByColumnName.isEmpty()) {
+            return;
+        }
+        String registrationTip = tipsByColumnName.values().stream()
+                .filter(tip -> tip != null && !tip.isBlank())
+                .findFirst()
+                .orElse(Tooltips.htmlRaw("Counts column help."));
+        TableColumnModel columnModel = table.getColumnModel();
+        JTableHeader tipHeader = new JTableHeader(columnModel) {
+            @Serial private static final long serialVersionUID = 1L;
+
+            @Override
+            public String getToolTipText(MouseEvent event) {
+                int viewColumn = columnAtPoint(event.getPoint());
+                if (viewColumn < 0) {
+                    return null;
+                }
+                int modelColumn = table.convertColumnIndexToModel(viewColumn);
+                Object headerValue = table.getModel().getColumnName(modelColumn);
+                String tip = tipsByColumnName.get(String.valueOf(headerValue));
+                return tip != null && !tip.isBlank() ? tip : null;
+            }
+
+            @Override
+            public JToolTip createToolTip() {
+                return Tooltips.createHtmlToolTip(this);
+            }
+        };
+        Tooltips.apply(tipHeader, registrationTip);
+        tipHeader.setTable(table);
+        table.setTableHeader(tipHeader);
+    }
+
+    /** Header tooltips for the Database Counts table. */
+    private static Map<String, String> databaseCountsHeaderTooltips() {
+        Map<String, String> tips = new LinkedHashMap<>();
+        tips.put("Index", Tooltips.htmlRaw(
+                "Exporter index (or indented traffic source under Traffic).",
+                "Total aggregates index rows only."));
+        tips.put("Exported", Tooltips.htmlRaw(
+                "Documents successfully indexed to the search database for this row this session.",
+                "Stop does not read database counts back into Log."));
+        tips.put("Queued", Tooltips.htmlRaw(
+                "Documents waiting in the indexing retry queue for this index or traffic source.",
+                "Traffic source values attribute queued documents by reporting tool / source route."));
+        tips.put("Retry Drops", Tooltips.htmlRaw(
+                "Documents dropped because the retry queue was at capacity.",
+                "These are not retried again. Traffic source rows attribute drops by route."));
+        tips.put("Permanent Drops", Tooltips.htmlRaw(
+                "Documents removed from retry and not sent again:",
+                "non-retryable search errors (mapping/parse/validation), and any remainder discarded",
+                "when Stop's bounded retry drain ends (about 20 seconds).",
+                "Force-stop aborts the drain early. Traffic source rows attribute drops by route."));
+        tips.put("Failures", Tooltips.htmlRaw(
+                "Documents counted when a search push reported them failed.",
+                "This counter does not decrement when a later retry succeeds — see Recovered Failures.",
+                "It is not a count of every retry round (see Retry Drain Pushes in Misc Stats).",
+                "Compare with Recovered Failures, Permanent Drops, Retry Drops, and Queued."));
+        tips.put("Recovered Failures", Tooltips.htmlRaw(
+                "Documents that failed earlier and later succeeded via the retry drain.",
+                "Retry-from-queue is the normal path while export is running.",
+                "Log recoveries may include <code>evidence=bulk_item_success</code>."));
+        tips.put("Last Bulk (ms)", Tooltips.htmlRaw(
+                "Duration of the most recent live traffic bulk HTTP request for Traffic.",
+                "Other indexes show <code>-</code>."));
+        tips.put("Last Error", Tooltips.htmlRaw(
+                "Most recent search push error summary for this index, when available."));
+        return tips;
+    }
+
+    /** Header tooltips for the File Counts table. */
+    private static Map<String, String> fileCountsHeaderTooltips() {
+        Map<String, String> tips = new LinkedHashMap<>();
+        tips.put("Index", Tooltips.htmlRaw(
+                "Exporter index (or indented traffic source under Traffic).",
+                "Total aggregates index rows only."));
+        tips.put("Written", Tooltips.htmlRaw(
+                "Documents successfully written to the file export destination this session."));
+        tips.put("Failures", Tooltips.htmlRaw(
+                "Documents not written after file-export retries were exhausted this session."));
+        tips.put("Retry Attempts", Tooltips.htmlRaw(
+                "Additional local file-write attempts after transient I/O failures.",
+                "A retry is attempted only after any partial append is rolled back safely."));
+        tips.put("Baseline", Tooltips.htmlRaw(
+                "Bytes already present across this index's selected files when the run started."));
+        tips.put("Appended", Tooltips.htmlRaw(
+                "Bytes successfully appended across this index's selected files during the run."));
+        tips.put("Final Size", Tooltips.htmlRaw(
+                "Observed bytes across this index's selected files at final integrity validation."));
+        tips.put("Integrity", Tooltips.htmlRaw(
+                "Pending while the run is active; OK only after Stop verifies file identity and size.",
+                "Failed means an output was deleted, replaced, truncated, or changed externally."));
+        tips.put("Last Append (ms)", Tooltips.htmlRaw(
+                "Duration of the most recent file append for this index, when available.",
+                "This measures append completion, not an explicit disk flush."));
+        tips.put("Last Error", Tooltips.htmlRaw(
+                "Most recent file-export error summary for this index, when available."));
+        return tips;
     }
 
     private static MetricCardState addGroupedMetricCard(JPanel parent, String title, List<MetricSection> sections) {
@@ -1357,22 +1655,77 @@ public class StatsPanel extends JPanel {
      * Shows only the Misc Stats groups that apply to the active destinations.
      *
      * <p>Caller must invoke on the EDT because this method mutates Swing component visibility and
-     * triggers layout/paint work on {@link #miscStatsCard}. The {@code Global} group always
-     * remains visible, while {@code Files} and the OpenSearch-prefixed groups follow the
-     * currently visible lower-panel sections.</p>
+     * triggers layout/paint work on {@link #miscStatsCard}. The {@code Overview} group always
+     * remains visible. Within Overview, Soft Outage and Database Exported Size follow database
+     * enablement, Files Exported Size follows files enablement, and Traffic Spill Status follows
+     * live traffic export relevance. The {@code Files} section and OpenSearch-prefixed groups
+     * follow the currently visible lower-panel destinations. Traffic Spill detail follows traffic
+     * export relevance (files and/or database).</p>
      *
      * @param fileVisible whether the Files metrics group should be visible
      * @param openSearchVisible whether the OpenSearch metrics group should be visible
      */
     private void updateMiscStatsSectionVisibility(boolean fileVisible, boolean openSearchVisible) {
-        setMiscSectionVisible("Global", true);
+        boolean trafficRelevant = RuntimeConfig.isAnyTrafficExportEnabled();
+        setMiscSectionVisible("Overview", true);
+        // Overview: Export Running, Soft Outage, Database size, Files size, Traffic Spill Status.
+        setMiscRowVisible("Overview", 0, true);
+        setMiscRowVisible("Overview", 1, openSearchVisible);
+        setMiscRowVisible("Overview", 2, openSearchVisible);
+        setMiscRowVisible("Overview", 3, fileVisible);
+        setMiscRowVisible("Overview", 4, trafficRelevant);
         setMiscSectionVisible("Process", true);
-        for (String section : MISC_OPEN_SEARCH_SECTIONS) {
+        for (String section : MISC_DATABASE_SECTIONS) {
             setMiscSectionVisible(section, openSearchVisible);
         }
+        setMiscSectionVisible(MISC_TRAFFIC_SPILL_SECTION, trafficRelevant);
         setMiscSectionVisible("Files", fileVisible);
         miscStatsCard.revalidate();
         miscStatsCard.repaint();
+    }
+
+    /**
+     * Returns Overview Traffic Spill Status foreground color.
+     *
+     * <p>{@code Ready} and {@code In use} use the default Misc Stats value color; only
+     * {@code Full} uses Findings red.</p>
+     */
+    private Color spillStatusColor(ExportAdmissionController.SpillStatus status) {
+        if (status == ExportAdmissionController.SpillStatus.FULL) {
+            return SERIES_STYLES[4].paint();
+        }
+        return TEXT_FG;
+    }
+
+    /**
+     * Applies visibility to one Misc Stats row within a section.
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @param title section title used in the row component name
+     * @param rowIndex zero-based row index within that section
+     * @param visible whether the row should be shown
+     */
+    private void setMiscRowVisible(String title, int rowIndex, boolean visible) {
+        Component row = findMiscRow(title, rowIndex);
+        if (row != null) {
+            row.setVisible(visible);
+        }
+    }
+
+    /** Returns the Misc Stats row component for {@code title} at {@code rowIndex}, or {@code null}. */
+    private Component findMiscRow(String title, int rowIndex) {
+        List<Component> components = miscSectionComponents.get(title);
+        if (components == null) {
+            return null;
+        }
+        String name = "miscStats.row." + title + "." + rowIndex;
+        for (Component component : components) {
+            if (name.equals(component.getName())) {
+                return component;
+            }
+        }
+        return null;
     }
 
     /**
@@ -1422,12 +1775,14 @@ public class StatsPanel extends JPanel {
         return RuntimeConfig.isAnyFileExportEnabled();
     }
 
-    /** Returns whether the current runtime config has OpenSearch export selected. */
+    /** Returns whether the current runtime config has database export selected. */
     private static boolean isOpenSearchSectionEnabled() {
         var current = RuntimeConfig.getState();
-        return current != null
+        boolean configured = current != null
                 && current.sinks() != null
-                && current.sinks().osEnabled();
+                && current.sinks().databaseEnabled();
+        // Keep charts/tables visible after mid-run destination disable until the next Start.
+        return configured || RuntimeConfig.shouldRetainSearchStatsVisibility();
     }
 
     private int visibleChartPanelCount() {
@@ -1444,7 +1799,7 @@ public class StatsPanel extends JPanel {
     }
 
     /**
-     * Vertical pixels reserved for the per-pair "File Export" / "OpenSearch Export" section
+     * Vertical pixels reserved for the per-pair "File Export" / "Database Export" section
      * headers. Each visible chart-pair contributes its header's preferred height plus the 4px
      * bottom border on the header so the histogram below it does not visually crash into the
      * caption.
@@ -1463,7 +1818,7 @@ public class StatsPanel extends JPanel {
     /**
      * Builds a per-sink chart section containing one shared section header plus a vertical
      * stack of two chart panels. The header sits at the top of the section so each pair of
-     * histograms shares a single "File Export" / "OpenSearch Export" caption, replacing the
+     * histograms shares a single "File Export" / "Database Export" caption, replacing the
      * legacy per-chart titles that used to repeat the sink name in every header. When the
      * shared legend lives in this section, {@link #moveLegendToFirstVisibleSection} inserts
      * it above the header at index 0; the resulting stack is [legend, header, top chart,
@@ -1485,7 +1840,7 @@ public class StatsPanel extends JPanel {
      * Builds a centered, theme-aware label that captions a per-sink chart pair.
      *
      * @param bold {@code true} for emphasized section titles; {@code false} for plain captions
-     *             (File Export, OpenSearch Export, JVM heap)
+     *             (File Export, Database Export, JVM heap)
      */
     private static JLabel createChartSectionHeaderLabel(String text, boolean bold) {
         JLabel label = new JLabel(text, SwingConstants.CENTER);
@@ -1812,15 +2167,37 @@ public class StatsPanel extends JPanel {
                 "Recent CPU utilization for the Burp JVM process (0&ndash;100%).",
                 "Shows <b>n/a</b> when the operating system does not expose a reading."));
         tooltips.put("Throughput (10s)", Tooltips.htmlRaw(
-                "Rolling OpenSearch export throughput over the last 10 seconds.",
+                "Rolling search database export throughput over the last 10 seconds.",
                 "Based on successful document acknowledgements across all indexes."));
         tooltips.put("Exported Docs", Tooltips.htmlRaw(
-                "Session total of documents successfully indexed to OpenSearch (all indexes)."));
-        tooltips.put("Exported Size", Tooltips.htmlRaw(
-                "Estimated total bulk bytes successfully indexed to OpenSearch this session."));
+                "Session total of documents successfully indexed to the search database (all indexes)."));
+        tooltips.put("Count Basis", Tooltips.htmlRaw(
+                "Live Database Counts and clipboard values use in-process session counters.",
+                "Stop pushes the final exporter <code>stats_snapshot</code> but does not call",
+                "<code>_refresh</code>/<code>_count</code> or duplicate database counts in Log."));
+        tooltips.put("Authorization Recovery", Tooltips.htmlRaw(
+                "Whether database sends are paused after repeated HTTP 401/403 responses.",
+                "Queued retry and live-traffic work is retained while automatic probes use",
+                "increasing backoff. Successful probes revalidate selected indexes before resuming.",
+                "If the cluster identity changed or indexes were recreated, reproducible snapshots",
+                "are replayed to the database without duplicating Files output."));
+        tooltips.put("Database Exported Size", Tooltips.htmlRaw(
+                "Estimated total bulk bytes successfully indexed to the search database this session."));
+        tooltips.put("Files Exported Size", Tooltips.htmlRaw(
+                "Session total bytes written to the configured file export destination."));
         tooltips.put("Exported Failures", Tooltips.htmlRaw(
-                "Session total of failed OpenSearch push attempts (all indexes).",
-                "Retryable failures may later succeed; see Retry and Consecutive Failures."));
+                "<b>Exported Failures</b>",
+                "Session total of documents that reported a failed search-database push.",
+                "Does not decrement when a later retry succeeds — see Recovered Failures.",
+                "Not a count of every retry round. Also check Permanent Drops, Retry Drops,",
+                "Queued, and Consecutive Failures."));
+        tooltips.put("Recovered Failures", Tooltips.htmlRaw(
+                "<b>Recovered Failures</b>",
+                "Documents that failed an earlier push and later succeeded via the retry drain.",
+                "Retry-from-queue is assumed while export is running.",
+                "Log lines for recoveries include <code>evidence=bulk_item_success</code> when the",
+                "search database acknowledged those documents in a bulk response.",
+                "Misc Stats shows the session total across all indexes; Database Counts shows the same total per index."));
         tooltips.put("Last Success", Tooltips.htmlRaw(
                 "How long ago any OpenSearch push last succeeded (any index).",
                 "Shows <b>never</b> when no success has been recorded this session."));
@@ -1888,11 +2265,41 @@ public class StatsPanel extends JPanel {
                 "to 1000</code> (live DEBUG) or a startup DEBUG summary. Use Data Integrity detail",
                 "events for the URL-level drill-down.</p>"));
         tooltips.put("Bulk In-Flight", Tooltips.htmlRaw(
-                "OpenSearch bulk HTTP requests currently executing.",
+                "Search database bulk HTTP requests currently executing.",
                 "Incremented at bulk start and decremented when the request completes."));
         tooltips.put("Permanent Drops", Tooltips.htmlRaw(
-                "Documents permanently removed after non-retryable OpenSearch errors",
-                "(mapping/parse/validation). Not re-queued by the retry coordinator."));
+                "Documents permanently removed this session and not retried again:",
+                "non-retryable search database errors (mapping/parse/validation), and queued retry",
+                "documents discarded when Stop's bounded retry drain ends (about 20 seconds).",
+                "Force-stop aborts the drain early.",
+                "Stop discards also appear in the Log panel as <code>Discarded N queued retry document(s)</code>."));
+        tooltips.put("Permanent Drop Reasons", Tooltips.htmlRaw(
+                "Stable reason totals for Permanent Drops in this session.",
+                "Examples include maximum-fit rejection, mapping/validation rejection, bounded Stop",
+                "discard, and destination unavailable. Values use <code>reason=count</code>."));
+        tooltips.put("Body Truncations", Tooltips.htmlRaw(
+                "Search/database documents prefix-truncated to fit the live bulk byte budget under",
+                "destination pressure (bodies first, then other large strings, then trailing nested",
+                "list elements). Indexed docs keep original <code>body.length</code> when bodies shrink",
+                "and set <code>truncated=true</code> on affected objects.",
+                "File export is not truncated by this path."));
+        tooltips.put("Body Truncations by Index", Tooltips.htmlRaw(
+                "Unique search/database documents prefix-truncated during this session, grouped by",
+                "index. Zero-count indexes are omitted. Stable operation IDs prevent retries and",
+                "re-fitting the same document from inflating these totals.",
+                "File export is not truncated by this path."));
+        tooltips.put("Failures", Tooltips.htmlRaw(
+                "<b>Failures</b>",
+                "Documents counted when a search push reported them failed.",
+                "Does not decrement on later recovery — see Recovered Failures.",
+                "Not every retry round — see <b>Retry Drain Pushes</b>. Use Permanent Drops, Retry Drops,",
+                "Queued, and Log <code>evidence=bulk_item_success</code> to judge loss vs recovery."));
+        tooltips.put("Retry Drain Pushes", Tooltips.htmlRaw(
+                "<b>Retry Drain Pushes</b>",
+                "Documents pushed again by the retry drain this session (batch sizes summed).",
+                "Increments on every drain push, including pushes that fail and re-queue.",
+                "Distinct from Failures (first failure) and Recovered Failures (later success).",
+                "Log: INFO <code>Retry drain push starting:</code>; WARN on failed push; INFO on recovery."));
         tooltips.put("Queue", Tooltips.htmlRaw(
                 "Spill-file backlog when the in-memory traffic queue is full.",
                 "Format: <b>N docs (X.X MiB)</b>."));
@@ -1903,19 +2310,70 @@ public class StatsPanel extends JPanel {
                 "Spill queue lifetime counters: written to spill / drained back to memory / dropped."));
         tooltips.put("Drop Reasons", Tooltips.htmlRaw(
                 "Spill and traffic drop breakdown (session totals), in order:",
-                "<b>spill rejected drop oldest</b> / <b>queue contention</b> /",
-                "<b>spill requeue failed</b> / <b>expired prune</b>."));
+                "<b>spill full / low-disk reject new</b> / <b>spill requeue failed</b> /",
+                "<b>expired prune</b>.",
+                "When Traffic Spill is Full, new live traffic is rejected so the earliest backlog is kept."));
+        tooltips.put("Traffic Spill Status", Tooltips.htmlRaw(
+                "Live traffic overflow valve status for the current run.",
+                "<b>Ready</b>: spill empty. <b>In use</b>: spill holds backlog.",
+                "<b>Full</b> (red): spill cannot accept more; new live traffic is rejected.",
+                "Complements Soft Outage (destination pacing) across all search destinations."));
         tooltips.put("Queue Depth", Tooltips.htmlRaw(
                 "Per-index documents waiting in the indexing retry coordinator.",
                 "Comma-separated <b>index: N queued</b> pairs; <b>&mdash;</b> when every queue is empty."));
         tooltips.put("Oldest Queued Age", Tooltips.htmlRaw(
                 "Per-index age of the oldest document in each retry queue.",
                 "Comma-separated <b>index: Ns</b> pairs; <b>&mdash;</b> when nothing is queued."));
+        tooltips.put("Soft Outage", Tooltips.htmlRaw(
+                "Whether soft capacity outage mode is active.",
+                "<b>Yes</b> (yellow) means gateway/timeout/429-class pressure is pacing export via the",
+                "shared cooldown and retry drain; the destination stays enabled (unlike auth",
+                "failures, which disable the database destination).",
+                "<b>No</b> (green) means no soft outage. Clears after meaningful payload recovery,",
+                "not from exporter log/stats singles alone."));
+        tooltips.put("Database Exported Size", Tooltips.htmlRaw(
+                "Total bytes successfully exported to the search database this run."));
+        tooltips.put("Files Exported Size", Tooltips.htmlRaw(
+                "Total bytes successfully written to the files destination this run."));
+        tooltips.put("Bulk Byte Budget", Tooltips.htmlRaw(
+                "Adaptive bulk payload byte ceiling for search-database pushes.",
+                "Shows the live value during export and preserves the last active value after Stop.",
+                "All search destinations share AIMD control (Amazon starts near 1 MiB;",
+                "OpenSearch/Elasticsearch start at 5 MiB). Floor 512 KiB; grows toward 5 MiB;",
+                "jumps toward last-known-good after soft-outage clear or success streaks."));
+        tooltips.put("Snapshot Flush Cap", Tooltips.htmlRaw(
+                "How many snapshot bulk flushes may run in parallel.",
+                "Shows the live value during export and preserves the last active value after Stop.",
+                "Drops to <b>1</b> under hard capacity pressure (429/502/503/504/transport), restores",
+                "to <b>2</b> after success or soft-outage clear, and may rise to <b>3</b> when a",
+                "healthy success streak shows unused headroom."));
+        tooltips.put("Snapshot Build-Ahead", Tooltips.htmlRaw(
+                "Current quantized byte and semaphore-permit reservation held by prepared snapshot",
+                "documents waiting for chunk assembly, followed by the fixed 64 MiB / 1,024-permit",
+                "capacity. One larger document may reserve the full envelope alone.",
+                "This measures only prepared queue build-ahead, not active serialization, in-flight",
+                "flushes, Burp-owned objects, or other JVM allocations."));
+        tooltips.put("Cooldown Remaining", Tooltips.htmlRaw(
+                "Longest remaining wait before the next bulk send across hard cluster cooldown",
+                "and any per-index mild cooldown. Hard pressure (429/502/503/504, transport, probes)",
+                "is cluster-wide (to 60s); mild per-item capacity is per-index (cap 15s) so one hot",
+                "index does not freeze others. Stop drain waits at most 2s. <b>&mdash;</b> when idle."));
+        tooltips.put("Pressure Streak", Tooltips.htmlRaw(
+                "Consecutive hard capacity-pressure events since the last successful bulk.",
+                "Drives hard cooldown escalation (5s → 15s → 30s → 60s). Mild item pressure uses a",
+                "separate per-index streak. Resets on success."));
+        tooltips.put("Soft Outage Entries", Tooltips.htmlRaw(
+                "How many times soft capacity outage mode was entered this export run",
+                "(false → true transitions). Resets on Start."));
+        tooltips.put("Capacity Events", Tooltips.htmlRaw(
+                "How many times the shared capacity cooldown was extended this export run.",
+                "Counts new/longer deadlines from bulk HTTP pressure, transport pressure, and",
+                "capacity probes. Resets on Start."));
         tooltips.put("Peak Traffic Queue", Tooltips.htmlRaw(
                 "Highest live traffic queue depth observed during the current export run.",
                 "Docs and estimated serialized bulk bytes; resets on Start."));
-        tooltips.put("Peak Spill Queue", Tooltips.htmlRaw(
-                "Highest spill-file backlog depth observed during the current export run.",
+        tooltips.put("Peak Traffic Spill", Tooltips.htmlRaw(
+                "Highest Traffic Spill file backlog depth observed during the current export run.",
                 "Docs and bytes; resets on Start."));
         tooltips.put("Peak Retry Queue", Tooltips.htmlRaw(
                 "Highest total retry-queue depth observed during the current export run.",
@@ -1926,8 +2384,18 @@ public class StatsPanel extends JPanel {
         tooltips.put("Peak Snapshot Flush (ms)", Tooltips.htmlRaw(
                 "Longest single snapshot chunk flush wall time observed during the current export run.",
                 "Resets on Start."));
-        tooltips.put("File Total Size Exported", Tooltips.htmlRaw(
-                "Session total bytes written to the configured file export destination."));
+        tooltips.put("Peak Snapshot Build-Ahead", Tooltips.htmlRaw(
+                "Highest quantized byte and semaphore-permit reservation held by prepared snapshot",
+                "documents waiting for chunk assembly during this export run.",
+                "Use with Snapshot Build-Ahead to verify the 64 MiB queue envelope independently of",
+                "the JVM heap chart. Resets on Start."));
+        tooltips.put("Peak Cooldown Wait (ms)", Tooltips.htmlRaw(
+                "Longest shared capacity-cooldown park observed before a bulk send this run.",
+                "Includes capped Stop-drain waits. Resets on Start."));
+        tooltips.put("Peak Flush Slot Wait (ms)", Tooltips.htmlRaw(
+                "Longest wait for an in-flight snapshot flush slot this run.",
+                "Snapshot export waits for the transport timeout/retry outcome instead of abandoning a live request.",
+                "Stop still cancels active run work. Resets on Start."));
         tooltips.put("File Total Docs Exported", Tooltips.htmlRaw(
                 "Session total of documents successfully written to file export."));
         tooltips.put("File Total Failures", Tooltips.htmlRaw(
@@ -2062,7 +2530,7 @@ public class StatsPanel extends JPanel {
 
     /**
      * Builds a per-sink throughput time-series chart. The chart itself never carries a built-in
-     * title -- the merged "File Export" / "OpenSearch Export" section headers above each chart
+     * title -- the merged "File Export" / "Database Export" section headers above each chart
      * pair (see {@link #fileChartsSectionHeader} / {@link #openSearchChartsSectionHeader})
      * provide the sink context, and the Y-axis label disambiguates Docs/sec vs KiB/sec on the
      * left edge of each individual chart.
@@ -2440,13 +2908,12 @@ public class StatsPanel extends JPanel {
         return new BasicStroke(CHART_LINE_STROKE_WIDTH, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
     }
 
-    /** Slightly sharper joins than Simple so splines read less blob-like at sample points. */
+    /** Round caps/joins so Smooth splines do not show miter facets at sharp rate peaks. */
     private static BasicStroke smoothChartLineStroke() {
         return new BasicStroke(
                 CHART_LINE_STROKE_WIDTH,
-                BasicStroke.CAP_BUTT,
-                BasicStroke.JOIN_MITER,
-                6f);
+                BasicStroke.CAP_ROUND,
+                BasicStroke.JOIN_ROUND);
     }
 
     private Shape seriesMarkerShape(int index) {
@@ -2594,7 +3061,7 @@ public class StatsPanel extends JPanel {
             resetThroughputAxisToIdleRange(axis, "Docs per second");
             return;
         }
-        double rangeUpper = StatsPanelFormatters.nicePositiveUpperBound(max * rangeHeadroomMultiplier());
+        double rangeUpper = StatsPanelFormatters.rangeCeiling(max, rangeHeadroomMultiplier());
         axis.setAutoRange(false);
         axis.setRange(0.0, rangeUpper);
         axis.setStandardTickUnits(NumberAxis.createIntegerTickUnits());
@@ -2710,7 +3177,8 @@ public class StatsPanel extends JPanel {
      * Starts periodic refresh while this panel is in the display hierarchy.
      *
      * <p>Burp may remove/add tab content on tab switches. Keeping timer lifecycle tied to
-     * add/remove prevents unnecessary refresh work while the panel is not visible.</p>
+     * add/remove prevents unnecessary refresh work while the panel is not visible. Caller must
+     * invoke on the EDT.</p>
      */
     @Override
     public void addNotify() {
@@ -2726,6 +3194,8 @@ public class StatsPanel extends JPanel {
 
     /**
      * Stops periodic refresh when panel is removed from the display hierarchy.
+     *
+     * <p>Caller must invoke on the EDT.</p>
      */
     @Override
     public void removeNotify() {
@@ -2757,239 +3227,6 @@ public class StatsPanel extends JPanel {
         }
     }
 
-    static String buildStatsText() {
-        StringBuilder sb = new StringBuilder();
-
-        // Export state
-        boolean exportRunning = RuntimeConfig.isExportRunning();
-        sb.append("Export state\n");
-        sb.append("  export running: ").append(exportRunning ? "yes" : "no").append("\n");
-        sb.append("  shared batch size: ").append(BatchSizeController.getInstance().getCurrentBatchSize()).append("\n");
-        int trafficQueueSize = ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSize();
-        long trafficQueueDrops = ExportStats.getTrafficQueueDrops();
-        sb.append("  traffic queue: size=").append(trafficQueueSize).append(" drops=").append(trafficQueueDrops).append("\n");
-        sb.append("  null tool/source hits: ").append(ExportStats.getTrafficToolSourceFallbacks()).append("\n");
-        sb.append("  spill queue: docs=")
-                .append(ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSpillSize())
-                .append(" bytes=")
-                .append(ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSpillBytes())
-                .append(" oldestAgeMs=")
-                .append(ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSpillOldestAgeMs())
-                .append(" enq/deq/drops=")
-                .append(ExportStats.getTrafficSpillEnqueued()).append("/")
-                .append(ExportStats.getTrafficSpillDequeued()).append("/")
-                .append(ExportStats.getTrafficSpillDrops()).append("\n");
-        sb.append("  traffic drop reasons: spill_rejected_drop_oldest=")
-                .append(ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest"))
-                .append(" queue_contention_drop=")
-                .append(ExportStats.getTrafficDropReasonCount("queue_contention_drop"))
-                .append(" spill_requeue_failed_drop=")
-                .append(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop"))
-                .append(" spill_retention_prune=")
-                .append(ExportStats.getTrafficSpillExpiredPruned())
-                .append("\n");
-        sb.append("  spill recovered (startup): ").append(ExportStats.getTrafficSpillRecovered()).append("\n");
-        sb.append("  spill directory: ").append(ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getSpillDirectoryPath()).append("\n");
-        double throughput = ExportStats.getThroughputDocsPerSecLast10s();
-        sb.append("  throughput (last 10s): ").append(String.format("%.1f", throughput)).append(" docs/s\n\n");
-
-        // Efficiency metrics (startup and proxy-history backfill)
-        sb.append("Efficiency\n");
-        long startToFirstTrafficMs = ExportStats.getStartToFirstTrafficMs();
-        if (startToFirstTrafficMs >= 0) {
-            sb.append("  start click -> first successful traffic doc acknowledged (ms): ")
-                    .append(startToFirstTrafficMs).append("\n");
-        } else {
-            long startRequestedAt = ExportStats.getExportStartRequestedAtMs();
-            if (startRequestedAt > 0) {
-                sb.append("  start click -> first successful traffic doc acknowledged (ms): pending\n");
-            } else {
-                sb.append("  start click -> first successful traffic doc acknowledged (ms): n/a\n");
-            }
-        }
-        sb.append("  snapshot last runs:\n");
-        boolean anySnapshotRun = false;
-        for (String reporterKey : ExportStats.getSnapshotReporterKeys()) {
-            ExportStats.SnapshotLastRunStats snapshot = ExportStats.getSnapshotLastRun(reporterKey);
-            if (snapshot == null) {
-                continue;
-            }
-            anySnapshotRun = true;
-            sb.append("    ").append(reporterKey)
-                    .append(": attempted=").append(snapshot.attempted())
-                    .append(" success=").append(snapshot.success())
-                    .append(" durationMs=").append(snapshot.durationMs())
-                    .append(" docs/s=").append(String.format("%.1f", snapshot.docsPerSecond()));
-            if (snapshot.buildWallMs() >= 0L) {
-                sb.append(" build_wall_ms=").append(snapshot.buildWallMs());
-            }
-            if (snapshot.flushMs() >= 0L) {
-                sb.append(" flush_ms=").append(snapshot.flushMs());
-            }
-            if (snapshot.fileFlushMs() >= 0L) {
-                sb.append(" file_flush_ms=").append(snapshot.fileFlushMs());
-            }
-            if (snapshot.openSearchFlushMs() >= 0L) {
-                sb.append(" os_flush_ms=").append(snapshot.openSearchFlushMs());
-            }
-            if (snapshot.finalChunkTarget() > 0) {
-                sb.append(" finalChunkTarget=").append(snapshot.finalChunkTarget());
-            }
-            sb.append("\n");
-        }
-        if (!anySnapshotRun) {
-            sb.append("    n/a\n");
-        }
-        sb.append("\n");
-
-        // Session totals
-        long totalSuccess = ExportStats.getTotalSuccessCount();
-        long totalFailure = ExportStats.getTotalFailureCount();
-        sb.append("Session totals (this session)\n");
-        sb.append("  total docs exported: ").append(totalSuccess).append("\n");
-        sb.append("  total failures: ").append(totalFailure).append("\n");
-        sb.append("  permanent drops: ").append(ExportStats.getTotalPermanentDrops()).append("\n");
-        sb.append("  synthesized body params dropped: ")
-                .append(ExportStats.getSynthesizedBodyParamsDropped()).append("\n");
-        sb.append("  docs with BODY enumeration mis-gate suspect: ")
-                .append(ExportStats.getDocsBodyEnumerationMisgateSuspect()).append("\n");
-        sb.append("  docs with skipped body enumeration: ")
-                .append(ExportStats.getDocsWithSkippedBodyEnumeration()).append("\n");
-        sb.append("  wire BODY params replaced (docs): ")
-                .append(ExportStats.getDocsWireBodyParamsReplaced()).append("\n");
-        sb.append("  wire BODY params dropped (entries): ")
-                .append(ExportStats.getWireBodyParamsDroppedTotal()).append("\n");
-        sb.append("  supplemental BODY params used (docs): ")
-                .append(ExportStats.getDocsSupplementalBodyParamsUsed()).append("\n");
-        sb.append("  supplemental rejected non-form (docs): ")
-                .append(ExportStats.getDocsSupplementalRejectedNonForm()).append("\n");
-        sb.append("  skip-path BODY params rescued (docs): ")
-                .append(ExportStats.getDocsSkipPathBodyRescued()).append("\n");
-        sb.append("  docs with URL params truncated: ")
-                .append(ExportStats.getDocsUrlParamsTruncated()).append("\n");
-        sb.append("  URL params dropped (cap): ")
-                .append(ExportStats.getUrlParamsDroppedTotal()).append("\n");
-        sb.append("  docs with BODY params truncated: ")
-                .append(ExportStats.getDocsBodyParamsTruncated()).append("\n");
-        sb.append("  BODY params dropped (cap): ")
-                .append(ExportStats.getBodyParamsDroppedTotal()).append("\n\n");
-
-        // Process metrics (JVM + OS)
-        SystemMetrics.Snapshot sys = SystemMetrics.snapshot();
-        sb.append("Process\n");
-        sb.append("  heap used / max bytes: ")
-                .append(sys.heapUsedBytes() >= 0 ? sys.heapUsedBytes() : -1).append(" / ")
-                .append(sys.heapMaxBytes() > 0 ? sys.heapMaxBytes() : -1).append("\n");
-        sb.append("  heap committed bytes: ")
-                .append(sys.heapCommittedBytes() >= 0 ? sys.heapCommittedBytes() : -1).append("\n");
-        sb.append("  non-heap used bytes: ")
-                .append(sys.nonHeapUsedBytes() >= 0 ? sys.nonHeapUsedBytes() : -1).append("\n");
-        sb.append("  direct buffer used bytes: ")
-                .append(sys.directBufferUsedBytes() >= 0 ? sys.directBufferUsedBytes() : -1).append("\n");
-        sb.append("  mapped buffer used bytes: ")
-                .append(sys.mappedBufferUsedBytes() >= 0 ? sys.mappedBufferUsedBytes() : -1).append("\n");
-        sb.append("  threads live / peak: ")
-                .append(sys.threadCount() >= 0 ? sys.threadCount() : -1).append(" / ")
-                .append(sys.peakThreadCount() >= 0 ? sys.peakThreadCount() : -1).append("\n");
-        sb.append("  gc count / time ms: ")
-                .append(sys.gcCollectionCount() >= 0 ? sys.gcCollectionCount() : -1).append(" / ")
-                .append(sys.gcCollectionTimeMs() >= 0 ? sys.gcCollectionTimeMs() : -1).append("\n");
-        sb.append("  process cpu load: ")
-                .append(Double.isNaN(sys.processCpuLoad())
-                        ? "n/a"
-                        : String.format(Locale.ROOT, "%.3f", sys.processCpuLoad()))
-                .append("\n\n");
-
-        // Traffic by source
-        sb.append("Traffic by source\n");
-        sb.append(String.format("  %-22s %-12s %-10s%n", "Source", "Docs exported", "Failures"));
-        sb.append("  ").append("-".repeat(22)).append(" ").append("-".repeat(12)).append(" ").append("-".repeat(10)).append("\n");
-        long sourceTotalSuccess = 0;
-        long sourceTotalFailure = 0;
-        for (String sourceKey : ExportStats.getTrafficToolTypeKeys()) {
-            if ("UNKNOWN".equals(sourceKey)) {
-                continue;
-            }
-            long sourceSuccess = resolveSourceSuccess(sourceKey);
-            long sourceFailure = resolveSourceFailure(sourceKey);
-            sourceTotalSuccess += sourceSuccess;
-            sourceTotalFailure += sourceFailure;
-            sb.append(String.format("  %-22s %-12d %-10d%n", sourceKey.toLowerCase(Locale.ROOT), sourceSuccess, sourceFailure));
-        }
-        sb.append(String.format("  %-22s %-12d %-10d%n%n", "total", sourceTotalSuccess, sourceTotalFailure));
-
-        // By index (table)
-        sb.append("By index\n");
-        sb.append(String.format("  %-10s %-12s %-8s %-8s %-8s %-10s %-14s  %s%n",
-                "Index", "Docs exported", "Queued", "Rty drop", "Prm drop", "Failures",
-                "Last bulk (ms)", "Last error"));
-        sb.append("  ").append("-".repeat(10)).append(" ").append("-".repeat(12)).append(" ")
-                .append("-".repeat(8)).append(" ").append("-".repeat(8)).append(" ")
-                .append("-".repeat(8)).append(" ").append("-".repeat(10)).append(" ")
-                .append("-".repeat(14)).append("  ").append("-".repeat(ERROR_COL_MAX)).append("\n");
-        for (String indexKey : ExportStats.getIndexKeys()) {
-            long success = ExportStats.getSuccessCount(indexKey);
-            int queued = ExportStats.getQueueSize(indexKey);
-            long retryDrops = ExportStats.getRetryQueueDrops(indexKey);
-            long permanentDrops = ExportStats.getPermanentDrops(indexKey);
-            long failure = ExportStats.getFailureCount(indexKey);
-            String lastBulkStr = "-";
-            if ("traffic".equalsIgnoreCase(indexKey)) {
-                long lastBulkMs = ExportStats.getLastLiveBulkDurationMs(indexKey);
-                if (lastBulkMs >= 0) {
-                    lastBulkStr = String.valueOf(lastBulkMs);
-                }
-            }
-            String lastError = ExportStats.getLastError(indexKey);
-            String errStr = lastError != null ? truncateForColumn(lastError, ERROR_COL_MAX) : "-";
-            sb.append(String.format("  %-10s %-12d %-8d %-8d %-8d %-10d %-14s  %s%n",
-                    indexKey, success, queued, retryDrops, permanentDrops, failure,
-                    lastBulkStr, errStr));
-        }
-        sb.append("\n");
-
-        long totalFileSuccess = FileExportStats.getTotalSuccessCount();
-        long totalFileFailure = FileExportStats.getTotalFailureCount();
-        sb.append("File totals (this session)\n");
-        sb.append("  total docs exported: ").append(totalFileSuccess).append("\n");
-        sb.append("  total failures: ").append(totalFileFailure).append("\n\n");
-
-        sb.append("File traffic by source\n");
-        sb.append(String.format("  %-22s %-12s %-10s%n", "Source", "Docs exported", "Failures"));
-        sb.append("  ").append("-".repeat(22)).append(" ").append("-".repeat(12)).append(" ").append("-".repeat(10)).append("\n");
-        long fileSourceTotalSuccess = 0;
-        long fileSourceTotalFailure = 0;
-        for (String sourceKey : FileExportStats.getTrafficToolTypeKeys()) {
-            if ("UNKNOWN".equals(sourceKey)) {
-                continue;
-            }
-            long sourceSuccess = resolveFileSourceSuccess(sourceKey);
-            long sourceFailure = resolveFileSourceFailure(sourceKey);
-            fileSourceTotalSuccess += sourceSuccess;
-            fileSourceTotalFailure += sourceFailure;
-            sb.append(String.format("  %-22s %-12d %-10d%n", sourceKey.toLowerCase(Locale.ROOT), sourceSuccess, sourceFailure));
-        }
-        sb.append(String.format("  %-22s %-12d %-10d%n%n", "total", fileSourceTotalSuccess, fileSourceTotalFailure));
-
-        sb.append("File by index\n");
-        sb.append(String.format("  %-10s %-12s %-8s %-8s %-10s %-14s  %s%n",
-                "Index", "Docs exported", "Queued", "Rty drop", "Failures", "Last write (ms)", "Last error"));
-        sb.append("  ").append("-".repeat(10)).append(" ").append("-".repeat(12)).append(" ").append("-".repeat(8)).append(" ").append("-".repeat(8)).append(" ").append("-".repeat(10)).append(" ").append("-".repeat(14)).append("  ").append("-".repeat(ERROR_COL_MAX)).append("\n");
-        for (String indexKey : FileExportStats.getIndexKeys()) {
-            long success = FileExportStats.getSuccessCount(indexKey);
-            long failure = FileExportStats.getFailureCount(indexKey);
-            long lastWriteMs = FileExportStats.getLastWriteDurationMs(indexKey);
-            String lastWriteStr = lastWriteMs >= 0 ? String.valueOf(lastWriteMs) : "-";
-            String lastError = FileExportStats.getLastError(indexKey);
-            String errStr = lastError != null ? truncateForColumn(lastError, ERROR_COL_MAX) : "-";
-            sb.append(String.format("  %-10s %-12d %-8d %-8d %-10d %-14s  %s%n",
-                    indexKey, success, 0, 0, failure, lastWriteStr, errStr));
-        }
-        sb.append("\n");
-
-        return sb.toString();
-    }
-
     /**
      * Resolves "Traffic by source" docs exported count for a source key.
      *
@@ -3015,9 +3252,4 @@ public class StatsPanel extends JPanel {
         return TrafficRouteBucket.resolveFileSourceFailure(sourceKey);
     }
 
-    private static String truncateForColumn(String s, int maxLen) {
-        if (s == null) return "-";
-        if (s.length() <= maxLen) return s;
-        return s.substring(0, maxLen - 3) + "...";
-    }
 }

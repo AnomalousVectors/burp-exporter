@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,12 +39,14 @@ class WorkerShutdownTest {
     public void resetExportRunningFlag() {
         RuntimeConfig.setExportRunning(false);
         RuntimeConfig.setExportStarting(false);
+        RuntimeConfig.setExportStopping(false);
     }
 
     @AfterEach
     public void stopAllWorkers() {
         RuntimeConfig.setExportRunning(false);
         RuntimeConfig.setExportStarting(false);
+        RuntimeConfig.setExportStopping(false);
         TrafficExportQueue.stopWorker();
         TrafficExportQueue.clearPendingWork();
         TrafficHttpHandlerSupport.stop();
@@ -109,17 +113,53 @@ class WorkerShutdownTest {
     @Test
     void indexingRetryCoordinator_stopDrainThread_terminatesDrainThread() throws Exception {
         IndexingRetryCoordinator coordinator = new IndexingRetryCoordinator();
-        Reflect.call(coordinator, "ensureDrainThreadStarted");
+        RuntimeConfig.setExportRunning(true);
+        try {
+            Reflect.call(coordinator, "ensureDrainThreadStarted");
 
-        Thread started = Reflect.get(coordinator, "drainThread", Thread.class);
-        assertThat(started).isNotNull();
-        assertThat(started.isAlive()).isTrue();
+            Thread started = Reflect.get(coordinator, "drainThread", Thread.class);
+            assertThat(started).isNotNull();
+            assertThat(started.isAlive()).isTrue();
 
-        coordinator.stopDrainThread();
+            coordinator.stopDrainThread();
 
-        started.join(2_000);
-        assertThat(started.isAlive()).isFalse();
-        assertThat(coordinator.isDrainThreadAlive()).isFalse();
+            started.join(2_000);
+            assertThat(started.isAlive()).isFalse();
+            assertThat(coordinator.isDrainThreadAlive()).isFalse();
+        } finally {
+            coordinator.stopDrainThread();
+            coordinator.clearPendingWork();
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.resetExportRunForTests();
+        }
+    }
+
+    @Test
+    void indexingRetryCoordinator_stopRetainsLiveOwnerAndRefusesReplacement() throws Exception {
+        IndexingRetryCoordinator coordinator = new IndexingRetryCoordinator();
+        AtomicBoolean release = new AtomicBoolean();
+        Thread stubbornOwner = new Thread(() -> {
+            while (!release.get()) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(10L));
+                Thread.interrupted();
+            }
+        }, "retry-owner-test");
+        Reflect.set(coordinator, "drainThread", stubbornOwner);
+        stubbornOwner.start();
+
+        try {
+            assertThat(coordinator.stopDrainThread(10L)).isFalse();
+            assertThat(Reflect.get(coordinator, "drainThread", Thread.class)).isSameAs(stubbornOwner);
+            Reflect.call(coordinator, "ensureDrainThreadStarted");
+            assertThat(Reflect.get(coordinator, "drainThread", Thread.class)).isSameAs(stubbornOwner);
+        } finally {
+            release.set(true);
+            LockSupport.unpark(stubbornOwner);
+            stubbornOwner.join(1_000L);
+        }
+
+        assertThat(coordinator.stopDrainThread(10L)).isTrue();
+        assertThat(Reflect.get(coordinator, "drainThread", Thread.class)).isNull();
     }
 
     @Test

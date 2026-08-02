@@ -14,9 +14,20 @@
  *       reporter and by the orphan-flush path so lazy start and deterministic teardown are
  *       implemented in one place.</li>
  *   <li>{@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine} runs parallel
- *       {@code build + prepare} on worker threads with serial bulk flush on the assembly thread.
- *       Used by Proxy History, Sitemap initial, Findings backlog, and Proxy WebSocket historic
- *       snapshots.</li>
+ *       {@code build + prepare} on worker threads with overlapping bulk flushes, while serializing
+ *       whole engine runs and bounding prepared build-ahead by both count and bytes. Used by Proxy
+ *       History, Sitemap initial, Findings backlog, and Proxy WebSocket historic snapshots.</li>
+ *   <li>{@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor} owns the
+ *       separate shared pools for whole-chunk flushes and nested dual-sink work, preserving the
+ *       no-pool-nesting invariant required to avoid deadlock.</li>
+ *   <li>{@link ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator} queues
+ *       those startup snapshot steps in ConfigPanel order (Findings → Sitemap → Proxy History →
+ *       WebSocket). Reporters re-queue lane continuations after each engine run and share adaptive
+ *       per-lane wall-time targeting, so sources interleave without raising engine concurrency.
+ *       Stop removes queued work and cooperatively cancels token-scoped engine activity.</li>
+ *   <li>{@link ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext} carries the
+ *       current export-run token through asynchronous flush work so late outcomes cannot mutate
+ *       accounting after Stop or a later Start.</li>
  *   <li>{@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing} and
  *       {@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache} throttle and
  *       memoize scope checks during large one-shot exports.</li>

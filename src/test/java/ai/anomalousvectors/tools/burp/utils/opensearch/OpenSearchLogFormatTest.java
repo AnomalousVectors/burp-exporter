@@ -70,6 +70,8 @@ class OpenSearchLogFormatTest {
         assertThat(OpenSearchLogFormat.shouldRedactHeader("Authorization")).isTrue();
         assertThat(OpenSearchLogFormat.shouldRedactHeader("Set-Cookie")).isTrue();
         assertThat(OpenSearchLogFormat.shouldRedactHeader("Cookie")).isTrue();
+        assertThat(OpenSearchLogFormat.shouldRedactHeader("X-Amz-Security-Token")).isTrue();
+        assertThat(OpenSearchLogFormat.shouldRedactHeader("X-Amz-Signature")).isTrue();
         assertThat(OpenSearchLogFormat.shouldRedactHeader("Content-Type")).isFalse();
     }
 
@@ -80,5 +82,32 @@ class OpenSearchLogFormatTest {
         assertThat(raw).contains("Content-Type: application/json");
         assertThat(raw).contains("X-Foo: bar");
         assertThat(raw).contains("\n\n{}");
+    }
+
+    @Test
+    void describeExceptionChain_preservesTransportCauseTypesAndMessages() {
+        Exception failure = new java.io.IOException(
+                "request failed",
+                new java.net.SocketTimeoutException("Read timed out"));
+
+        assertThat(OpenSearchLogFormat.describeExceptionChain(failure))
+                .isEqualTo("IOException: request failed <- SocketTimeoutException: Read timed out");
+    }
+
+    @Test
+    void formatStatusAndIndentedBody_indentsMultilineHtml() {
+        String formatted = OpenSearchLogFormat.formatStatusAndIndentedBody(
+                504,
+                "<html>\n<head><title>504 Gateway Time-out</title></head>\n</html>\n");
+        assertThat(formatted).startsWith("504\n");
+        assertThat(formatted).contains("\n  <html>");
+        assertThat(formatted).contains("\n  <head><title>504 Gateway Time-out</title></head>");
+        assertThat(formatted).doesNotContain("\n<html>");
+    }
+
+    @Test
+    void formatStatusAndIndentedBody_statusOnlyWhenBodyBlank() {
+        assertThat(OpenSearchLogFormat.formatStatusAndIndentedBody(502, "  ")).isEqualTo("502");
+        assertThat(OpenSearchLogFormat.formatStatusAndIndentedBody(500, null)).isEqualTo("500");
     }
 }

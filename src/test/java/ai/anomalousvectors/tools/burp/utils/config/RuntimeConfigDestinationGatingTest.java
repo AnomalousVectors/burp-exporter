@@ -1,10 +1,9 @@
 package ai.anomalousvectors.tools.burp.utils.config;
 
-import static org.assertj.core.api.Assertions.assertThat;
-
 import java.time.Instant;
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
 class RuntimeConfigDestinationGatingTest {
@@ -13,8 +12,11 @@ class RuntimeConfigDestinationGatingTest {
 
     private void restoreRuntimeState() {
         RuntimeConfig.updateState(previous);
+        // Start transition clears sticky mid-run destination / Stats retain flags.
+        RuntimeConfig.setExportRunning(true);
         RuntimeConfig.setExportRunning(false);
         RuntimeConfig.setExportStarting(false);
+        RuntimeConfig.setExportStopping(false);
     }
 
     @Test
@@ -169,7 +171,7 @@ class RuntimeConfigDestinationGatingTest {
     }
 
     @Test
-    void searchExportEnabled_keepsAmazonOpenSearchUnwiredForNow() {
+    void searchExportEnabled_supportsAmazonOpenSearchDestination() {
         try {
             RuntimeConfig.updateState(new ConfigState.State(
                     List.of(ConfigKeys.SRC_SETTINGS),
@@ -182,7 +184,7 @@ class RuntimeConfigDestinationGatingTest {
                             ConfigState.OPEN_SEARCH_TLS_VERIFY,
                             ConfigState.defaultOpenSearchOptions(),
                             ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(),
-                            "https://amazon-opensearch.example:443",
+                            "https://amazon-opensearch.example",
                             ConfigState.defaultOpenSearchAmazonOptions(),
                             "http://localhost:9201",
                             ConfigState.defaultElasticsearchOptions()),
@@ -194,9 +196,10 @@ class RuntimeConfigDestinationGatingTest {
 
             assertThat(RuntimeConfig.searchDestinationKind())
                     .isEqualTo(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON);
-            assertThat(RuntimeConfig.isSearchDestinationExportWired(RuntimeConfig.searchDestinationKind())).isFalse();
-            assertThat(RuntimeConfig.isSearchExportEnabled()).isFalse();
-            assertThat(RuntimeConfig.searchBaseUrl()).isEmpty();
+            assertThat(RuntimeConfig.isSearchDestinationExportWired(RuntimeConfig.searchDestinationKind())).isTrue();
+            assertThat(RuntimeConfig.isSearchExportEnabled()).isTrue();
+            assertThat(RuntimeConfig.searchBaseUrl()).isEqualTo("https://amazon-opensearch.example");
+            assertThat(RuntimeConfig.activeSinkSummary()).isEqualTo("Amazon OpenSearch");
         } finally {
             restoreRuntimeState();
         }
@@ -267,6 +270,7 @@ class RuntimeConfigDestinationGatingTest {
             assertThat(RuntimeConfig.disableOpenSearchDestination()).isTrue();
             assertThat(RuntimeConfig.isOpenSearchExportEnabled()).isFalse();
             assertThat(RuntimeConfig.isOpenSearchDisabledForCurrentRun()).isTrue();
+            assertThat(RuntimeConfig.shouldRetainSearchStatsVisibility()).isTrue();
             assertThat(RuntimeConfig.activeSinkSummary()).isEqualTo("Files");
 
             RuntimeConfig.updateState(new ConfigState.State(
@@ -298,15 +302,20 @@ class RuntimeConfigDestinationGatingTest {
             ));
 
             assertThat(RuntimeConfig.isOpenSearchDisabledForCurrentRun()).isFalse();
+            assertThat(RuntimeConfig.shouldRetainSearchStatsVisibility()).isTrue();
             assertThat(RuntimeConfig.isOpenSearchExportEnabled()).isTrue();
             assertThat(RuntimeConfig.activeSinkSummary()).isEqualTo("Files and OpenSearch");
+
+            RuntimeConfig.setExportRunning(true);
+            assertThat(RuntimeConfig.shouldRetainSearchStatsVisibility()).isFalse();
+            RuntimeConfig.setExportRunning(false);
         } finally {
             restoreRuntimeState();
         }
     }
 
     @Test
-    void prepareIndexNamesForCurrentRun_keepsResolvedNamesStable_untilExportStops() {
+    void prepareIndexNamesForCurrentRun_keepsResolvedNamesFrozenThroughStopping() {
         try {
             RuntimeConfig.updateState(new ConfigState.State(
                     List.of(ConfigKeys.SRC_EXPORTER, ConfigKeys.SRC_TRAFFIC),
@@ -345,7 +354,15 @@ class RuntimeConfigDestinationGatingTest {
             assertThat(RuntimeConfig.indexNameForKey("traffic")).isEqualTo(trafficDuringRun);
             assertThat(RuntimeConfig.resolvedIndexNamesAt()).isEqualTo(resolvedAt);
 
+            RuntimeConfig.beginExportStop();
+            RuntimeConfig.setExportStopping(true);
             RuntimeConfig.setExportRunning(false);
+            assertThat(RuntimeConfig.indexNameForKey("exporter")).isEqualTo(exporterDuringRun);
+            assertThat(RuntimeConfig.indexNameForKey("traffic")).isEqualTo(trafficDuringRun);
+            assertThat(RuntimeConfig.resolvedIndexNamesAt()).isEqualTo(resolvedAt);
+
+            RuntimeConfig.endExportStopWorker();
+            RuntimeConfig.setExportStopping(false);
             assertThat(RuntimeConfig.indexNameForKey("exporter")).isEqualTo("changed-base-exporter");
             assertThat(RuntimeConfig.indexNameForKey("traffic")).isEqualTo("changed-base-traffic");
         } finally {

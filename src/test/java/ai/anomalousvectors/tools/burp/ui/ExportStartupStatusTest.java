@@ -71,6 +71,6 @@ class ExportStartupStatusTest {
     @Test
     void creatingOpenSearchIndexesMessage_usesStartingPrefix() {
         assertThat(ExportStartupStatus.creatingOpenSearchIndexesMessage())
-                .isEqualTo("Starting: creating OpenSearch indexes …");
+                .isEqualTo("Starting: creating search database indexes …");
     }
 }

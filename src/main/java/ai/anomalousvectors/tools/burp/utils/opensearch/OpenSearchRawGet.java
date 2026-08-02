@@ -24,23 +24,43 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
  * Performs a raw HTTP GET to the OpenSearch root (/) with the same auth, SSL, and
  * HTTP version policy (NEGOTIATE) as {@link OpenSearchConnector}, so we can log the
  * actual protocol and status line from the wire (including HTTP/2 when negotiated).
+ *
+ * <p>Stateless and safe for concurrent callers. Public operations block on client construction,
+ * credential file access, TLS negotiation, and network completion.</p>
  */
 public final class OpenSearchRawGet {
 
     private OpenSearchRawGet() {}
 
     /**
-     * Result of a raw GET / request: status line details, body, and log strings (real request/response with redaction).
-     * When the request fails before receiving a response, {@code protocol} is null and {@code statusCode} is 0.
+     * Result of a raw root request.
+     *
+     * <p>When a request fails before a response, {@code protocol} is null and {@code statusCode} is
+     * zero. {@code requestForLog} and response headers are redacted, but {@code body} is raw server
+     * content and must be reviewed before logging.</p>
+     *
+     * @param statusCode HTTP status, or {@code 0} before a response
+     * @param protocol negotiated protocol, or {@code null} when unknown
+     * @param reasonPhrase response reason or client-side failure detail
+     * @param body raw response body
+     * @param requestForLog redacted request summary
+     * @param responseHeaderLines response headers with known sensitive values redacted
      */
     public record RawGetResult(
             int statusCode, String protocol, String reasonPhrase, String body,
             String requestForLog, java.util.List<String> responseHeaderLines) {}
 
     /**
-     * Performs GET / against baseUrl with the same credentials and insecure-SSL behavior as the connector.
-     * Uses the async client with {@code HttpVersionPolicy.NEGOTIATE} so HTTP/2 is used when supported.
-     * Returns the actual HTTP version, status code, reason phrase, and response body from the wire.
+     * Performs a root request with optional Basic authentication.
+     *
+     * <p>Uses the async client with {@code HttpVersionPolicy.NEGOTIATE}, then blocks until
+     * completion. Failures are represented by a result with status zero. Interruption restores the
+     * thread interrupt flag.</p>
+     *
+     * @param baseUrl database base URL
+     * @param username Basic username; blank disables authentication
+     * @param password sensitive Basic password; blank disables authentication
+     * @return non-null wire result with redacted request/header log fields
      */
     public static RawGetResult performRawGet(String baseUrl, String username, String password) {
         OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
@@ -49,7 +69,16 @@ public final class OpenSearchRawGet {
         return performRawGet(baseUrl, auth);
     }
 
-    /** Performs GET / against baseUrl with the selected OpenSearch auth mode. */
+    /**
+     * Performs a root request with a selected authentication mode.
+     *
+     * <p>Expected setup, TLS, transport, and interruption failures are returned as status-zero
+     * results rather than thrown. Interruption restores the thread interrupt flag.</p>
+     *
+     * @param baseUrl database base URL
+     * @param auth authentication descriptor; {@code null} selects no authentication
+     * @return non-null wire result with redacted request/header log fields
+     */
     public static RawGetResult performRawGet(String baseUrl, OpenSearchAuth auth) {
         OpenSearchAuth resolvedAuth = auth == null ? OpenSearchAuth.none() : auth;
         String normalized = baseUrl == null ? "" : baseUrl.replaceFirst("^\\s+", "").trim().replaceAll("/+$", "");
@@ -138,11 +167,21 @@ public final class OpenSearchRawGet {
             Timeout responseTimeout,
             ConfigState.SearchDestination destination)
             throws java.security.GeneralSecurityException {
+        Timeout connectTimeout = Timeout.ofMilliseconds(Math.min(
+                OpenSearchConnector.CLASSIC_CONNECT_TIMEOUT.toMilliseconds(),
+                Math.max(1_000L, responseTimeout.toMilliseconds())));
+        Timeout connectionRequestTimeout = Timeout.ofMilliseconds(Math.min(
+                OpenSearchConnector.CLASSIC_CONNECTION_REQUEST_TIMEOUT.toMilliseconds(),
+                Math.max(1_000L, responseTimeout.toMilliseconds())));
         var clientBuilder = HttpAsyncClients.custom();
         PoolingAsyncClientConnectionManagerBuilder connManagerBuilder =
-                PoolingAsyncClientConnectionManagerBuilder.create();
+                PoolingAsyncClientConnectionManagerBuilder.create()
+                        .setDefaultConnectionConfig(org.apache.hc.client5.http.config.ConnectionConfig.custom()
+                                .setConnectTimeout(connectTimeout)
+                                .build());
         clientBuilder.setDefaultRequestConfig(RequestConfig.custom()
                 .setResponseTimeout(responseTimeout)
+                .setConnectionRequestTimeout(connectionRequestTimeout)
                 .build());
         if ("https".equalsIgnoreCase(host.getSchemeName())) {
             try {

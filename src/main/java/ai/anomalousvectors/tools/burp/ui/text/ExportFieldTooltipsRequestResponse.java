@@ -152,6 +152,10 @@ final class ExportFieldTooltipsRequestResponse {
             case "markers" -> Tooltips.textWithSource(
                     "Burp request highlight marker ranges.",
                     "RequestResponseDocBuilder.markersToList() copies HttpRequest.markers() into request.body.markers.");
+            case "truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this request body to fit the live bulk byte budget. "
+                            + "body.length remains the original wire size; file export is not truncated by this path.",
+                    "SearchBodyPrefixFitter.fitToLiveBudget() sets body.truncated when shortening b64/text under BulkByteBudget pressure.");
             default -> ExportFieldTooltips.genericLeafTooltip("request.body." + leaf);
         };
     }
@@ -173,6 +177,10 @@ final class ExportFieldTooltipsRequestResponse {
                             + "Indexed as OpenSearch text for full-text search. "
                             + "Null when the payload remains binary after decompress or is not textual.",
                     "HttpMessageDocSupport.decodeHumanReadableBodyText() on logical bytes from BodyContentEncodingSupport.resolveForExport().");
+            case "truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this response body to fit the live bulk byte budget. "
+                            + "body.length remains the original wire size; file export is not truncated by this path.",
+                    "SearchBodyPrefixFitter.fitToLiveBudget() sets body.truncated when shortening b64/text under BulkByteBudget pressure.");
             case "page_title" -> Tooltips.textWithSource(
                     "HTML page title parsed from the response.",
                     "RequestResponseDocBuilder.putResponseAttributes() reads HttpResponseReceived.attributes(AttributeType.PAGE_TITLE) into response.body.page_title.");
@@ -326,6 +334,9 @@ final class ExportFieldTooltipsRequestResponse {
             case "value" -> Tooltips.textWithSource(
                     "Parsed HTTP parameter value.",
                     "RequestResponseDocBuilder.parametersToList() uses ParsedHttpParameter.value().");
+            case "truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this parameter value to fit the live bulk byte budget.",
+                    "SearchBodyPrefixFitter sets truncated when shortening parameter values under BulkByteBudget pressure.");
             default -> ExportFieldTooltips.genericLeafTooltip("request.parameters." + leaf);
         };
     }
@@ -431,6 +442,9 @@ final class ExportFieldTooltipsRequestResponse {
             case "ordinal" -> Tooltips.textWithSource(
                     "Zero-based request header order in the message.",
                     "HttpMessageDocSupport.headersToList() assigns ordinals while preserving duplicate header order.");
+            case "truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this header value/raw to fit the live bulk byte budget.",
+                    "SearchBodyPrefixFitter sets truncated when shortening header strings under BulkByteBudget pressure.");
             default -> ExportFieldTooltips.genericLeafTooltip("request.headers." + leaf);
         };
     }
@@ -449,6 +463,9 @@ final class ExportFieldTooltipsRequestResponse {
             case "ordinal" -> Tooltips.textWithSource(
                     "Zero-based response header order in the message.",
                     "HttpMessageDocSupport.headersToList() assigns ordinals while preserving duplicate header order.");
+            case "truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this header value/raw to fit the live bulk byte budget.",
+                    "SearchBodyPrefixFitter sets truncated when shortening header strings under BulkByteBudget pressure.");
             default -> ExportFieldTooltips.genericLeafTooltip("response.headers." + leaf);
         };
     }
@@ -467,6 +484,9 @@ final class ExportFieldTooltipsRequestResponse {
             case "ordinal" -> Tooltips.textWithSource(
                     "Zero-based request cookie order in Cookie headers.",
                     "HttpMessageDocSupport.requestCookiesToList() assigns ordinals while parsing Cookie header pairs.");
+            case "truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this cookie value/raw to fit the live bulk byte budget.",
+                    "SearchBodyPrefixFitter sets truncated when shortening cookie strings under BulkByteBudget pressure.");
             default -> ExportFieldTooltips.genericLeafTooltip("request.cookies." + leaf);
         };
     }
@@ -492,7 +512,7 @@ final class ExportFieldTooltipsRequestResponse {
             case "max_age" -> Tooltips.textWithSource(
                     "Typed Cookie Max-Age helper in seconds. Large values are preserved as long-range numeric helpers.",
                     "HttpMessageDocSupport.responseCookiesToList() preserves the Set-Cookie Max-Age attribute string;"
-                            + " OpenSearch indexes parseable values as a long.");
+                            + " Search databases index parseable values as a long.");
             case "secure" -> Tooltips.textWithSource(
                     "Whether the Secure flag was present.",
                     "HttpMessageDocSupport.responseCookiesToList() parses Secure from Set-Cookie.");
@@ -511,6 +531,9 @@ final class ExportFieldTooltipsRequestResponse {
             case "ordinal" -> Tooltips.textWithSource(
                     "Zero-based Set-Cookie order in the response.",
                     "HttpMessageDocSupport.responseCookiesToList() assigns ordinals while preserving duplicate cookie order.");
+            case "truncated" -> Tooltips.textWithSource(
+                    "True when search/database export prefix-truncated this cookie value/raw to fit the live bulk byte budget.",
+                    "SearchBodyPrefixFitter sets truncated when shortening cookie strings under BulkByteBudget pressure.");
             default -> ExportFieldTooltips.genericLeafTooltip("response.cookies." + leaf);
         };
     }

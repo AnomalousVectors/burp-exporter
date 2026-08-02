@@ -4,6 +4,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Stores database-destination credentials in memory for the current Burp session only.
+ *
+ * <p>Thread-safe. Null, blank, and unrecognized destination keys normalize to upstream
+ * OpenSearch. Credentials are held as immutable {@link String} values and therefore cannot be
+ * actively zeroed before garbage collection.</p>
  */
 public final class SecureCredentialStore {
     private static final String DEFAULT_DESTINATION = ConfigState.SearchDestination.OPEN_SEARCH.configKey();
@@ -12,19 +16,58 @@ public final class SecureCredentialStore {
     private static final ConcurrentHashMap<String, ApiKeyCredentials> apiKeyCredentials = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, JwtCredentials> jwtCredentials = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, CertificateCredentials> certificateCredentials = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<String, AwsStaticCredentials> awsStaticCredentials = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, PinnedTlsCertificate> pinnedTlsCertificates = new ConcurrentHashMap<>();
 
     private SecureCredentialStore() {}
 
-    /** Immutable basic credentials pair read from session memory. */
+    /**
+     * Immutable basic credentials pair read from session memory.
+     *
+     * @param username username; store load methods use empty when absent
+     * @param password password; store load methods use empty when absent
+     */
     public record BasicCredentials(String username, String password) {}
-    /** Immutable API key read from session memory. */
+    /**
+     * Immutable API key read from session memory.
+     *
+     * @param token API key token; store load methods use empty when absent
+     */
     public record ApiKeyCredentials(String token) {}
-    /** Immutable bearer-token credentials read from session memory. */
+    /**
+     * Immutable bearer-token credentials read from session memory.
+     *
+     * @param token bearer token; store load methods use empty when absent
+     */
     public record JwtCredentials(String token) {}
-    /** Immutable certificate credentials read from session memory. */
+    /**
+     * Immutable certificate credentials read from session memory.
+     *
+     * @param certPath certificate path; store load methods use empty when absent
+     * @param keyPath private-key path; store load methods use empty when absent
+     * @param passphrase private-key passphrase; store load methods use empty when absent
+     */
     public record CertificateCredentials(String certPath, String keyPath, String passphrase) {}
-    /** Immutable imported TLS pin material read from session memory. */
+    /**
+     * Immutable AWS static credentials read from session memory.
+     *
+     * @param accessKeyId AWS access-key identifier; store load methods use empty when absent
+     * @param secretAccessKey AWS secret access key; store load methods use empty when absent
+     * @param sessionToken optional temporary session token
+     */
+    public record AwsStaticCredentials(String accessKeyId, String secretAccessKey, String sessionToken) {}
+    /**
+     * Detached imported TLS pin material read from session memory.
+     *
+     * <p>Store save/load operations defensively copy {@code encodedBytes}, so mutating an array
+     * returned to a caller cannot alter stored state. The record itself exposes its caller-owned
+     * array directly and is therefore not deeply immutable.</p>
+     *
+     * @param sourcePath imported certificate source path
+     * @param fingerprintSha256 certificate SHA-256 fingerprint
+     * @param encodedBytes caller-owned encoded certificate bytes; store load methods return a
+     *                     non-null array
+     */
     public record PinnedTlsCertificate(String sourcePath, String fingerprintSha256, byte[] encodedBytes) {}
 
     /** Saves selected auth type for the current Burp session. */
@@ -188,6 +231,41 @@ public final class SecureCredentialStore {
                 java.util.Arrays.copyOf(current.encodedBytes(), current.encodedBytes().length));
     }
 
+    /**
+     * Saves AWS static credentials for one database destination.
+     *
+     * <p>Blank required fields clear the stored credential. The session token is optional.</p>
+     *
+     * @param destination destination key; null, blank, or unknown selects upstream OpenSearch
+     * @param accessKeyId required AWS access-key identifier
+     * @param secretAccessKey required AWS secret access key
+     * @param sessionToken optional temporary session token
+     */
+    public static void saveAwsStaticCredentials(
+            String destination,
+            String accessKeyId,
+            String secretAccessKey,
+            String sessionToken) {
+        String accessKey = safe(accessKeyId);
+        String secretKey = safe(secretAccessKey);
+        String token = safe(sessionToken);
+        if (accessKey.isBlank() || secretKey.isBlank()) {
+            clearAwsStaticCredentials(destination);
+            return;
+        }
+        awsStaticCredentials.put(destinationKey(destination), new AwsStaticCredentials(accessKey, secretKey, token));
+    }
+
+    /**
+     * Loads AWS static credentials for one database destination.
+     *
+     * @param destination destination key; null, blank, or unknown selects upstream OpenSearch
+     * @return stored credentials, or an all-empty value when absent
+     */
+    public static AwsStaticCredentials loadAwsStaticCredentials(String destination) {
+        return awsStaticCredentials.getOrDefault(destinationKey(destination), new AwsStaticCredentials("", "", ""));
+    }
+
     /** Clears basic credentials for the current Burp session. */
     public static void clearOpenSearchCredentials() {
         clearBasicCredentials(DEFAULT_DESTINATION);
@@ -238,6 +316,15 @@ public final class SecureCredentialStore {
         pinnedTlsCertificates.remove(destinationKey(destination));
     }
 
+    /**
+     * Clears AWS static credentials for one database destination.
+     *
+     * @param destination destination key; null, blank, or unknown selects upstream OpenSearch
+     */
+    public static void clearAwsStaticCredentials(String destination) {
+        awsStaticCredentials.remove(destinationKey(destination));
+    }
+
     /** Clears all session-scoped auth values. Intended for tests and extension reload/reset paths. */
     public static void clearAll() {
         selectedAuthTypes.clear();
@@ -245,6 +332,7 @@ public final class SecureCredentialStore {
         apiKeyCredentials.clear();
         jwtCredentials.clear();
         certificateCredentials.clear();
+        awsStaticCredentials.clear();
         pinnedTlsCertificates.clear();
     }
 
@@ -261,7 +349,9 @@ public final class SecureCredentialStore {
             case "api key", "apikey" -> "API key";
             case "bearer token", "bearer", "jwt" -> "Bearer token";
             case "certificate", "cert" -> "Certificate";
-            case "iam", "iam (sigv4)", "sigv4" -> "IAM (sigV4)";
+            case "iam", "iam (sigv4)", "sigv4", "iam sigv4 - static credentials",
+                    "iam sigv4 static credentials" -> ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC;
+            case "iam sigv4 - profile", "iam sigv4 profile", "profile" -> ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE;
             default -> "None";
         };
     }

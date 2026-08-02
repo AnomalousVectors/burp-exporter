@@ -9,37 +9,31 @@ import java.util.Locale;
 import java.util.Map;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.hc.client5.http.classic.methods.HttpGet;
-import org.apache.hc.client5.http.classic.methods.HttpPost;
-import org.apache.hc.core5.http.HttpHost;
-import org.apache.hc.core5.http.ParseException;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
-import org.opensearch.client.opensearch.OpenSearchClient;
-import org.opensearch.client.opensearch.core.CountResponse;
-import org.opensearch.client.opensearch.indices.RefreshResponse;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
 import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
-import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.SystemMetrics;
-import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClassicHttpSupport;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff;
+import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 
 /**
  * Builds the Stats panel clipboard text from live counters (no Swing table state).
  *
  * <p>Used by the shared Copy toolbar in {@link StatsPanel}. Session stop troubleshooting emits
- * three single-line JSON INFO log entries via {@link #logSessionStopSummary()}.</p>
+ * file and miscellaneous single-line JSON INFO entries via {@link #logSessionStopSummary()}.
+ * Database counts remain available in the database and are not read back during Stop.</p>
+ *
+ * <p>This class is not thread-safe because its shared number formatter is mutable. Copy actions on
+ * the EDT and Stop-summary generation on the Stop worker must be serialized and must not overlap.
+ * Counters are sampled independently, so output is a non-atomic operational snapshot rather than
+ * a transactionally consistent view.</p>
  */
 public final class StatsClipboardSnapshot {
 
@@ -49,17 +43,20 @@ public final class StatsClipboardSnapshot {
             new DecimalFormat("0.0", DecimalFormatSymbols.getInstance(Locale.ROOT));
 
     private static final String[] FILE_COLUMNS =
-            { "Index", "Written", "Failures", "Last Write (ms)", "Last Error" };
+            { "Index", "Written", "Failures", "Retry Attempts",
+                    "Baseline", "Appended", "Final Size", "Integrity",
+                    "Last Append (ms)", "Last Error" };
     private static final String[] OPEN_SEARCH_COLUMNS =
-            { "Index", "Exported", "Queued", "Retry Drops", "Permanent Drops",
-                    "Failures", "Last Bulk (ms)", "Last Error" };
-    private static volatile OpenSearchCountResolver countResolver =
-            StatsClipboardSnapshot::resolveOpenSearchIndexCounts;
+            { "Index", "Exported", "Failures", "Queued", "Recovered Failures",
+                    "Retry Drops", "Permanent Drops", "Last Bulk (ms)", "Last Error" };
 
     private StatsClipboardSnapshot() {}
 
     /**
-     * Returns clipboard-equivalent text: File Counts, OpenSearch Counts, and Misc Stats sections.
+     * Returns clipboard-equivalent text: File Counts, Database Counts, and Misc Stats sections.
+     *
+     * <p>May run on the EDT or a background thread, provided no other method in this class is
+     * executing concurrently.</p>
      *
      * @return plain-text snapshot matching {@link StatsPanel} Copy output for enabled destinations
      */
@@ -70,8 +67,8 @@ public final class StatsClipboardSnapshot {
             sb.append(CardCopySupport.rowsToTsv(FILE_COLUMNS, buildFileCountRows()));
             sb.append('\n');
         }
-        if (isOpenSearchSectionEnabled()) {
-            sb.append("OpenSearch Counts\n");
+        if (isDatabaseSectionEnabled()) {
+            sb.append("Database Counts\n");
             sb.append(CardCopySupport.rowsToTsv(OPEN_SEARCH_COLUMNS, buildOpenSearchCountRows()));
             sb.append('\n');
         }
@@ -80,42 +77,17 @@ public final class StatsClipboardSnapshot {
     }
 
     /**
-     * Logs session-final Stats at INFO as three compact JSON lines (File, OpenSearch, Misc) when
-     * applicable. Intended once per export Stop after the final exporter stats push.
+     * Logs session-final file and miscellaneous Stats after final exporter stats are pushed.
+     *
+     * <p>May run on the Stop worker, provided no other method in this class is executing
+     * concurrently. Emits INFO lines to the Log panel; JSON encoding failures are converted to a
+     * WARN line and are not thrown.</p>
      */
     public static void logSessionStopSummary() {
         if (isFileSectionEnabled()) {
             logCompactJsonLine("file_counts", buildFileCountsPayload());
         }
-        if (isOpenSearchSectionEnabled()) {
-            logCompactJsonLine("open_search_counts", buildOpenSearchCountsPayload());
-        }
         logCompactJsonLine("misc_stats", buildMiscStatsPayload());
-    }
-
-    /**
-     * Logs session-final Stats with refreshed OpenSearch index counts when OpenSearch is active.
-     *
-     * <p>Used at Stop after the final exporter stats snapshot is pushed. The live StatsPanel and
-     * clipboard path intentionally keep session-export counters; this stop-only path favors
-     * operator validation against OpenSearch {@code _count}.</p>
-     */
-    public static void logSessionStopSummaryWithOpenSearchCounts() {
-        OpenSearchCountResolution counts = resolveStopOpenSearchCounts();
-        if (counts.warning() != null) {
-            Logger.logWarnPanelOnly("[Stats] Session stop " + counts.warning());
-        }
-        if (isFileSectionEnabled()) {
-            logCompactJsonLine("file_counts", buildFileCountsPayload());
-        }
-        if (isOpenSearchSectionEnabled()) {
-            logCompactJsonLine("open_search_counts", buildOpenSearchCountsPayload(counts));
-        }
-        logCompactJsonLine("misc_stats", buildMiscStatsPayload());
-    }
-
-    static void setOpenSearchCountResolverForTests(OpenSearchCountResolver resolver) {
-        countResolver = resolver != null ? resolver : StatsClipboardSnapshot::resolveOpenSearchIndexCounts;
     }
 
     private static void logCompactJsonLine(String kind, Map<String, Object> payload) {
@@ -136,20 +108,6 @@ public final class StatsClipboardSnapshot {
         return payload;
     }
 
-    private static Map<String, Object> buildOpenSearchCountsPayload() {
-        return buildOpenSearchCountsPayload(OpenSearchCountResolution.sessionCounters());
-    }
-
-    private static Map<String, Object> buildOpenSearchCountsPayload(OpenSearchCountResolution countResolution) {
-        Map<String, Object> payload = new LinkedHashMap<>(2);
-        payload.put("columns", List.of(OPEN_SEARCH_COLUMNS));
-        payload.put("rows", buildOpenSearchCountRows(countResolution.counts()));
-        payload.put("count_source", countResolution.source());
-        if (countResolution.warning() != null) {
-            payload.put("count_warning", countResolution.warning());
-        }
-        return payload;
-    }
 
     private static Map<String, Object> buildMiscStatsPayload() {
         Map<String, Object> payload = new LinkedHashMap<>(1);
@@ -163,18 +121,48 @@ public final class StatsClipboardSnapshot {
         sortedKeys.sort((left, right) -> left.compareToIgnoreCase(right));
         long totalSuccess = 0;
         long totalFailure = 0;
+        long totalRetryAttempts = 0;
+        long totalBaselineBytes = 0;
+        long totalAppendedBytes = 0;
+        long totalFinalBytes = 0;
+        boolean anyArtifacts = false;
+        boolean anyIntegrityFailure = false;
+        boolean anyIntegrityPending = false;
         for (String indexKey : sortedKeys) {
             long written = FileExportStats.getWrittenCount(indexKey);
             long failure = FileExportStats.getFailureCount(indexKey);
+            long retryAttempts = FileExportStats.getRetryAttemptCount(indexKey);
+            long artifactCount = FileExportStats.getArtifactCount(indexKey);
+            long baselineBytes = FileExportStats.getArtifactBaselineBytes(indexKey);
+            long appendedBytes = FileExportStats.getExportedBytes(indexKey);
+            long finalBytes = FileExportStats.getArtifactFinalBytes(indexKey);
+            FileExportStats.ArtifactIntegrity integrity =
+                    FileExportStats.getArtifactIntegrity(indexKey);
+            boolean selected = artifactCount > 0L;
             long lastWriteMs = FileExportStats.getLastWriteDurationMs(indexKey);
             String lastWriteStr = lastWriteMs >= 0 ? String.valueOf(lastWriteMs) : "-";
             String lastError = FileExportStats.getLastError(indexKey);
             totalSuccess += written;
             totalFailure += failure;
+            totalRetryAttempts += retryAttempts;
+            totalBaselineBytes += baselineBytes;
+            totalAppendedBytes += appendedBytes;
+            totalFinalBytes += finalBytes;
+            anyArtifacts |= selected;
+            anyIntegrityFailure |= integrity == FileExportStats.ArtifactIntegrity.FAILED;
+            anyIntegrityPending |= integrity == FileExportStats.ArtifactIntegrity.PENDING;
             rows.add(new String[] {
                     formatKeyLabel(indexKey),
                     formatWhole(written),
                     formatWhole(failure),
+                    formatWhole(retryAttempts),
+                    selected ? StatsPanelFormatters.formatBytesHuman(baselineBytes) : "-",
+                    selected ? StatsPanelFormatters.formatBytesHuman(appendedBytes) : "-",
+                    integrity == FileExportStats.ArtifactIntegrity.OK
+                                    || integrity == FileExportStats.ArtifactIntegrity.FAILED
+                            ? StatsPanelFormatters.formatBytesHuman(finalBytes)
+                            : "-",
+                    fileIntegrityLabel(integrity),
                     lastWriteStr,
                     lastError != null ? lastError : "-"
             });
@@ -183,7 +171,20 @@ public final class StatsClipboardSnapshot {
             }
         }
         rows.add(new String[] {
-                "Total", formatWhole(totalSuccess), formatWhole(totalFailure), "-", "-"
+                "Total",
+                formatWhole(totalSuccess),
+                formatWhole(totalFailure),
+                formatWhole(totalRetryAttempts),
+                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalBaselineBytes) : "-",
+                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalAppendedBytes) : "-",
+                !anyArtifacts || anyIntegrityPending
+                        ? "-"
+                        : StatsPanelFormatters.formatBytesHuman(totalFinalBytes),
+                !anyArtifacts
+                        ? "Not selected"
+                        : anyIntegrityFailure ? "Failed" : anyIntegrityPending ? "Pending" : "OK",
+                "-",
+                "-"
         });
         return rows;
     }
@@ -198,9 +199,23 @@ public final class StatsClipboardSnapshot {
                     formatWhole(TrafficRouteBucket.resolveFileSourceSuccess(sourceKey)),
                     formatWhole(TrafficRouteBucket.resolveFileSourceFailure(sourceKey)),
                     "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
+                    "-",
                     "-"
             });
         }
+    }
+
+    private static String fileIntegrityLabel(FileExportStats.ArtifactIntegrity integrity) {
+        return switch (integrity) {
+            case PENDING -> "Pending";
+            case OK -> "OK";
+            case FAILED -> "Failed";
+            case NOT_SELECTED -> "Not selected";
+        };
     }
 
     private static List<String[]> buildOpenSearchCountRows() {
@@ -216,12 +231,14 @@ public final class StatsClipboardSnapshot {
         long totalRetryDrops = 0;
         long totalPermanentDrops = 0;
         long totalFailure = 0;
+        long totalRecovered = 0;
         for (String indexKey : sortedKeys) {
             long exported = countOverrides.getOrDefault(indexKey, ExportStats.getExportedCount(indexKey));
             int queued = ExportStats.getQueueSize(indexKey);
             long retryDrops = ExportStats.getRetryQueueDrops(indexKey);
             long permanentDrops = ExportStats.getPermanentDrops(indexKey);
             long failure = ExportStats.getFailureCount(indexKey);
+            long recovered = ExportStats.getRecoveredFailureCount(indexKey);
             String lastBulkStr = "-";
             if ("traffic".equalsIgnoreCase(indexKey)) {
                 long lastBulkMs = ExportStats.getLastLiveBulkDurationMs(indexKey);
@@ -235,13 +252,15 @@ public final class StatsClipboardSnapshot {
             totalRetryDrops += retryDrops;
             totalPermanentDrops += permanentDrops;
             totalFailure += failure;
+            totalRecovered += recovered;
             rows.add(new String[] {
                     formatKeyLabel(indexKey),
                     formatWhole(exported),
+                    formatWhole(failure),
                     formatWhole(queued),
+                    formatWhole(recovered),
                     formatWhole(retryDrops),
                     formatWhole(permanentDrops),
-                    formatWhole(failure),
                     lastBulkStr,
                     lastError != null ? lastError : "-"
             });
@@ -252,168 +271,15 @@ public final class StatsClipboardSnapshot {
         rows.add(new String[] {
                 "Total",
                 formatWhole(totalSuccess),
+                formatWhole(totalFailure),
                 formatWhole(totalQueued),
+                formatWhole(totalRecovered),
                 formatWhole(totalRetryDrops),
                 formatWhole(totalPermanentDrops),
-                formatWhole(totalFailure),
                 "-",
                 "-"
         });
         return rows;
-    }
-
-    private static OpenSearchCountResolution resolveStopOpenSearchCounts() {
-        if (!RuntimeConfig.isOpenSearchActive()) {
-            return OpenSearchCountResolution.sessionCounters();
-        }
-        try {
-            List<String> indexKeys = List.copyOf(ExportStats.getIndexKeys());
-            Logger.logInfoPanelOnly("[Stats] Collecting final OpenSearch counts via refresh/_count for indexes: "
-                    + formatIndexNamesForLog(indexKeys) + ".");
-            Map<String, Long> counts = countResolver.resolve(indexKeys);
-            return new OpenSearchCountResolution(
-                    counts == null ? Map.of() : Map.copyOf(counts),
-                    "opensearch_index_count",
-                    null);
-        } catch (RuntimeException ex) {
-            String detail = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
-            return new OpenSearchCountResolution(
-                    Map.of(),
-                    "session_export_counters",
-                    "OpenSearch index counts unavailable at Stop; using session export counters: " + detail);
-        }
-    }
-
-    private static Map<String, Long> resolveOpenSearchIndexCounts(List<String> indexKeys) {
-        if (RuntimeConfig.searchDestinationKind() == ConfigState.SearchDestination.ELASTICSEARCH) {
-            return resolveSearchIndexCountsOverHttp(indexKeys);
-        }
-        OpenSearchClient client = OpenSearchConnector.getClient(
-                RuntimeConfig.openSearchUrl(),
-                OpenSearchAuth.fromRuntime());
-        Map<String, Long> counts = new LinkedHashMap<>();
-        for (String indexKey : indexKeys) {
-            String indexName = RuntimeConfig.indexNameForKey(indexKey);
-            if (indexName == null || indexName.isBlank()) {
-                indexName = IndexNaming.indexNameForShortName(indexKey);
-            }
-            RefreshResponse refresh = refreshIndex(client, indexName);
-            if (refresh.shards().failed() > 0) {
-                throw new IllegalStateException("refresh failed for " + indexName);
-            }
-            CountResponse count = countIndex(client, indexName);
-            counts.put(indexKey, count.count());
-        }
-        return counts;
-    }
-
-    private static Map<String, Long> resolveSearchIndexCountsOverHttp(List<String> indexKeys) {
-        String baseUrl = RuntimeConfig.searchBaseUrl();
-        OpenSearchAuth auth = OpenSearchAuth.fromRuntime(RuntimeConfig.searchDestinationKind());
-        var client = OpenSearchConnector.getClassicHttpClient(baseUrl, auth);
-        HttpHost host = OpenSearchClassicHttpSupport.hostForBaseUrl(baseUrl);
-        Map<String, Long> counts = new LinkedHashMap<>();
-        for (String indexKey : indexKeys) {
-            String indexName = RuntimeConfig.indexNameForKey(indexKey);
-            if (indexName == null || indexName.isBlank()) {
-                indexName = IndexNaming.indexNameForShortName(indexKey);
-            }
-            refreshIndexOverHttp(client, host, auth, indexName);
-            counts.put(indexKey, countIndexOverHttp(client, host, auth, indexName));
-        }
-        return counts;
-    }
-
-    private static void refreshIndexOverHttp(
-            org.apache.hc.client5.http.impl.classic.CloseableHttpClient client,
-            HttpHost host,
-            OpenSearchAuth auth,
-            String indexName) {
-        try {
-            HttpPost refresh = new HttpPost("/" + indexName + "/_refresh");
-            auth.applyTo(refresh);
-            client.execute(host, refresh, response -> {
-                int status = response.getCode();
-                if (status < 200 || status >= 300) {
-                    throw new IllegalStateException("refresh failed for " + indexName + ": HTTP " + status);
-                }
-                return null;
-            });
-        } catch (java.io.IOException ex) {
-            throw new IllegalStateException("refresh failed for " + indexName + ": " + ex.getMessage(), ex);
-        }
-    }
-
-    private static long countIndexOverHttp(
-            org.apache.hc.client5.http.impl.classic.CloseableHttpClient client,
-            HttpHost host,
-            OpenSearchAuth auth,
-            String indexName) {
-        try {
-            HttpGet count = new HttpGet("/" + indexName + "/_count");
-            auth.applyTo(count);
-            return client.execute(host, count, response -> {
-                int status = response.getCode();
-                String body;
-                try {
-                    body = response.getEntity() == null
-                            ? ""
-                            : EntityUtils.toString(response.getEntity(), java.nio.charset.StandardCharsets.UTF_8);
-                } catch (ParseException e) {
-                    throw new java.io.IOException("Failed to parse count response for " + indexName, e);
-                }
-                if (status < 200 || status >= 300) {
-                    throw new IllegalStateException("count failed for " + indexName + ": HTTP " + status);
-                }
-                JsonNode root = COMPACT_JSON.readTree(body);
-                return root.path("count").asLong();
-            });
-        } catch (java.io.IOException ex) {
-            throw new IllegalStateException("count failed for " + indexName + ": " + ex.getMessage(), ex);
-        }
-    }
-
-    private static String formatIndexNamesForLog(List<String> indexKeys) {
-        List<String> names = new ArrayList<>();
-        for (String indexKey : indexKeys) {
-            String indexName = RuntimeConfig.indexNameForKey(indexKey);
-            if (indexName == null || indexName.isBlank()) {
-                indexName = IndexNaming.indexNameForShortName(indexKey);
-            }
-            names.add(indexName);
-        }
-        return String.join(", ", names);
-    }
-
-    private static RefreshResponse refreshIndex(OpenSearchClient client, String indexName) {
-        try {
-            return client.indices().refresh(r -> r.index(indexName));
-        } catch (java.io.IOException ex) {
-            throw new IllegalStateException("refresh failed for " + indexName + ": " + ex.getMessage(), ex);
-        }
-    }
-
-    private static CountResponse countIndex(OpenSearchClient client, String indexName) {
-        try {
-            return client.count(c -> c.index(indexName));
-        } catch (java.io.IOException ex) {
-            throw new IllegalStateException("count failed for " + indexName + ": " + ex.getMessage(), ex);
-        }
-    }
-
-    @FunctionalInterface
-    interface OpenSearchCountResolver {
-        Map<String, Long> resolve(List<String> indexKeys);
-    }
-
-    private record OpenSearchCountResolution(
-            Map<String, Long> counts,
-            String source,
-            String warning) {
-
-        private static OpenSearchCountResolution sessionCounters() {
-            return new OpenSearchCountResolution(Map.of(), "session_export_counters", null);
-        }
     }
 
     private static void appendOpenSearchTrafficSourceSubRows(List<String[]> rows) {
@@ -421,13 +287,16 @@ public final class StatsClipboardSnapshot {
             if ("UNKNOWN".equals(sourceKey)) {
                 continue;
             }
+            long sourceFailure = TrafficRouteBucket.resolveOpenSearchSourceFailure(sourceKey);
+            long sourceRecovered = TrafficRouteBucket.resolveOpenSearchSourceRecovery(sourceKey);
             rows.add(new String[] {
                     SUBROW_INDENT + formatKeyLabel(sourceKey),
                     formatWhole(TrafficRouteBucket.resolveOpenSearchSourceSuccess(sourceKey)),
-                    "-",
-                    "-",
-                    "-",
-                    formatWhole(TrafficRouteBucket.resolveOpenSearchSourceFailure(sourceKey)),
+                    formatWhole(sourceFailure),
+                    formatWhole(ExportStats.getTrafficDisplaySourceQueueSize(sourceKey)),
+                    formatWhole(sourceRecovered),
+                    formatWhole(TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops(sourceKey)),
+                    formatWhole(TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops(sourceKey)),
                     "-",
                     "-"
             });
@@ -436,23 +305,45 @@ public final class StatsClipboardSnapshot {
 
     private static Map<String, Map<String, String>> buildMiscSections() {
         boolean fileVisible = isFileSectionEnabled();
-        boolean openSearchVisible = isOpenSearchSectionEnabled();
+        boolean openSearchVisible = isDatabaseSectionEnabled();
         Map<String, Map<String, String>> sections = new LinkedHashMap<>();
-        sections.put("Global", Map.of(
-                "Export Running", RuntimeConfig.isExportRunning() ? "Yes" : "No"));
+        sections.put("Overview", buildOverviewSection(fileVisible, openSearchVisible));
         sections.put("Process", buildProcessSection(SystemMetrics.snapshot()));
         if (openSearchVisible) {
-            sections.put("OpenSearch Session", buildOpenSearchSessionSection());
+            sections.put("Database Session", buildOpenSearchSessionSection());
             sections.put("Parameter Integrity", buildParameterIntegritySection());
-            sections.put("OpenSearch Traffic", buildOpenSearchTrafficSection());
-            sections.put("OpenSearch Spill", buildOpenSearchSpillSection());
-            sections.put("OpenSearch Retry", buildOpenSearchRetrySection());
-            sections.put("OpenSearch Run Peaks", buildOpenSearchRunPeaksSection());
+            sections.put("Database Traffic", buildOpenSearchTrafficSection());
+            sections.put("Database Retry", buildOpenSearchRetrySection());
+            sections.put("Database Capacity", buildOpenSearchCapacitySection());
+            sections.put("Database Run Peaks", buildOpenSearchRunPeaksSection());
+        }
+        if (RuntimeConfig.isAnyTrafficExportEnabled()) {
+            sections.put("Traffic Spill", buildOpenSearchSpillSection());
         }
         if (fileVisible) {
             sections.put("Files", buildFilesSection());
         }
         return sections;
+    }
+
+    private static Map<String, String> buildOverviewSection(boolean fileVisible, boolean openSearchVisible) {
+        Map<String, String> rows = new LinkedHashMap<>();
+        rows.put("Export Running", RuntimeConfig.isExportRunning() ? "Yes" : "No");
+        if (openSearchVisible) {
+            rows.put("Soft Outage", StatsPanelFormatters.formatSoftOutage(
+                    IndexingRetryCoordinator.getInstance().isSoftCapacityOutage()));
+            rows.put("Database Exported Size",
+                    formatHumanReadableBytes(ExportStats.getTotalExportedBytes()));
+        }
+        if (fileVisible) {
+            rows.put("Files Exported Size",
+                    formatHumanReadableBytes(FileExportStats.getTotalExportedBytes()));
+        }
+        if (RuntimeConfig.isAnyTrafficExportEnabled()) {
+            rows.put("Traffic Spill Status", StatsPanelFormatters.formatSpillStatus(
+                    TrafficExportQueue.currentSpillStatus()));
+        }
+        return rows;
     }
 
     private static Map<String, String> buildProcessSection(SystemMetrics.Snapshot snapshot) {
@@ -482,11 +373,17 @@ public final class StatsClipboardSnapshot {
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Throughput (10s)", DECIMAL_ONE.format(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
         rows.put("Exported Docs", formatWhole(totalSuccess) + " docs");
-        rows.put("Exported Size", formatHumanReadableBytes(ExportStats.getTotalExportedBytes()));
-        rows.put("Exported Failures", formatWhole(totalFailure) + " failures");
+        rows.put("Exported Failures", formatWhole(totalFailure));
+        rows.put("Count Basis", "Session counters; no Stop readback");
+        rows.put("Authorization Recovery", StatsPanelFormatters.formatAuthorizationRecovery());
         rows.put("Last Success", StatsPanelFormatters.formatRelativeTime(ExportStats.getOpenSearchLastSuccessAtMs()));
         rows.put("Consecutive Failures", formatWhole(ExportStats.getOpenSearchConsecutiveFailures()));
         rows.put("Permanent Drops", formatWhole(ExportStats.getTotalPermanentDrops()));
+        rows.put("Permanent Drop Reasons", StatsPanelFormatters.formatPermanentDropReasons());
+        rows.put("Body Truncations", formatWhole(ExportStats.getSearchBodyPrefixTruncations()));
+        rows.put("Body Truncations by Index", StatsPanelFormatters.formatBodyTruncationsByIndex());
+        rows.put("Recovered Failures", formatWhole(ExportStats.getTotalRecoveredFailureCount()));
+        rows.put("Retry Drain Pushes", formatWhole(ExportStats.getTotalRetryAttempts()));
         return rows;
     }
 
@@ -537,10 +434,14 @@ public final class StatsClipboardSnapshot {
                 formatWhole(ExportStats.getTrafficSpillEnqueued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDequeued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDrops()));
+        long spillRejectNew = ExportStats.getTrafficDropReasonCount("spill_full_reject_new")
+                + ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_new")
+                + ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")
+                + ExportStats.getTrafficDropReasonCount("spill_low_disk_drop_oldest");
         rows.put("Drop Reasons",
-                formatWhole(ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")) + " / "
-                        + formatWhole(ExportStats.getTrafficDropReasonCount("queue_contention_drop")) + " / "
-                        + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")) + " / "
+                formatWhole(spillRejectNew) + " / "
+                        + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")
+                                + ExportStats.getTrafficDropReasonCount("spill_requeue_low_disk_drop")) + " / "
                         + formatWhole(ExportStats.getTrafficSpillExpiredPruned()));
         return rows;
     }
@@ -552,24 +453,42 @@ public final class StatsClipboardSnapshot {
         return rows;
     }
 
+    private static Map<String, String> buildOpenSearchCapacitySection() {
+        Map<String, String> rows = new LinkedHashMap<>();
+        rows.put("Bulk Byte Budget",
+                StatsPanelFormatters.formatBytesHuman(StatsPanelFormatters.displayedBulkByteBudget()));
+        rows.put("Snapshot Flush Cap", formatWhole(StatsPanelFormatters.displayedSnapshotFlushCap()));
+        rows.put("Snapshot Build-Ahead", StatsPanelFormatters.formatSnapshotBuildAhead());
+        rows.put("Cooldown Remaining", StatsPanelFormatters.formatCooldownRemaining(
+                BulkRateLimitBackoff.remainingCooldownMs()));
+        rows.put("Pressure Streak", formatWhole(BulkRateLimitBackoff.pressureStreak()));
+        rows.put("Soft Outage Entries", formatWhole(ExportStats.getSoftOutageEntries()));
+        rows.put("Capacity Events", formatWhole(ExportStats.getCapacityPressureEvents()));
+        return rows;
+    }
+
     private static Map<String, String> buildOpenSearchRunPeaksSection() {
         int peakChunkTarget = ExportStats.getPeakSnapshotChunkTarget();
         long peakFlushMs = ExportStats.getPeakSnapshotFlushMs();
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Peak Traffic Queue", StatsPanelFormatters.formatPeakQueueDepth(
                 ExportStats.getPeakTrafficQueueDocs(), ExportStats.getPeakTrafficQueueBytes()));
-        rows.put("Peak Spill Queue", StatsPanelFormatters.formatPeakQueueDepth(
+        rows.put("Peak Traffic Spill", StatsPanelFormatters.formatPeakQueueDepth(
                 ExportStats.getPeakSpillDocs(), ExportStats.getPeakSpillBytes()));
         rows.put("Peak Retry Queue", StatsPanelFormatters.formatPeakQueueDepth(
                 ExportStats.getPeakRetryQueueDocs(), ExportStats.getPeakRetryQueueBytes()));
         rows.put("Peak Snapshot Chunk Target", peakChunkTarget > 0 ? formatWhole(peakChunkTarget) : "—");
         rows.put("Peak Snapshot Flush (ms)", peakFlushMs > 0 ? formatWhole(peakFlushMs) : "—");
+        rows.put("Peak Snapshot Build-Ahead", StatsPanelFormatters.formatPeakSnapshotBuildAhead());
+        long peakCooldownWaitMs = ExportStats.getPeakCooldownWaitMs();
+        rows.put("Peak Cooldown Wait (ms)", peakCooldownWaitMs > 0 ? formatWhole(peakCooldownWaitMs) : "—");
+        long peakFlushSlotWaitMs = ExportStats.getPeakFlushSlotWaitMs();
+        rows.put("Peak Flush Slot Wait (ms)", peakFlushSlotWaitMs > 0 ? formatWhole(peakFlushSlotWaitMs) : "—");
         return rows;
     }
 
     private static Map<String, String> buildFilesSection() {
         Map<String, String> rows = new LinkedHashMap<>();
-        rows.put("File Total Size Exported", formatHumanReadableBytes(FileExportStats.getTotalExportedBytes()));
         rows.put("File Total Docs Exported", formatWhole(FileExportStats.getTotalSuccessCount()));
         rows.put("File Total Failures", formatWhole(FileExportStats.getTotalFailureCount()));
         return rows;
@@ -579,9 +498,10 @@ public final class StatsClipboardSnapshot {
         return RuntimeConfig.isAnyFileExportEnabled();
     }
 
-    private static boolean isOpenSearchSectionEnabled() {
+    private static boolean isDatabaseSectionEnabled() {
         var current = RuntimeConfig.getState();
-        return current != null && current.sinks() != null && current.sinks().osEnabled();
+        boolean configured = current != null && current.sinks() != null && current.sinks().databaseEnabled();
+        return configured || RuntimeConfig.shouldRetainSearchStatsVisibility();
     }
 
     private static String formatKeyLabel(String key) {

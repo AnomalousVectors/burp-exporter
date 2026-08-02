@@ -78,16 +78,15 @@ class ConfigPanelStopLifecycleHeadlessTest {
             ConfigPanel panel = newPanelOnEdt();
             JButton startStop = (JButton) findByName(panel, "control.startStop");
             JTextArea controlStatus = findByName(panel, "control.status", JTextArea.class);
+            JCheckBox databaseEnabled = findByName(panel, "database.enable", JCheckBox.class);
             JCheckBox filesEnabled = findByName(panel, "files.enable", JCheckBox.class);
-            javax.swing.AbstractButton awsDestination =
-                    javax.swing.AbstractButton.class.cast(get(panel, "openSearchAmazonDestinationRadio"));
             JTextField filePathField = JTextField.class.cast(get(panel, "filePathField"));
             assertThat(startStop).isNotNull();
             assertThat(controlStatus).isNotNull();
 
             runEdt(() -> {
-                if (!awsDestination.isSelected()) {
-                    awsDestination.doClick();
+                if (databaseEnabled.isSelected()) {
+                    databaseEnabled.doClick();
                 }
                 if (!filesEnabled.isSelected()) {
                     filesEnabled.doClick();
@@ -114,7 +113,8 @@ class ConfigPanelStopLifecycleHeadlessTest {
                     .contains("[Export] Stopping: waiting for in-flight traffic batch …")
                     .contains("[Export] Stopping: clearing queued traffic …")
                     .contains("[Export] Stopping: pushing final exporter stats …")
-                    .contains("[Export] Stopping: closing OpenSearch connections …");
+                    .contains("[Export] Stopping: validating file artifacts …")
+                    .contains("[Export] Stopping: closing destination connections …");
             assertThat(infoMessages)
                     .noneMatch(message -> message.contains("collecting final OpenSearch counts"));
         } finally {

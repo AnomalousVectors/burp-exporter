@@ -6,7 +6,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +19,8 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
+import ai.anomalousvectors.tools.burp.utils.FileExportStats;
+import ai.anomalousvectors.tools.burp.utils.FileUtil;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -128,6 +132,40 @@ class ExportReporterLifecycleTest {
                     exchange.request(),
                     exchange.response(),
                     now).metadata()).isEqualTo(RepeaterMetadataFields.Metadata.empty());
+        } finally {
+            ExportReporterLifecycle.resetForTests();
+        }
+    }
+
+    @Test
+    void stopAndClearPendingExportWork_validatesArtifactsBeforeReleasingDirectoryLock()
+            throws Exception {
+        try {
+            Path root = TestPathSupport.createDirectory("file-stop-integrity")
+                    .toAbsolutePath()
+                    .normalize();
+            RuntimeConfig.updateState(fileExportState(root));
+            RuntimeConfig.setExportRunning(true);
+            String indexKey = "traffic";
+            List<FileExportService.FileInitResult> first =
+                    FileExportService.createSelectedExportFiles(List.of(ConfigKeys.SRC_TRAFFIC));
+            assertThat(first).allMatch(result -> result.status() != FileUtil.Status.FAILED);
+            Files.writeString(
+                    first.getFirst().path(),
+                    "{\"external\":true}\n",
+                    StandardOpenOption.APPEND);
+
+            ExportReporterLifecycle.stopAndClearPendingExportWork();
+
+            assertThat(FileExportStats.getArtifactIntegrity(indexKey))
+                    .isEqualTo(FileExportStats.ArtifactIntegrity.FAILED);
+            assertThat(FileExportStats.getLastError(indexKey))
+                    .contains("integrity lost");
+            assertThat(FileExportService.hasTrackedArtifacts()).isFalse();
+
+            List<FileExportService.FileInitResult> second =
+                    FileExportService.createSelectedExportFiles(List.of(ConfigKeys.SRC_TRAFFIC));
+            assertThat(second).allMatch(result -> result.status() != FileUtil.Status.FAILED);
         } finally {
             ExportReporterLifecycle.resetForTests();
         }

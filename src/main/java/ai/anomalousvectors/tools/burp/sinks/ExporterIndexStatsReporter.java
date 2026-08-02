@@ -6,11 +6,13 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.SystemMetrics;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -64,13 +66,14 @@ public final class ExporterIndexStatsReporter {
      * Pushes one stats snapshot immediately while export is running.
      *
      * <p>Safe to call from any thread. Returns immediately when export is stopped, the exporter
-     * stats sub-option is disabled, or no sink is enabled.</p>
+     * stats sub-option is disabled, or no sink is enabled. This is an on-demand push, not the
+     * scheduled periodic ticker.</p>
      */
     public static void pushSnapshotNow() {
         if (!ENABLED) {
             return;
         }
-        pushSnapshotInternal(true, false);
+        pushSnapshotInternal(SnapshotPushKind.ON_DEMAND);
     }
 
     /**
@@ -86,19 +89,22 @@ public final class ExporterIndexStatsReporter {
         if (!ENABLED) {
             return ExporterStatsPushOutcome.skippedDisabled();
         }
-        return pushSnapshotInternal(false, true);
+        return pushSnapshotInternal(SnapshotPushKind.FINAL);
     }
 
     /**
      * Returns whether a final stats snapshot should be attempted on extension unload.
      *
-     * <p>True when exporter stats are enabled, the exporter source is selected, a sink is active,
-     * and at least one document was exported this session.</p>
+     * <p>True only while an export run is still active and unload must substitute for normal Stop.
+     * A completed Stop already wrote its final snapshot; writing another during a later extension
+     * unload could auto-create a deleted Exporter index with destination defaults.</p>
      *
      * @return {@code true} when {@link #pushFinalSnapshotNow()} is worth attempting before pool close
      */
     public static boolean shouldAttemptFinalPushOnUnload() {
-        if (!ENABLED || !RuntimeConfig.isExporterStatsEnabled()) {
+        if (!ENABLED
+                || !RuntimeConfig.isExportRunning()
+                || !RuntimeConfig.isExporterStatsEnabled()) {
             return false;
         }
         if (!RuntimeConfig.isDataSourceEnabled(ConfigKeys.SRC_EXPORTER)) {
@@ -133,8 +139,13 @@ public final class ExporterIndexStatsReporter {
                 return;
             }
             int intervalSeconds = RuntimeConfig.exporterStatsIntervalSeconds();
+            RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
             SCHEDULER.getOrStart().scheduleAtFixedRate(
-                    ExporterIndexStatsReporter::pushSnapshot,
+                    () -> {
+                        if (RuntimeConfig.isExportRunActive(token)) {
+                            pushPeriodicSnapshot();
+                        }
+                    },
                     intervalSeconds,
                     intervalSeconds,
                     TimeUnit.SECONDS);
@@ -174,13 +185,26 @@ public final class ExporterIndexStatsReporter {
         }
     }
 
-    private static void pushSnapshot() {
-        pushSnapshotInternal(true, false);
+    private static void pushPeriodicSnapshot() {
+        pushSnapshotInternal(SnapshotPushKind.PERIODIC);
     }
 
-    private static ExporterStatsPushOutcome pushSnapshotInternal(boolean requireExportRunning, boolean finalSnapshot) {
+    /**
+     * Distinguishes scheduled periodic stats pushes from on-demand and Stop-time finals.
+     */
+    private enum SnapshotPushKind {
+        PERIODIC,
+        ON_DEMAND,
+        FINAL
+    }
+
+    private static ExporterStatsPushOutcome pushSnapshotInternal(SnapshotPushKind kind) {
+        boolean finalSnapshot = kind == SnapshotPushKind.FINAL;
         try {
-            if (requireExportRunning && !RuntimeConfig.isExportRunning()) {
+            if (!finalSnapshot && !RuntimeConfig.isExportRunning()) {
+                return ExporterStatsPushOutcome.skippedDisabled();
+            }
+            if (!finalSnapshot && ExportAdmissionController.shouldPauseExporterNonFinal()) {
                 return ExporterStatsPushOutcome.skippedDisabled();
             }
             if (!RuntimeConfig.isDataSourceEnabled(ConfigKeys.SRC_EXPORTER) || !RuntimeConfig.isExporterStatsEnabled()) {
@@ -189,16 +213,17 @@ public final class ExporterIndexStatsReporter {
             if (!RuntimeConfig.isAnySinkEnabled()) {
                 return ExporterStatsPushOutcome.skippedNoSink();
             }
-            String baseUrl = RuntimeConfig.openSearchUrl();
-            boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
+            String baseUrl = RuntimeConfig.searchBaseUrl();
+            boolean openSearchActive = RuntimeConfig.isSearchActive();
+            String indexName = RuntimeConfig.indexNameForKey("exporter");
             Map<String, Object> doc = buildSnapshotDoc(finalSnapshot);
             OpenSearchClientWrapper.ShutdownDocumentPushResult pushResult;
             if (finalSnapshot) {
                 pushResult = OpenSearchClientWrapper.pushDocumentDuringShutdown(
-                        baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc, true);
+                        baseUrl, indexName, "exporter", doc, true);
             } else {
                 boolean ok = OpenSearchClientWrapper.pushDocument(
-                        baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
+                        baseUrl, indexName, "exporter", doc);
                 pushResult = new OpenSearchClientWrapper.ShutdownDocumentPushResult(
                         ok, ok ? null : (openSearchActive ? "OpenSearch push returned false" : "file sink write failed"));
             }
@@ -208,7 +233,10 @@ public final class ExporterIndexStatsReporter {
             if (!ok) {
                 String reason = pushResult.resolvedFailureDetail();
                 if (finalSnapshot || shouldLogPeriodicFailure(openSearchActive, reason)) {
-                    Logger.logWarnPanelOnly("[SnapshotExport] Exporter stats: push failed: " + reason);
+                    Logger.logWarnPanelOnly(statsFailurePrefix(kind)
+                            + "Exporter stats: push failed"
+                            + " index=" + indexName
+                            + " reason=" + reason + ".");
                 }
                 return ExporterStatsPushOutcome.failed(reason);
             }
@@ -216,11 +244,19 @@ public final class ExporterIndexStatsReporter {
             return ExporterStatsPushOutcome.success();
         } catch (RuntimeException e) {
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            if (finalSnapshot || shouldLogPeriodicFailure(RuntimeConfig.isOpenSearchActive(), msg)) {
-                Logger.logWarnPanelOnly("[SnapshotExport] Exporter stats: push failed: " + msg);
+            if (finalSnapshot || shouldLogPeriodicFailure(RuntimeConfig.isSearchActive(), msg)) {
+                Logger.logWarnPanelOnly(statsFailurePrefix(kind)
+                        + "Exporter stats: push failed"
+                        + " reason=" + msg + ".");
             }
             return ExporterStatsPushOutcome.failed(msg);
         }
+    }
+
+    private static String statsFailurePrefix(SnapshotPushKind kind) {
+        return kind == SnapshotPushKind.PERIODIC
+                ? "[PeriodicExport] "
+                : "[SnapshotExport] ";
     }
 
     private static boolean shouldLogPeriodicFailure(boolean openSearchActive, String reason) {
@@ -337,10 +373,22 @@ public final class ExporterIndexStatsReporter {
             if (failures > 0) {
                 index.put("failures", failures);
             }
+            long bodyTruncations = ExportStats.getSearchBodyPrefixTruncations(key);
+            if (bodyTruncations > 0) {
+                index.put("body_truncations", bodyTruncations);
+            }
             if (RuntimeConfig.isAnyFileExportEnabled()) {
                 long written = FileExportStats.getWrittenCount(key);
                 if (written > 0) {
                     index.put("file_written", written);
+                }
+                long fileFailures = FileExportStats.getFailureCount(key);
+                if (fileFailures > 0) {
+                    index.put("file_failures", fileFailures);
+                }
+                long fileRetryAttempts = FileExportStats.getRetryAttemptCount(key);
+                if (fileRetryAttempts > 0) {
+                    index.put("file_retry_attempts", fileRetryAttempts);
                 }
             }
             indexes.put(key, index);
@@ -350,7 +398,7 @@ public final class ExporterIndexStatsReporter {
 
     private static long exportedCountForSnapshot(String key, boolean finalSnapshot) {
         long exported = ExportStats.getExportedCount(key);
-        if (finalSnapshot && "exporter".equals(key) && RuntimeConfig.isOpenSearchActive()) {
+        if (finalSnapshot && "exporter".equals(key) && RuntimeConfig.isSearchActive()) {
             return exported + 1L;
         }
         return exported;
@@ -408,7 +456,7 @@ public final class ExporterIndexStatsReporter {
     private static Map<String, Object> buildTrafficAttribution() {
         Map<String, Object> attribution = new LinkedHashMap<>();
         boolean includeFailures = ExportStats.getFailureCount("traffic") > 0;
-        if (RuntimeConfig.isOpenSearchActive()) {
+        if (RuntimeConfig.isSearchActive()) {
             Map<String, Object> openSearch = buildSinkAttribution(
                     ExportStats::getTrafficSourceSuccessCount,
                     ExportStats::getTrafficSourceFailureCount,
@@ -471,6 +519,14 @@ public final class ExporterIndexStatsReporter {
         if (permanentDrops > 0) {
             stats.put("permanent_drops_total", permanentDrops);
         }
+        Map<String, Long> permanentDropReasons = ExportStats.getPermanentDropReasonCounts();
+        if (!permanentDropReasons.isEmpty()) {
+            stats.put("permanent_drop_reason_counts", permanentDropReasons);
+        }
+        long retryAttempts = ExportStats.getTotalRetryAttempts();
+        if (retryAttempts > 0) {
+            stats.put("retry_drain_pushes_total", retryAttempts);
+        }
         long synthesizedDropped = ExportStats.getSynthesizedBodyParamsDropped();
         if (synthesizedDropped > 0) {
             stats.put("synthesized_body_params_dropped_total", synthesizedDropped);
@@ -528,11 +584,23 @@ public final class ExporterIndexStatsReporter {
             stats.put("repeater_live_metadata_sources", repeaterSources);
         }
         stats.put("snapshot_flush_executor", buildSnapshotFlushExecutorSection());
+        stats.put("snapshot_build_ahead", buildSnapshotBuildAheadSection());
         Map<String, Object> runPeaks = buildRunPeaksSection();
         if (!runPeaks.isEmpty()) {
             stats.put("run_peaks", runPeaks);
         }
         return stats;
+    }
+
+    private static Map<String, Object> buildSnapshotBuildAheadSection() {
+        Map<String, Object> section = new LinkedHashMap<>();
+        section.put("current_reserved_bytes", ExportStats.getSnapshotBuildAheadReservedBytes());
+        section.put("current_reserved_permits", ExportStats.getSnapshotBuildAheadReservedPermits());
+        section.put("peak_reserved_bytes", ExportStats.getPeakSnapshotBuildAheadReservedBytes());
+        section.put("peak_reserved_permits", ExportStats.getPeakSnapshotBuildAheadReservedPermits());
+        section.put("capacity_bytes", SnapshotExportEngine.maxBuildAheadBytes());
+        section.put("capacity_permits", SnapshotExportEngine.maxBuildAheadPermits());
+        return section;
     }
 
     private static Map<String, Object> buildRunPeaksSection() {
@@ -631,7 +699,7 @@ public final class ExporterIndexStatsReporter {
             run.put("file_flush_ms", snapshot.fileFlushMs());
         }
         if (snapshot.openSearchFlushMs() >= 0L) {
-            run.put("open_search_flush_ms", snapshot.openSearchFlushMs());
+            run.put("search_flush_ms", snapshot.openSearchFlushMs());
         }
         if (snapshot.buildWorkers() > 0) {
             run.put("build_workers", snapshot.buildWorkers());

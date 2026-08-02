@@ -5,9 +5,8 @@ import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 
-import org.junit.jupiter.api.Test;
-
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.Test;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -407,7 +406,7 @@ class FindingsIndexReporterTest {
         when(svc.host()).thenReturn("h"); when(svc.port()).thenReturn(443); when(svc.secure()).thenReturn(true);
 
         InteractionId iid = mock(InteractionId.class);
-        when(iid.toString()).thenReturn("abc123");
+        when(iid.toString()).thenReturn("00000000000000abc123");
         DnsDetails dnsDetails = mock(DnsDetails.class);
         when(dnsDetails.queryType()).thenReturn(DnsQueryType.A);
         ByteArray queryBytes = mock(ByteArray.class);
@@ -436,7 +435,7 @@ class FindingsIndexReporterTest {
         List<?> interactions = (List<?>) doc.get("collaborator");
         assertThat(interactions).hasSize(1);
         Map<?, ?> entry = (Map<?, ?>) interactions.get(0);
-        assertThat(entry.get("id")).isEqualTo("abc123");
+        assertThat(entry.get("id")).isEqualTo("00000000000000abc123");
         assertThat(entry.get("type")).isEqualTo("DNS");
         assertThat(entry.get("client_ip")).isEqualTo("198.51.100.42");
         assertThat(entry.get("client_port")).isEqualTo(54321);

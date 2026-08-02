@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.testutils;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,14 +43,30 @@ public final class SnapshotExportEngineTestSupport {
     }
 
     /**
-     * Builds a minimal prepared traffic document with an explicit bulk-byte estimate for chunk tests.
+     * Builds a prepared traffic document whose NDJSON length matches {@code estimatedBytes}.
+     *
+     * <p>Chunk assembly uses {@link PreparedExportDocument#resolvedBulkBytes()}, so tests that
+     * exercise byte caps must keep the serialized payload size aligned with the requested estimate.
+     * </p>
      */
     public static PreparedExportDocument preparedTrafficDoc(String indexName, int sequence, long estimatedBytes) {
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("sequence", sequence);
         document.put("request", Map.of("url", "https://example.test/item/" + sequence));
-        byte[] ndjson = ("{\"index\":{}}\n{\"sequence\":" + sequence + "}\n").getBytes(StandardCharsets.UTF_8);
-        return new PreparedExportDocument(indexName, "traffic", document, estimatedBytes, ndjson);
+        String operationId = "snapshot-test-" + sequence;
+        byte[] prefix = ("{\"index\":{\"_id\":\"" + operationId + "\"}}\n"
+                + "{\"sequence\":" + sequence + ",\"pad\":\"").getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = "\"}\n".getBytes(StandardCharsets.UTF_8);
+        int target = (int) Math.max(prefix.length + suffix.length, Math.min(Integer.MAX_VALUE, estimatedBytes));
+        byte[] ndjson = new byte[target];
+        System.arraycopy(prefix, 0, ndjson, 0, prefix.length);
+        int padLen = target - prefix.length - suffix.length;
+        if (padLen > 0) {
+            Arrays.fill(ndjson, prefix.length, prefix.length + padLen, (byte) 'x');
+        }
+        System.arraycopy(suffix, 0, ndjson, target - suffix.length, suffix.length);
+        return new PreparedExportDocument(
+                operationId, indexName, "traffic", document, ndjson.length, ndjson);
     }
 
     /**

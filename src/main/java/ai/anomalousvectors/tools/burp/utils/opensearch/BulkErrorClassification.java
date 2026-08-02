@@ -4,7 +4,7 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Classifies a per-item OpenSearch bulk error as either permanently rejected or transient/retryable.
+ * Classifies a per-item search database bulk error as permanent or transient.
  *
  * <p>Permanently rejected errors indicate the document will never succeed as-is - typically
  * mapping or schema violations such as the Lucene immense-term cap, exceeded nested-object
@@ -31,7 +31,15 @@ public enum BulkErrorClassification {
             "mapper_exception",
             "validation_exception",
             "parse_exception",
-            "query_shard_exception");
+            "query_shard_exception",
+            // Legacy/server-reported size failure; current senders structurally fit search copies.
+            "document_too_large",
+            "search_max_budget_exceeded");
+
+    /** Error type used when a prepared document exceeds the live {@code BulkByteBudget}. */
+    public static final String DOCUMENT_TOO_LARGE_TYPE = "document_too_large";
+    /** Error type used when structural fitting cannot meet the absolute search request ceiling. */
+    public static final String SEARCH_MAX_BUDGET_EXCEEDED_TYPE = "search_max_budget_exceeded";
 
     /**
      * Classifies a bulk item error based on its OpenSearch-supplied {@code type}.

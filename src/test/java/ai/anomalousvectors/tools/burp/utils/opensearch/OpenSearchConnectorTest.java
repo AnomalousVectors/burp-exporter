@@ -1,10 +1,17 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.opensearch.client.opensearch.OpenSearchClient;
+
+import ai.anomalousvectors.tools.burp.testutils.Reflect;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -112,5 +119,48 @@ class OpenSearchConnectorTest {
         OpenSearchConnector.getClassicHttpClient(DUMMY_URL, "user", "pass");
         OpenSearchConnector.closeAll();
         assertThatCode(OpenSearchConnector::closeAll).doesNotThrowAnyException();
+    }
+
+    @Test
+    void cacheCreationAndDetachment_shareOneLifecycleLock() throws Exception {
+        Object lifecycleLock = Reflect.getStatic(
+                OpenSearchConnector.class, "clientLifecycleLock", Object.class);
+        CountDownLatch ready = new CountDownLatch(2);
+        AtomicBoolean getterDone = new AtomicBoolean();
+        AtomicBoolean closerDone = new AtomicBoolean();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread getter = new Thread(() -> {
+            ready.countDown();
+            try {
+                OpenSearchConnector.getClassicHttpClient(DUMMY_URL, "user", "pass");
+                getterDone.set(true);
+            } catch (Throwable throwable) {
+                failure.compareAndSet(null, throwable);
+            }
+        });
+        Thread closer = new Thread(() -> {
+            ready.countDown();
+            try {
+                OpenSearchConnector.closeAll();
+                closerDone.set(true);
+            } catch (Throwable throwable) {
+                failure.compareAndSet(null, throwable);
+            }
+        });
+
+        synchronized (lifecycleLock) {
+            getter.start();
+            closer.start();
+            assertThat(ready.await(1, TimeUnit.SECONDS)).isTrue();
+            TimeUnit.MILLISECONDS.sleep(50L);
+            assertThat(getterDone.get()).isFalse();
+            assertThat(closerDone.get()).isFalse();
+        }
+        getter.join(2_000L);
+        closer.join(2_000L);
+
+        assertThat(failure.get()).isNull();
+        assertThat(getterDone.get()).isTrue();
+        assertThat(closerDone.get()).isTrue();
     }
 }

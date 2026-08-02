@@ -43,8 +43,12 @@ class OpenSearchGracefulStopAccountingIT {
     @AfterEach
     public void cleanup() {
         Logger.unregisterListener(listener);
-        RuntimeConfig.updateState(previous);
         RuntimeConfig.setExportRunning(false);
+        RuntimeConfig.setExportStarting(false);
+        RuntimeConfig.setExportStopping(false);
+        IndexingRetryCoordinator.getInstance().stopDrainThread();
+        IndexingRetryCoordinator.getInstance().clearPendingWork();
+        RuntimeConfig.updateState(previous);
         ExportStats.resetForTests();
         deleteIndex("traffic");
     }
@@ -94,7 +98,7 @@ class OpenSearchGracefulStopAccountingIT {
         assertThat(events).anySatisfy(e -> assertThat(e.message())
                 .contains("[OpenSearch]")
                 .contains("doPushBulk cancelled")
-                .contains("export stopped"));
+                .contains("Connection is closed"));
     }
 
     private record LogEvent(String level, String message) {

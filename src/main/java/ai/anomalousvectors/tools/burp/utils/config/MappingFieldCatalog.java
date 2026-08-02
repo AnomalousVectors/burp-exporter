@@ -11,7 +11,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Discovers export field paths from OpenSearch mapping JSON resources.
+ * Discovers export field paths from search mapping JSON resources.
  *
  * <p>Object nodes with child {@code properties} are directories (structural only): they are not
  * toggleable and must not appear in the Fields panel. Scalar and leaf object fields (e.g.
@@ -37,7 +37,7 @@ final class MappingFieldCatalog {
         if (cached != null) {
             return cached;
         }
-        String resource = "/opensearch/mappings/" + indexShortName + ".json";
+        String resource = SearchMappingResources.DEFAULT_ROOT + indexShortName + ".json";
         try (InputStream is = MappingFieldCatalog.class.getResourceAsStream(resource)) {
             if (is == null) {
                 return null;

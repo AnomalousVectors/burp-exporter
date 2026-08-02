@@ -156,7 +156,7 @@ class BodyEnumerationSkippedLogTest {
         flushLogListeners();
 
         assertThat(debugMessages).hasSize(1);
-        assertThat(debugMessages.get(0)).contains("during live");
+        assertThat(debugMessages.get(0)).contains("during periodic/live");
         assertThat(infoMessages).isEmpty();
     }
 

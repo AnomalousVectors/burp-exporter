@@ -88,7 +88,7 @@ class ReporterBacklogLoggingTest {
             FindingsIndexReporter.start();
             FindingsIndexReporter.pushSnapshotNow();
 
-            awaitInfoLine("[StartupExport] Findings: exporting backlog: 2 issue(s).");
+            awaitInfoLine("[StartupExport] Findings: exporting backlog: 2 issue(s) with adaptive startup slices.");
             awaitInfoLineStartingWith("[SnapshotExport] Findings: snapshot complete: captured=");
             awaitInfoLineStartingWith("[SnapshotExport] Findings: backlog filters: seen=");
         } finally {
@@ -113,7 +113,7 @@ class ReporterBacklogLoggingTest {
             SitemapIndexReporter.start();
             SitemapIndexReporter.pushSnapshotNow();
 
-            awaitInfoLine("[StartupExport] Sitemap: exporting backlog: 2 item(s).");
+            awaitInfoLine("[StartupExport] Sitemap: exporting backlog: 2 item(s) with adaptive startup slices.");
             awaitInfoLineStartingWith("[SnapshotExport] Sitemap: backlog filters: seen=2 exported=2 skipped_scope=0");
             assertThat(infoMessages.stream().noneMatch(line -> line.contains("skipped_duplicate"))).isTrue();
         } finally {
@@ -137,7 +137,7 @@ class ReporterBacklogLoggingTest {
             SitemapIndexReporter.start();
             SitemapIndexReporter.pushSnapshotNow();
 
-            awaitInfoLine("[StartupExport] Sitemap: exporting backlog: 1 item(s).");
+            awaitInfoLine("[StartupExport] Sitemap: exporting backlog: 1 item(s) with adaptive startup slices.");
             awaitInfoLineStartingWith("[SnapshotExport] Sitemap: snapshot complete: captured=");
             awaitInfoLineStartingWith("[SnapshotExport] Sitemap: backlog filters: seen=");
         } finally {
@@ -168,7 +168,7 @@ class ReporterBacklogLoggingTest {
             FindingsIndexReporter.start();
             FindingsIndexReporter.pushSnapshotNow();
 
-            awaitInfoLine("[StartupExport] Findings: exporting backlog: 3 issue(s).");
+            awaitInfoLine("[StartupExport] Findings: exporting backlog: 3 issue(s) with adaptive startup slices.");
             awaitInfoLineStartingWith(
                     "[SnapshotExport] Findings: backlog filters: seen=3 exported=2 skipped_scope=0 skipped_severity=0 skipped_non_exportable=1");
         } finally {
@@ -195,7 +195,7 @@ class ReporterBacklogLoggingTest {
             FindingsIndexReporter.start();
             FindingsIndexReporter.pushSnapshotNow();
 
-            awaitInfoLine("[StartupExport] Findings: exporting backlog: 2 issue(s).");
+            awaitInfoLine("[StartupExport] Findings: exporting backlog: 2 issue(s) with adaptive startup slices.");
             awaitInfoLineStartingWith(
                     "[SnapshotExport] Findings: backlog filters: seen=2 exported=1 skipped_scope=0 skipped_severity=0 skipped_non_exportable=1");
         } finally {
@@ -224,7 +224,7 @@ class ReporterBacklogLoggingTest {
             FindingsIndexReporter.start();
             FindingsIndexReporter.pushSnapshotNow();
 
-            awaitInfoLine("[StartupExport] Findings: exporting backlog: 2 issue(s).");
+            awaitInfoLine("[StartupExport] Findings: exporting backlog: 2 issue(s) with adaptive startup slices.");
             awaitInfoLineStartingWith(
                     "[SnapshotExport] Findings: backlog filters: seen=2 exported=1 skipped_scope=0 skipped_severity=1 skipped_non_exportable=0");
         } finally {
@@ -245,7 +245,8 @@ class ReporterBacklogLoggingTest {
             configureProxyWebSocketExport();
             ProxyWebSocketIndexReporter.pushHistoricSnapshotNow();
 
-            awaitInfoLine("[StartupExport] ProxyWebSocket: exporting history backlog: 1 frame(s).");
+            awaitInfoLine(
+                    "[StartupExport] ProxyWebSocket: exporting history backlog: 1 frame(s) with adaptive startup slices.");
             assertThat(infoMessages).noneMatch(line -> line.contains("snapshot complete"));
         } finally {
             Logger.unregisterListener(listener);
@@ -265,7 +266,8 @@ class ReporterBacklogLoggingTest {
             configureProxyHistoryExport();
             ProxyHistoryIndexReporter.pushSnapshotNow();
 
-            awaitInfoLine("[StartupExport] ProxyHistory: exporting backlog: 1 item(s).");
+            awaitInfoLine(
+                    "[StartupExport] ProxyHistory: exporting backlog: 1 item(s) with adaptive startup slices.");
             awaitInfoLineStartingWith("[SnapshotExport] ProxyHistory: snapshot complete: captured=");
         } finally {
             Logger.unregisterListener(listener);

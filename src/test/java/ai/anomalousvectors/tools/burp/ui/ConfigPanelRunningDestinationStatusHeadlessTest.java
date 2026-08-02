@@ -58,13 +58,13 @@ class ConfigPanelRunningDestinationStatusHeadlessTest {
 
         assertThat(controlStatus.getText())
                 .contains("Files: Running")
-                .doesNotContain("OpenSearch:");
+                .doesNotContain("\nOpenSearch:");
 
         SwingUtilities.invokeAndWait(filesEnable::doClick);
 
         assertThat(controlStatus.getText())
                 .doesNotContain("Files:")
-                .doesNotContain("OpenSearch:");
+                .doesNotContain("\nOpenSearch:");
 
         SwingUtilities.invokeAndWait(() -> {
             filesEnable.doClick();

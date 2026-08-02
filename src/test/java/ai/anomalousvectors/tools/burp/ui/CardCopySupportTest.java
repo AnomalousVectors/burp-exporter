@@ -79,7 +79,7 @@ class CardCopySupportTest {
         Component first = card.getComponent(0);
         assertThat(first).isInstanceOf(JPanel.class);
         // The header must clamp its max height to its preferred so BoxLayout.Y_AXIS surplus
-        // does not get absorbed (the regression that produced the gap above "Global").
+        // does not get absorbed (the regression that produced the gap above "Overview").
         JPanel header = (JPanel) first;
         assertThat(header.getMaximumSize().height).isEqualTo(header.getPreferredSize().height);
         // Verify the header carries the named Copy button keyed by card title.
@@ -119,14 +119,14 @@ class CardCopySupportTest {
         LinkedHashMap<String, String> global = new LinkedHashMap<>();
         global.put("Export Running", "false");
         global.put("Traffic Queue Size", "0");
-        sections.put("Global", global);
+        sections.put("Overview", global);
         LinkedHashMap<String, String> process = new LinkedHashMap<>();
         process.put("Heap Used / Max", "128 MiB / 512 MiB (25%)");
         sections.put("Process", process);
 
         String text = CardCopySupport.sectionsToText("Misc Stats", sections);
         assertThat(text).startsWith("Misc Stats\n");
-        assertThat(text).contains("\nGlobal\n");
+        assertThat(text).contains("\nOverview\n");
         assertThat(text).contains("  Export Running: false\n");
         assertThat(text).contains("  Traffic Queue Size: 0\n");
         assertThat(text).contains("\nProcess\n");

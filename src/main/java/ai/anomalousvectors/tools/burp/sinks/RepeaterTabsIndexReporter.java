@@ -29,6 +29,12 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
+import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
+import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
+import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
@@ -65,8 +71,7 @@ public final class RepeaterTabsIndexReporter {
     private static final String TOOL_TYPE_KEY = "repeater_tabs";
     private static final int STARTUP_TAB_WALK_DELAY_MS = 350;
     private static final int STARTUP_TAB_WALK_SECOND_PASS_DELAY_MS = 1_600;
-    private static final int STARTUP_TAB_WALK_STEP_DELAY_MS = 5;
-    private static final int STARTUP_TAB_WALK_STEPS_PER_TICK = 12;
+    private static final int STARTUP_TAB_WALK_STEP_DELAY_MS = 25;
     private static final int STARTUP_EXPORT_SUMMARY_WAIT_MS = 5_000;
     private static final int STARTUP_DUPLICATE_SLOT_TRACE_LIMIT = 3;
     private static final Map<String, CapturedRepeaterItem> CAPTURED = new ConcurrentHashMap<>();
@@ -116,6 +121,95 @@ public final class RepeaterTabsIndexReporter {
         CAPTURED.values().stream()
                 .sorted(Comparator.comparingLong(item -> item.firstSeenAtMs))
                 .forEach(RepeaterTabsIndexReporter::queueForCurrentRun);
+    }
+
+    /**
+     * Replays cached Repeater snapshots directly to the recovering search destination.
+     *
+     * <p>This method is synchronous and bypasses {@link TrafficExportQueue}. The recovery flag
+     * suppresses Files while each prepared chunk uses the normal search bulk path. Existing live
+     * traffic remains queued until authorization recovery clears its pause.</p>
+     */
+    static boolean replaySearchRecoverySnapshot(ExportRunToken token) {
+        return replaySearchRecoverySnapshot(
+                token,
+                (baseUrl, indexName, indexKey, documents) ->
+                        OpenSearchClientWrapper.pushPreparedBulk(baseUrl, indexName, indexKey, documents));
+    }
+
+    /** Runs the direct replay with a replaceable sender for focused queue/file isolation tests. */
+    static boolean replaySearchRecoverySnapshot(
+            ExportRunToken token,
+            RecoveryBulkSender sender) {
+        if (!RuntimeConfig.isExportRunActive(token) || !RuntimeConfig.isSearchRecoveryReplay()) {
+            return false;
+        }
+        if (!RuntimeConfig.isSearchTrafficEnabled()
+                || !RuntimeConfig.isTrafficToolTypeEnabled(TOOL_TYPE_KEY)) {
+            return true;
+        }
+        if (sender == null) {
+            return false;
+        }
+
+        String indexName = TrafficRouteBucket.trafficIndexName();
+        String baseUrl = RuntimeConfig.searchBaseUrl();
+        int maxBatch = SnapshotBatchTuning.initialTarget();
+        long maxBytes = Math.max(1L, BulkByteBudget.currentMaxBytes());
+        List<PreparedExportDocument> batch = new ArrayList<>(maxBatch);
+        long batchBytes = 0L;
+        List<CapturedRepeaterItem> captured = CAPTURED.values().stream()
+                .sorted(Comparator.comparingLong(item -> item.firstSeenAtMs))
+                .toList();
+        for (CapturedRepeaterItem item : captured) {
+            if (!RuntimeConfig.isExportRunActive(token)) {
+                return false;
+            }
+            Map<String, Object> document =
+                    buildDocument(item.requestResponse, item.repeaterTabName, item.repeaterGroupName);
+            if (document == null) {
+                continue;
+            }
+            PreparedExportDocument prepared =
+                    ExportDocumentIdentity.prepare(indexName, TrafficRouteBucket.INDEX_KEY, document);
+            long documentBytes = prepared.resolvedBulkBytes();
+            if (!batch.isEmpty()
+                    && (batch.size() >= maxBatch || batchBytes + documentBytes > maxBytes)) {
+                sendRecoveryBatch(sender, baseUrl, indexName, batch);
+                batch = new ArrayList<>(maxBatch);
+                batchBytes = 0L;
+            }
+            batch.add(prepared);
+            batchBytes += documentBytes;
+        }
+        if (!batch.isEmpty() && RuntimeConfig.isExportRunActive(token)) {
+            sendRecoveryBatch(sender, baseUrl, indexName, batch);
+        }
+        return RuntimeConfig.isExportRunActive(token);
+    }
+
+    private static void sendRecoveryBatch(
+            RecoveryBulkSender sender,
+            String baseUrl,
+            String indexName,
+            List<PreparedExportDocument> batch) {
+        BulkPushOutcome outcome =
+                sender.push(baseUrl, indexName, TrafficRouteBucket.INDEX_KEY, List.copyOf(batch));
+        TrafficRouteBucket.recordBulkOutcome(
+                new TrafficRouteBucket.Route(TrafficRouteBucket.Kind.TOOL_TYPE, TOOL_TYPE),
+                outcome,
+                true,
+                "Repeater recovery replay");
+    }
+
+    /** Synchronously sends one prepared Repeater replay chunk to the search bulk path. */
+    @FunctionalInterface
+    interface RecoveryBulkSender {
+        BulkPushOutcome push(
+                String baseUrl,
+                String indexName,
+                String indexKey,
+                List<PreparedExportDocument> documents);
     }
 
     /** Clears per-run capture state so the next Start can export cached history again. */
@@ -576,14 +670,19 @@ public final class RepeaterTabsIndexReporter {
         return RepeaterMetadataTraceLabels.historyMetadataSource(captureKey);
     }
 
-    private static void logStartupExportCompletionSummary(String startupSession) {
+    private static void logStartupExportCompletionSummary(String startupSession, boolean deliveryComplete) {
         StartupExportStatsSnapshot snapshot = startupExportStatsSnapshot;
         int newCaptures = Math.max(0, CAPTURED.size() - snapshot.captureCountBefore());
         String body = SnapshotSummary.formatCompletionBody(snapshot.baseline(), true, true);
-        Logger.logInfoPanelOnly("[StartupExport] Repeater Tabs: export complete startupSession="
+        SnapshotSummary.CompletionDeltas deltas = SnapshotSummary.completionDeltas(snapshot.baseline());
+        long pending = startupDeliveryPending(newCaptures, deltas);
+        Logger.logInfoPanelOnly("[StartupExport] Repeater Tabs: "
+                + (deliveryComplete ? "export complete" : "capture complete")
+                + " startupSession="
                 + RepeaterMetadataTraceLabels.safeValue(startupSession)
                 + " captured " + newCaptures + " tab(s)"
                 + (body.isEmpty() ? "" : "; " + body)
+                + (deliveryComplete ? "" : "; delivery_pending=" + pending)
                 + "; " + describeStartupMetadataSummary() + ".");
         TrafficStartupBacklogSummary.complete(
                 TrafficStartupBacklogSummary.Component.REPEATER_TABS,
@@ -600,12 +699,13 @@ public final class RepeaterTabsIndexReporter {
             if (generation != RUN_GENERATION.get()) {
                 return;
             }
-            if (!idle && !startupExportCountersComplete()) {
+            boolean deliveryComplete = startupExportCountersComplete();
+            if (!idle && !deliveryComplete) {
                 Logger.logDebug("[RepeaterTabs] Startup export summary proceeding before traffic queue idle "
                         + "startupSession=" + startupSession
                         + " timeoutMs=" + STARTUP_EXPORT_SUMMARY_WAIT_MS);
             }
-            logStartupExportCompletionSummary(startupSession);
+            logStartupExportCompletionSummary(startupSession, deliveryComplete);
         }, "burp-exporter-repeater-startup-summary");
         summaryThread.setDaemon(true);
         summaryThread.start();
@@ -618,7 +718,23 @@ public final class RepeaterTabsIndexReporter {
             return true;
         }
         SnapshotSummary.CompletionDeltas deltas = SnapshotSummary.completionDeltas(snapshot.baseline());
-        return deltas.fileSuccess() >= newCaptures && deltas.openSearchSuccess() >= newCaptures;
+        boolean fileComplete = !RuntimeConfig.isAnyFileExportEnabled()
+                || deltas.fileSuccess() + deltas.fileFailure() >= newCaptures;
+        boolean openSearchComplete = !RuntimeConfig.isSearchActive()
+                || deltas.openSearchSuccess() + deltas.openSearchFailure() >= newCaptures;
+        return fileComplete && openSearchComplete;
+    }
+
+    private static long startupDeliveryPending(
+            int captured,
+            SnapshotSummary.CompletionDeltas deltas) {
+        long filePending = RuntimeConfig.isAnyFileExportEnabled()
+                ? Math.max(0L, captured - deltas.fileSuccess() - deltas.fileFailure())
+                : 0L;
+        long openSearchPending = RuntimeConfig.isSearchActive()
+                ? Math.max(0L, captured - deltas.openSearchSuccess() - deltas.openSearchFailure())
+                : 0L;
+        return Math.max(filePending, openSearchPending);
     }
 
     private static record StartupExportStatsSnapshot(
@@ -1318,15 +1434,14 @@ public final class RepeaterTabsIndexReporter {
                 selectionChanges++;
             }
             try {
-                int stepsThisTick = 0;
-                while (nextStepIndex < plan.steps().size() && stepsThisTick < STARTUP_TAB_WALK_STEPS_PER_TICK) {
-                    StartupTabSelectionStep step = plan.steps().get(nextStepIndex++);
-                    currentStartupSelectionMetadata = step.metadata();
-                    if (step.pane().getSelectedIndex() != step.selectedIndex()) {
-                        step.pane().setSelectedIndex(step.selectedIndex());
-                        selectionChanges++;
-                    }
-                    stepsThisTick++;
+                // Selecting a Burp Repeater tab can synchronously construct and paint a substantial
+                // editor tree. Process only one selection per timer tick so pending input and paint
+                // events get an opportunity to run between capture steps.
+                StartupTabSelectionStep step = plan.steps().get(nextStepIndex++);
+                currentStartupSelectionMetadata = step.metadata();
+                if (step.pane().getSelectedIndex() != step.selectedIndex()) {
+                    step.pane().setSelectedIndex(step.selectedIndex());
+                    selectionChanges++;
                 }
             } finally {
                 currentStartupSelectionMetadata = null;

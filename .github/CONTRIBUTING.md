@@ -21,6 +21,8 @@ Thanks for your interest in contributing.
 
 ## Testing
 
+For Gradle commands, static analysis checks, and local vs CI OpenSearch integration test notes, see the repository wiki [Contributor Guide](https://github.com/AnomalousVectors/burp-exporter/wiki/Contributor-Guide).
+
 - For code changes, run the full test and build from the repository root:
   - Add opensearch.url to your host file and point to your configured OpenSearch instance.
   - Run `gradle clean build -POPENSEARCH_USER=admin -POPENSEARCH_PASSWORD=<yourPassword>`

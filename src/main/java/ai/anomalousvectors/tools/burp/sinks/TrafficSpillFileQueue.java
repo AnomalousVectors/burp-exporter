@@ -23,10 +23,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.Version;
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths;
+import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 /**
@@ -154,7 +156,8 @@ final class TrafficSpillFileQueue {
         lock.lock();
         try {
             pruneExpiredLocked(System.currentTimeMillis());
-            if (files.size() >= maxFiles || (totalBytes + payload.length) > maxBytes) {
+            long effectiveMax = effectiveMaxBytesLocked();
+            if (files.size() >= maxFiles || (totalBytes + payload.length) > effectiveMax) {
                 return OfferResult.REJECTED_LIMIT;
             }
             ensureDirectoryExists();
@@ -175,6 +178,45 @@ final class TrafficSpillFileQueue {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Returns whether spill can still accept approximately {@code payloadBytes} more data.
+     *
+     * <p>Does not write. Used for Overview Full status and live admission without preparing a
+     * document that would be rejected.</p>
+     */
+    boolean canAcceptBytes(long payloadBytes) {
+        lock.lock();
+        try {
+            pruneExpiredLocked(System.currentTimeMillis());
+            long need = Math.max(1L, payloadBytes);
+            if (files.size() >= maxFiles || (totalBytes + need) > effectiveMaxBytesLocked()) {
+                return false;
+            }
+            long usable = DiskSpaceGuard.usableSpacePublic(directory);
+            if (usable < 0L) {
+                return true;
+            }
+            return usable - need >= DiskSpaceGuard.MIN_FREE_BYTES;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Returns the effective spill byte budget (headroom-relative, capped by ctor max). */
+    long effectiveBudgetBytes() {
+        lock.lock();
+        try {
+            return effectiveMaxBytesLocked();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private long effectiveMaxBytesLocked() {
+        long headroomBudget = ExportAdmissionController.spillBudgetBytes(directory);
+        return Math.max(1L, Math.min(maxBytes, headroomBudget));
     }
 
     private byte[] buildPayload(Map<String, Object> envelope) {
@@ -497,6 +539,7 @@ final class TrafficSpillFileQueue {
     private Map<String, Object> buildSpillEnvelope(PreparedExportDocument prepared) {
         Map<String, Object> envelope = buildSpillEnvelope(prepared.document());
         Map<String, Object> preparedFields = new HashMap<>();
+        preparedFields.put("operation_id", prepared.operationId());
         preparedFields.put("index_name", prepared.indexName());
         preparedFields.put("index_key", prepared.indexKey());
         preparedFields.put("estimated_bulk_bytes", prepared.estimatedBulkBytes());
@@ -512,14 +555,21 @@ final class TrafficSpillFileQueue {
         if (preparedNode != null && preparedNode.isObject() && docNode != null && docNode.isObject()) {
             String indexName = textValue(preparedNode.get("index_name"));
             String indexKey = textValue(preparedNode.get("index_key"));
+            String operationId = textValue(preparedNode.get("operation_id"));
             JsonNode bytesNode = preparedNode.get("bulk_ndjson_bytes");
             if (indexName != null && indexKey != null && bytesNode != null) {
                 byte[] bulkBytes = bytesNode.binaryValue();
                 if (bulkBytes != null && bulkBytes.length > 0) {
-                    long estimatedBytes = preparedNode.path("estimated_bulk_bytes").asLong(bulkBytes.length);
                     Map<String, Object> document = JSON.convertValue(docNode, DOC_TYPE);
+                    if (operationId == null) {
+                        // Legacy prepared spills had action metadata without an id. Re-prepare once
+                        // so all future retry/re-spill cycles carry one stable operation identity.
+                        return TrafficQueueEntry.fromPrepared(
+                                ExportDocumentIdentity.prepare(indexName, indexKey, document));
+                    }
+                    long estimatedBytes = preparedNode.path("estimated_bulk_bytes").asLong(bulkBytes.length);
                     return TrafficQueueEntry.fromPrepared(new PreparedExportDocument(
-                            indexName, indexKey, document, estimatedBytes, bulkBytes));
+                            operationId, indexName, indexKey, document, estimatedBytes, bulkBytes));
                 }
             }
         }

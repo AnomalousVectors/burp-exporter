@@ -32,4 +32,16 @@ class AutoSizingTextFieldTest {
                 .as("lower bound is at least 80")
                 .isGreaterThanOrEqualTo(80);
     }
+
+    @Test
+    void credential_min_width_doubles_empty_floor() {
+        AutoSizingTextField defaultEmpty = new AutoSizingTextField("");
+        AutoSizingTextField credentialEmpty = new AutoSizingTextField(
+                "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+
+        assertThat(AutoSizingTextField.CREDENTIAL_MIN_WIDTH).isEqualTo(160);
+        assertThat(credentialEmpty.getPreferredSize().width)
+                .isEqualTo(AutoSizingTextField.CREDENTIAL_MIN_WIDTH)
+                .isEqualTo(defaultEmpty.getPreferredSize().width * 2);
+    }
 }

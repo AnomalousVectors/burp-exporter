@@ -1,5 +1,9 @@
 {
-  "settings": {},
+  "settings": {
+    "number_of_shards": 1,
+    "auto_expand_replicas": "0-1",
+    "refresh_interval": "5s"
+  },
   "mappings": {
     "dynamic": true,
     "properties": {

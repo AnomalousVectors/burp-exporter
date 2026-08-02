@@ -7,7 +7,24 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
+
 class ExportStatsTest {
+
+    @Test
+    void recordLastActiveSearchCapacity_keepsFirstStopSnapshotAndResetsForNextRun() {
+        ExportStats.resetForTests();
+
+        ExportStats.recordLastActiveSearchCapacity(5L * 1024L * 1024L, 3);
+        ExportStats.recordLastActiveSearchCapacity(1024L * 1024L, 1);
+
+        assertThat(ExportStats.getLastActiveBulkByteBudget()).isEqualTo(5L * 1024L * 1024L);
+        assertThat(ExportStats.getLastActiveSnapshotFlushCap()).isEqualTo(3);
+
+        ExportStats.recordExportStartRequested();
+        assertThat(ExportStats.getLastActiveBulkByteBudget()).isZero();
+        assertThat(ExportStats.getLastActiveSnapshotFlushCap()).isZero();
+    }
 
     @Test
     void bulkInFlight_startAndEndBracketActivity() {
@@ -77,6 +94,65 @@ class ExportStatsTest {
         long totalBefore = ExportStats.getTotalFailureCount();
         ExportStats.recordFailure("exporter", 1);
         assertThat(ExportStats.getTotalFailureCount()).isEqualTo(totalBefore + 1);
+    }
+
+    @Test
+    void recordRetryRecovery_reducesOutstandingWithoutClearingAttempts() {
+        ExportStats.resetForTests();
+        ExportStats.recordFailure("sitemap", 50);
+        assertThat(ExportStats.getOutstandingFailureCount("sitemap")).isEqualTo(50);
+
+        ExportStats.recordRetryRecovery("sitemap", 50);
+        assertThat(ExportStats.getFailureCount("sitemap")).isEqualTo(50);
+        assertThat(ExportStats.getRecoveredFailureCount("sitemap")).isEqualTo(50);
+        assertThat(ExportStats.getOutstandingFailureCount("sitemap")).isEqualTo(0);
+        assertThat(ExportStats.getTotalOutstandingFailureCount()).isEqualTo(0);
+    }
+
+    @Test
+    void permanentAndRetryDrops_reduceOutstandingWithoutClearingAttempts() {
+        ExportStats.resetForTests();
+        ExportStats.recordFailure("sitemap", 50);
+        ExportStats.recordPermanentDrop("sitemap", 10);
+        ExportStats.recordRetryQueueDrop("sitemap", 5);
+        assertThat(ExportStats.getFailureCount("sitemap")).isEqualTo(50);
+        assertThat(ExportStats.getOutstandingFailureCount("sitemap")).isEqualTo(35);
+    }
+
+    @Test
+    void permanentDropReasons_areStableAndResetPerRun() {
+        ExportStats.resetForTests();
+        ExportStats.recordPermanentDropReason(ExportStats.PERMANENT_DROP_REASON_MAX_FIT, 2);
+        ExportStats.recordPermanentDropReason(ExportStats.PERMANENT_DROP_REASON_STOP, 1);
+
+        assertThat(ExportStats.getPermanentDropReasonCounts())
+                .containsEntry(ExportStats.PERMANENT_DROP_REASON_MAX_FIT, 2L)
+                .containsEntry(ExportStats.PERMANENT_DROP_REASON_STOP, 1L);
+
+        ExportStats.resetForRun();
+        assertThat(ExportStats.getPermanentDropReasonCounts()).isEmpty();
+    }
+
+    @Test
+    void recordRetryAttempt_incrementsPerIndexAndTotal() {
+        ExportStats.resetForTests();
+        ExportStats.recordRetryAttempt("traffic", 10);
+        ExportStats.recordRetryAttempt("traffic", 5);
+        ExportStats.recordRetryAttempt("sitemap", 2);
+        assertThat(ExportStats.getRetryAttempts("traffic")).isEqualTo(15);
+        assertThat(ExportStats.getRetryAttempts("sitemap")).isEqualTo(2);
+        assertThat(ExportStats.getTotalRetryAttempts()).isEqualTo(17);
+        ExportStats.recordRetryAttempt("traffic", 0);
+        assertThat(ExportStats.getRetryAttempts("traffic")).isEqualTo(15);
+    }
+
+    @Test
+    void clearLastError_removesStoredMessage() {
+        ExportStats.resetForTests();
+        ExportStats.recordLastError("sitemap", "Bulk push had 50 failure(s)");
+        assertThat(ExportStats.getLastError("sitemap")).contains("50");
+        ExportStats.clearLastError("sitemap");
+        assertThat(ExportStats.getLastError("sitemap")).isNull();
     }
 
     @Test
@@ -240,6 +316,60 @@ class ExportStatsTest {
     }
 
     @Test
+    void recordRetryDrainBulkSuccess_countsExportsWithoutReCountingFailures() {
+        ExportStats.resetForTests();
+        ExportStats.recordFailure("traffic", 5);
+        assertThat(ExportStats.getFailureCount("traffic")).isEqualTo(5L);
+        assertThat(ExportStats.getExportedCount("traffic")).isZero();
+
+        // Simulates a partial drain recovery: 3 succeeded, 2 still failed in the bulk response.
+        ExportStats.recordRetryDrainBulkSuccess("traffic", BulkOutcomeBreakdown.classified(3, 5));
+        ExportStats.recordRetryRecovery("traffic", 3);
+
+        assertThat(ExportStats.getExportedCount("traffic")).isEqualTo(3L);
+        assertThat(ExportStats.getFailureCount("traffic")).isEqualTo(5L);
+        assertThat(ExportStats.getRecoveredFailureCount("traffic")).isEqualTo(3L);
+        assertThat(ExportStats.getOutstandingFailureCount("traffic")).isEqualTo(2L);
+
+        // Contrast: recordBulkBreakdown would incorrectly inflate Failures by the still-failed 2.
+        ExportStats.recordBulkBreakdown("traffic", BulkOutcomeBreakdown.classified(0, 2));
+        assertThat(ExportStats.getFailureCount("traffic")).isEqualTo(7L);
+    }
+
+    @Test
+    void softOutageAndCapacityEventCounters_incrementAndResetOnStart() {
+        ExportStats.resetForTests();
+        assertThat(ExportStats.getSoftOutageEntries()).isZero();
+        assertThat(ExportStats.getCapacityPressureEvents()).isZero();
+
+        ExportStats.recordSoftOutageEntry();
+        ExportStats.recordSoftOutageEntry();
+        ExportStats.recordCapacityPressureEvent();
+        assertThat(ExportStats.getSoftOutageEntries()).isEqualTo(2L);
+        assertThat(ExportStats.getCapacityPressureEvents()).isEqualTo(1L);
+
+        ExportStats.recordExportStartRequested();
+        assertThat(ExportStats.getSoftOutageEntries()).isZero();
+        assertThat(ExportStats.getCapacityPressureEvents()).isZero();
+    }
+
+    @Test
+    void searchBodyPrefixTruncations_incrementAndResetOnStart() {
+        ExportStats.resetForTests();
+        assertThat(ExportStats.getSearchBodyPrefixTruncations()).isZero();
+
+        ExportStats.recordSearchBodyPrefixTruncation("traffic");
+        ExportStats.recordSearchBodyPrefixTruncation("findings");
+        assertThat(ExportStats.getSearchBodyPrefixTruncations()).isEqualTo(2L);
+        assertThat(ExportStats.getSearchBodyPrefixTruncations("traffic")).isEqualTo(1L);
+        assertThat(ExportStats.getSearchBodyPrefixTruncations("findings")).isEqualTo(1L);
+
+        ExportStats.recordExportStartRequested();
+        assertThat(ExportStats.getSearchBodyPrefixTruncations()).isZero();
+        assertThat(ExportStats.getSearchBodyPrefixTruncations("traffic")).isZero();
+    }
+
+    @Test
     void recordSkipReason_incrementsPerReasonAndTotal_andIgnoresBlankOrZero() {
         ExportStats.resetForTests();
         ExportStats.recordSkipReason("scope", 3);
@@ -338,13 +468,26 @@ class ExportStatsTest {
 
         ExportStats.recordSnapshotLastRun(
                 ExportStats.SNAPSHOT_PROXY_HISTORY, 100, 100, 1_000, 400, 2, 2_000_000L, 200, 400, 900, 2);
+        ExportStats.recordSnapshotChunkFlushMs(300L);
+        ExportStats.recordSnapshotChunkFlushMs(700L);
+        ExportStats.recordSnapshotChunkFlushMs(500L);
         assertThat(ExportStats.getPeakSnapshotChunkTarget()).isEqualTo(400);
-        assertThat(ExportStats.getPeakSnapshotFlushMs()).isEqualTo(900);
+        assertThat(ExportStats.getPeakSnapshotFlushMs()).isEqualTo(700);
+
+        ExportStats.reserveSnapshotBuildAhead(4, 256L * 1024L);
+        ExportStats.reserveSnapshotBuildAhead(2, 128L * 1024L);
+        ExportStats.releaseSnapshotBuildAhead(2, 128L * 1024L);
+        assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isEqualTo(4);
+        assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isEqualTo(256L * 1024L);
+        assertThat(ExportStats.getPeakSnapshotBuildAheadReservedPermits()).isEqualTo(6);
+        assertThat(ExportStats.getPeakSnapshotBuildAheadReservedBytes()).isEqualTo(384L * 1024L);
 
         ExportStats.recordExportStartRequested();
         assertThat(ExportStats.getPeakTrafficQueueDocs()).isZero();
         assertThat(ExportStats.getPeakSnapshotChunkTarget()).isZero();
         assertThat(ExportStats.getPeakSnapshotFlushMs()).isZero();
+        assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
+        assertThat(ExportStats.getPeakSnapshotBuildAheadReservedPermits()).isZero();
     }
 
     @Test

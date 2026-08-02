@@ -4,9 +4,11 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 
 /**
  * Aggregates the initial traffic backlog reporters into one startup completion line.
@@ -31,7 +33,7 @@ public final class TrafficStartupBacklogSummary {
     }
 
     private static final Object LOCK = new Object();
-    private static int generation;
+    private static ExportRunToken runToken;
     private static EnumSet<Component> expected = EnumSet.noneOf(Component.class);
     private static EnumMap<Component, ComponentResult> completed = new EnumMap<>(Component.class);
     private static boolean fileActive;
@@ -47,12 +49,21 @@ public final class TrafficStartupBacklogSummary {
      * scheduled.</p>
      */
     public static void startForCurrentRun() {
+        startForCurrentRun(RuntimeConfig.currentExportRunToken());
+    }
+
+    /**
+     * Starts a fresh aggregate for the supplied export run.
+     *
+     * @param token current run token used to reject late completion from an earlier run
+     */
+    public static void startForCurrentRun(ExportRunToken token) {
         synchronized (LOCK) {
-            generation++;
+            runToken = token;
             expected = expectedComponentsForCurrentConfig();
             completed = new EnumMap<>(Component.class);
             fileActive = RuntimeConfig.isAnyFileExportEnabled();
-            openSearchActive = RuntimeConfig.isOpenSearchActive();
+            openSearchActive = RuntimeConfig.isSearchActive();
             logged = expected.isEmpty();
         }
     }
@@ -72,7 +83,7 @@ public final class TrafficStartupBacklogSummary {
     /** Clears the aggregate without emitting a completion line. */
     public static void clearRunState() {
         synchronized (LOCK) {
-            generation++;
+            runToken = null;
             expected = EnumSet.noneOf(Component.class);
             completed = new EnumMap<>(Component.class);
             fileActive = false;
@@ -92,17 +103,31 @@ public final class TrafficStartupBacklogSummary {
      * @param baseline counter baseline captured before that reporter started
      */
     static void complete(Component component, int captured, SnapshotSummary.Baseline baseline) {
+        complete(
+                component,
+                captured,
+                baseline,
+                RuntimeConfig.currentExportRunToken());
+    }
+
+    static void complete(
+            Component component,
+            int captured,
+            SnapshotSummary.Baseline baseline,
+            ExportRunToken token) {
         if (component == null) {
             return;
         }
         String line = null;
         synchronized (LOCK) {
-            if (!RuntimeConfig.isExportRunning() || logged || !expected.contains(component)) {
+            if (!RuntimeConfig.isExportRunActive(token)
+                    || !Objects.equals(runToken, token)
+                    || logged
+                    || !expected.contains(component)) {
                 return;
             }
-            int runGeneration = generation;
             completed.put(component, ComponentResult.from(captured, baseline));
-            if (completed.keySet().containsAll(expected) && runGeneration == generation) {
+            if (completed.keySet().containsAll(expected)) {
                 logged = true;
                 line = formatCompletionLine();
             }
@@ -192,25 +217,38 @@ public final class TrafficStartupBacklogSummary {
         long openSearchFailure = 0L;
         for (Component component : expected) {
             ComponentResult result = completed.getOrDefault(component, ComponentResult.empty());
+            SnapshotSummary.CompletionDeltas deltas = result.currentDeltas();
             captured += result.captured();
-            fileSuccess += result.deltas().fileSuccess();
-            fileFailure += result.deltas().fileFailure();
-            openSearchSuccess += result.deltas().openSearchSuccess();
-            openSearchFailure += result.deltas().openSearchFailure();
+            fileSuccess += deltas.fileSuccess();
+            fileFailure += deltas.fileFailure();
+            openSearchSuccess += deltas.openSearchSuccess();
+            openSearchFailure += deltas.openSearchFailure();
         }
         return new Totals(captured, fileSuccess, fileFailure, openSearchSuccess, openSearchFailure);
     }
 
-    record ComponentResult(int captured, SnapshotSummary.CompletionDeltas deltas) {
+    record ComponentResult(
+            int captured,
+            SnapshotSummary.CompletionDeltas deltas,
+            SnapshotSummary.Baseline baseline) {
+
+        ComponentResult(int captured, SnapshotSummary.CompletionDeltas deltas) {
+            this(captured, deltas, null);
+        }
 
         static ComponentResult from(int captured, SnapshotSummary.Baseline baseline) {
             return new ComponentResult(
                     Math.max(0, captured),
-                    SnapshotSummary.completionDeltas(baseline));
+                    SnapshotSummary.completionDeltas(baseline),
+                    baseline);
         }
 
         static ComponentResult empty() {
-            return new ComponentResult(0, SnapshotSummary.CompletionDeltas.empty());
+            return new ComponentResult(0, SnapshotSummary.CompletionDeltas.empty(), null);
+        }
+
+        SnapshotSummary.CompletionDeltas currentDeltas() {
+            return baseline == null ? deltas : SnapshotSummary.completionDeltas(baseline);
         }
     }
 

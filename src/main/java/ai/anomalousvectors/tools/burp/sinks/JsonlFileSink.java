@@ -12,8 +12,8 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 /** Writes one JSON document per line for local grep and inspection. */
 final class JsonlFileSink extends RotatingLineFileSink {
 
-    JsonlFileSink(Path rootDirectory, String indexName) {
-        super(rootDirectory, indexName, ".jsonl");
+    JsonlFileSink(Path rootDirectory, String indexName, String indexKey) {
+        super(rootDirectory, indexName, indexKey, ".jsonl");
     }
 
     @Override

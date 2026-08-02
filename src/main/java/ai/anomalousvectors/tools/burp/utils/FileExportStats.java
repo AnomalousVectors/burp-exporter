@@ -11,10 +11,22 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Thread-safe session stats for file-based exports.
  *
- * <p>These counters mirror the high-level OpenSearch export metrics used by {@code StatsPanel},
+ * <p>These counters mirror the high-level database export metrics used by {@code StatsPanel},
  * but track only documents and bytes that were actually written to file sinks.</p>
  */
 public final class FileExportStats {
+
+    /** Run-level integrity state aggregated across selected file formats for one index. */
+    public enum ArtifactIntegrity {
+        /** No file format was selected for the index. */
+        NOT_SELECTED,
+        /** At least one selected artifact awaits final size and integrity validation. */
+        PENDING,
+        /** All selected artifacts reached their expected final sizes. */
+        OK,
+        /** At least one selected artifact failed writing or final validation. */
+        FAILED
+    }
 
     private static final List<String> INDEX_KEYS = Collections.unmodifiableList(
             Arrays.asList("traffic", "exporter", "settings", "sitemap", "findings"));
@@ -72,12 +84,25 @@ public final class FileExportStats {
         forIndex(indexKey).writtenCount.addAndGet(count);
     }
 
-    /** Records one or more failed file-export write attempts for an index key. */
+    /** Records one or more documents not written after file-export retries for an index key. */
     public static void recordFailure(String indexKey, long count) {
         if (count <= 0) {
             return;
         }
         forIndex(indexKey).failureCount.addAndGet(count);
+    }
+
+    /**
+     * Records additional file-write attempts after an initial I/O failure.
+     *
+     * @param indexKey short index key; unknown keys create a new counter bucket
+     * @param count additional attempt count; values {@code <= 0} are ignored
+     */
+    public static void recordRetryAttempt(String indexKey, long count) {
+        if (count <= 0) {
+            return;
+        }
+        forIndex(indexKey).retryAttemptCount.addAndGet(count);
     }
 
     /** Records successfully written file-export bytes for an index key. */
@@ -86,6 +111,66 @@ public final class FileExportStats {
             return;
         }
         forIndex(indexKey).successBytes.addAndGet(bytes);
+    }
+
+    /**
+     * Registers one selected output artifact before this run appends data.
+     *
+     * <p>Negative baseline sizes are recorded as zero. Registration increments the artifact count
+     * and moves aggregate integrity to {@link ArtifactIntegrity#PENDING}.</p>
+     *
+     * @param indexKey short index key; unknown keys create a new counter bucket
+     * @param baselineBytes bytes present before this run
+     */
+    public static void recordArtifactRegistration(String indexKey, long baselineBytes) {
+        PerIndexStats stats = forIndex(indexKey);
+        stats.artifactCount.incrementAndGet();
+        stats.artifactBaselineBytes.addAndGet(Math.max(0L, baselineBytes));
+        stats.artifactIntegrity.set(ArtifactIntegrity.PENDING);
+    }
+
+    /**
+     * Records final aggregate artifact sizes and integrity for one index.
+     *
+     * <p>Negative sizes are clamped to zero. A {@code null} integrity value is recorded as
+     * {@link ArtifactIntegrity#FAILED}. A non-blank error updates the index's last-error value;
+     * null or blank leaves the existing value unchanged.</p>
+     *
+     * @param indexKey short index key
+     * @param baselineBytes total bytes present before this run
+     * @param expectedFinalBytes expected size after successful appends
+     * @param finalBytes observed final size
+     * @param integrity aggregate completion state; {@code null} records failure
+     * @param error integrity failure detail; null or blank leaves the current error unchanged
+     */
+    public static void recordArtifactCompletion(
+            String indexKey,
+            long baselineBytes,
+            long expectedFinalBytes,
+            long finalBytes,
+            ArtifactIntegrity integrity,
+            String error) {
+        PerIndexStats stats = forIndex(indexKey);
+        stats.artifactBaselineBytes.set(Math.max(0L, baselineBytes));
+        stats.artifactExpectedFinalBytes.set(Math.max(0L, expectedFinalBytes));
+        stats.artifactFinalBytes.set(Math.max(0L, finalBytes));
+        stats.artifactIntegrity.set(integrity == null ? ArtifactIntegrity.FAILED : integrity);
+        if (error != null && !error.isBlank()) {
+            recordLastError(indexKey, error);
+        }
+    }
+
+    /**
+     * Marks selected output artifacts as failed before final validation.
+     *
+     * <p>A null or blank error clears the stored last-error value.</p>
+     *
+     * @param indexKey short index key; unknown keys create a new counter bucket
+     * @param error failure detail; null or blank clears the current error
+     */
+    public static void recordArtifactIntegrityFailure(String indexKey, String error) {
+        forIndex(indexKey).artifactIntegrity.set(ArtifactIntegrity.FAILED);
+        recordLastError(indexKey, error);
     }
 
     /** Records the wall-clock duration of the latest successful file write for an index key. */
@@ -110,6 +195,12 @@ public final class FileExportStats {
         return getWrittenCount(indexKey);
     }
 
+    /**
+     * Returns documents written to file for an index key this run.
+     *
+     * @param indexKey short index key; unknown keys create an empty counter bucket
+     * @return non-negative written document count
+     */
     public static long getWrittenCount(String indexKey) {
         return forIndex(indexKey).writtenCount.get();
     }
@@ -119,9 +210,69 @@ public final class FileExportStats {
         return forIndex(indexKey).failureCount.get();
     }
 
+    /**
+     * Returns additional file-write attempts after initial I/O failures for an index key.
+     *
+     * @param indexKey short index key; unknown keys create an empty counter bucket
+     * @return non-negative additional attempt count
+     */
+    public static long getRetryAttemptCount(String indexKey) {
+        return forIndex(indexKey).retryAttemptCount.get();
+    }
+
     /** Returns the successful file-export bytes recorded for an index key. */
     public static long getExportedBytes(String indexKey) {
         return forIndex(indexKey).successBytes.get();
+    }
+
+    /**
+     * Returns the number of selected output artifacts tracked for an index.
+     *
+     * @param indexKey short index key; unknown keys create an empty counter bucket
+     * @return non-negative artifact count
+     */
+    public static long getArtifactCount(String indexKey) {
+        return forIndex(indexKey).artifactCount.get();
+    }
+
+    /**
+     * Returns bytes already present across selected artifacts before this run.
+     *
+     * @param indexKey short index key; unknown keys create an empty counter bucket
+     * @return non-negative baseline byte count
+     */
+    public static long getArtifactBaselineBytes(String indexKey) {
+        return forIndex(indexKey).artifactBaselineBytes.get();
+    }
+
+    /**
+     * Returns expected final bytes across selected artifacts.
+     *
+     * @param indexKey short index key; unknown keys create an empty counter bucket
+     * @return non-negative expected byte count
+     */
+    public static long getArtifactExpectedFinalBytes(String indexKey) {
+        return forIndex(indexKey).artifactExpectedFinalBytes.get();
+    }
+
+    /**
+     * Returns observed final bytes across selected artifacts.
+     *
+     * @param indexKey short index key; unknown keys create an empty counter bucket
+     * @return non-negative observed byte count
+     */
+    public static long getArtifactFinalBytes(String indexKey) {
+        return forIndex(indexKey).artifactFinalBytes.get();
+    }
+
+    /**
+     * Returns aggregate artifact integrity for an index.
+     *
+     * @param indexKey short index key; unknown keys create an empty counter bucket
+     * @return non-null aggregate integrity state
+     */
+    public static ArtifactIntegrity getArtifactIntegrity(String indexKey) {
+        return forIndex(indexKey).artifactIntegrity.get();
     }
 
     /** Returns the latest successful file-write duration for an index key, or {@code -1}. */
@@ -148,6 +299,19 @@ public final class FileExportStats {
         long sum = 0L;
         for (String key : INDEX_KEYS) {
             sum += getFailureCount(key);
+        }
+        return sum;
+    }
+
+    /**
+     * Returns additional file-write attempts across all tracked indexes.
+     *
+     * @return non-negative additional attempt count
+     */
+    public static long getTotalRetryAttemptCount() {
+        long sum = 0L;
+        for (String key : INDEX_KEYS) {
+            sum += getRetryAttemptCount(key);
         }
         return sum;
     }
@@ -215,13 +379,24 @@ public final class FileExportStats {
         return count == null ? 0L : count.get();
     }
 
-    /** Clears per-run file-export counters. */
+    /**
+     * Clears per-run file-export counters.
+     *
+     * <p>Individual operations are thread-safe, but reset is not an atomic snapshot transition.
+     * Callers must quiesce file-export producers before invoking it.</p>
+     */
     public static void resetForRun() {
         for (String key : INDEX_KEYS) {
             PerIndexStats stats = forIndex(key);
             stats.writtenCount.set(0);
             stats.failureCount.set(0);
+            stats.retryAttemptCount.set(0);
             stats.successBytes.set(0);
+            stats.artifactCount.set(0);
+            stats.artifactBaselineBytes.set(0);
+            stats.artifactExpectedFinalBytes.set(0);
+            stats.artifactFinalBytes.set(0);
+            stats.artifactIntegrity.set(ArtifactIntegrity.NOT_SELECTED);
             stats.lastWriteDurationMs.set(-1);
             stats.lastError.set(null);
         }
@@ -236,7 +411,11 @@ public final class FileExportStats {
         }
     }
 
-    /** Resets all file-export stats. Intended for tests and process-local lifecycle cleanup. */
+    /**
+     * Resets all file-export stats for tests or process-local lifecycle cleanup.
+     *
+     * <p>Callers must ensure no producers are recording concurrently.</p>
+     */
     public static void resetForTests() {
         STATS.clear();
         TRAFFIC_SOURCE_STATS.clear();
@@ -267,7 +446,14 @@ public final class FileExportStats {
     private static final class PerIndexStats {
         final AtomicLong writtenCount = new AtomicLong(0);
         final AtomicLong failureCount = new AtomicLong(0);
+        final AtomicLong retryAttemptCount = new AtomicLong(0);
         final AtomicLong successBytes = new AtomicLong(0);
+        final AtomicLong artifactCount = new AtomicLong(0);
+        final AtomicLong artifactBaselineBytes = new AtomicLong(0);
+        final AtomicLong artifactExpectedFinalBytes = new AtomicLong(0);
+        final AtomicLong artifactFinalBytes = new AtomicLong(0);
+        final AtomicReference<ArtifactIntegrity> artifactIntegrity =
+                new AtomicReference<>(ArtifactIntegrity.NOT_SELECTED);
         final AtomicLong lastWriteDurationMs = new AtomicLong(-1);
         final AtomicReference<String> lastError = new AtomicReference<>(null);
     }

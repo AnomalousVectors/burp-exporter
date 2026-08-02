@@ -7,6 +7,10 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
@@ -18,11 +22,16 @@ import burp.api.montoya.core.ToolType;
  * Holds the current runtime configuration used by live export pipelines.
  *
  * <p>UI actions update this state, and runtime exporters read it from worker threads. The core
- * state and run-suppression flags are kept in volatile fields so readers can consume the latest
- * snapshot without additional locking.</p>
+ * state and run-suppression flags use volatile fields, atomic holders, and synchronized lifecycle
+ * transitions so readers can consume current snapshots without external locking. Listener
+ * callbacks execute synchronously on the thread that registers or updates state; callback
+ * exceptions propagate to that caller.</p>
  *
  * <p>The export-running flag gates whether traffic and reporter pipelines may send documents to
  * sinks. Start and Stop update that runtime gate without mutating the persisted config snapshot.</p>
+ *
+ * <p>Methods are safe to call from worker threads unless their Javadoc requires the EDT.
+ * Multi-method lifecycle sequences still require the caller to preserve the documented order.</p>
  */
 public final class RuntimeConfig {
     private static final Set<String> COMMUNITY_DISABLED_SOURCES = Set.of(ConfigKeys.SRC_FINDINGS);
@@ -42,7 +51,27 @@ public final class RuntimeConfig {
     private static volatile boolean exportStarting = false;
     private static volatile boolean exportStopping = false;
     private static volatile boolean fileExportDisabledForCurrentRun = false;
-    private static volatile boolean openSearchDisabledForCurrentRun = false;
+    private static volatile boolean databaseDisabledForCurrentRun = false;
+    private static volatile boolean searchRecoveryReplay = false;
+    private static final AtomicLong exportRunGeneration = new AtomicLong();
+    private static final AtomicReference<ExportRunToken> activeExportRun =
+            new AtomicReference<>(ExportRunToken.invalid());
+    private static final AtomicReference<ExportRunToken> lastInvalidatedExportRun =
+            new AtomicReference<>(ExportRunToken.invalid());
+    /**
+     * Keeps Database Counts / OpenSearch charts visible after a mid-run destination disable until
+     * the next Start, even when {@link #databaseDisabledForCurrentRun} is cleared on Stop.
+     */
+    private static volatile boolean retainSearchStatsVisibility = false;
+    private static final AtomicBoolean exportStopForceAbort = new AtomicBoolean(false);
+    private static final AtomicReference<Thread> exportStopWorker = new AtomicReference<>();
+    /**
+     * Wall-clock budget for cooperative Stop UX. Operators must never wait longer than this for
+     * Stop to finish (remaining undrained work is discarded as Permanent Drops).
+     */
+    public static final long EXPORT_STOP_UX_WALL_CLOCK_MS = 20_000L;
+    /** Absolute nanos deadline for the in-progress Stop worker; {@code 0} when not stopping. */
+    private static final AtomicLong exportStopDeadlineNanos = new AtomicLong(0L);
     private static volatile Map<String, String> resolvedIndexNamesForCurrentRun = Map.of();
     private static volatile Instant resolvedIndexNamesAt = Instant.EPOCH;
     private static volatile TrafficExportGate trafficExportGate = new TrafficExportGate(false, false, 0);
@@ -54,12 +83,22 @@ public final class RuntimeConfig {
      * <p>Live HTTP and WebSocket callbacks can fire at high volume. This record lets those paths
      * perform one volatile read and one set lookup instead of repeatedly walking the full runtime
      * config, normalizing strings, and checking edition state.</p>
+     *
+     * @param exportReady whether startup has committed and runtime export may emit documents
+     * @param anyTrafficExportEnabled whether traffic has a configured destination and tool source
+     * @param enabledToolMask bit mask of normalized enabled traffic tool types
      */
     public record TrafficExportGate(
             boolean exportReady,
             boolean anyTrafficExportEnabled,
             int enabledToolMask) {
 
+        /**
+         * Returns whether this gate currently permits the normalized tool type.
+         *
+         * @param normalizedToolType lowercase runtime tool key; {@code null} is rejected
+         * @return {@code true} when export is ready, traffic is enabled, and the tool is selected
+         */
         public boolean allowsToolType(String normalizedToolType) {
             return exportReady
                     && anyTrafficExportEnabled
@@ -67,15 +106,46 @@ public final class RuntimeConfig {
                     && includesToolType(normalizedToolType);
         }
 
+        /**
+         * Returns whether the normalized tool type is present in the cached selection mask.
+         *
+         * @param normalizedToolType lowercase runtime tool key; {@code null} is rejected
+         * @return {@code true} when the corresponding mask bit is set
+         */
         public boolean includesToolType(String normalizedToolType) {
             return normalizedToolType != null
                     && (enabledToolMask & trafficToolTypeMask(normalizedToolType)) != 0;
         }
     }
 
+    /**
+     * Identifies one committed export run.
+     *
+     * <p>Tokens are immutable and may be captured by asynchronous work. A token remains live only
+     * while it is the active token in {@link RuntimeConfig}; Stop and failed Start invalidate it
+     * immediately, so callbacks from an older run cannot mutate a later run.</p>
+     *
+     * @param generation positive monotonically increasing run generation; {@code 0} is invalid
+     */
+    public record ExportRunToken(long generation) {
+        private static ExportRunToken invalid() {
+            return new ExportRunToken(0L);
+        }
+
+        /** Returns whether this token represents a committed export run. */
+        public boolean isValid() {
+            return generation > 0L;
+        }
+    }
+
     /** Listener notified when the normalized runtime state changes. */
     @FunctionalInterface
     public interface StateListener {
+        /**
+         * Receives the latest normalized runtime state on the thread performing the update.
+         *
+         * @param newState non-null normalized state snapshot
+         */
         void onStateChanged(ConfigState.State newState);
     }
 
@@ -99,6 +169,53 @@ public final class RuntimeConfig {
      */
     public static boolean isExportRunning() {
         return exportRunning;
+    }
+
+    /**
+     * Returns the token for the active export run.
+     *
+     * @return active run token, or an invalid token while stopped
+     */
+    public static ExportRunToken currentExportRunToken() {
+        return activeExportRun.get();
+    }
+
+    /**
+     * Returns whether {@code token} still owns the active export run.
+     *
+     * @param token token captured when asynchronous work was created
+     * @return {@code true} only while the same run remains active and export is running
+     */
+    public static boolean isExportRunActive(ExportRunToken token) {
+        return token != null
+                && token.isValid()
+                && exportRunning
+                && token.equals(activeExportRun.get());
+    }
+
+    /**
+     * Invalidates the active run token before cooperative Stop work begins.
+     *
+     * <p>Safe to call repeatedly. This method deliberately does not clear destination state or
+     * Stop UX state; {@link #setExportRunning(boolean)} performs those lifecycle transitions.</p>
+     *
+     * @return the token that was active before invalidation
+     */
+    public static ExportRunToken invalidateExportRun() {
+        ExportRunToken invalidated = activeExportRun.getAndSet(ExportRunToken.invalid());
+        if (invalidated.isValid()) {
+            lastInvalidatedExportRun.set(invalidated);
+        }
+        return invalidated;
+    }
+
+    /**
+     * Returns the most recently invalidated run token for bounded Stop coordination.
+     *
+     * @return last invalidated token, or an invalid token before the first run
+     */
+    public static ExportRunToken lastInvalidatedExportRunToken() {
+        return lastInvalidatedExportRun.get();
     }
 
     /** Returns whether the active Burp instance is Community Edition. */
@@ -149,23 +266,61 @@ public final class RuntimeConfig {
     /**
      * Sets the export-running flag.
      *
-     * <p>Start button sets {@code true}; Stop button sets {@code false}.</p>
+     * <p>A stopped-to-running transition creates a new run token and clears run-scoped destination
+     * suppression, recovery replay, retained search visibility, and force-abort state. Setting
+     * {@code false} invalidates the active token and clears run-scoped destination state; Stop
+     * worker cleanup retains the frozen index-name snapshot until shutdown completes.</p>
+     *
+     * <p>This method serializes lifecycle transitions internally and refreshes the cached traffic
+     * gate before returning.</p>
      *
      * @param running new running state
      */
-    public static void setExportRunning(boolean running) {
+    public static synchronized void setExportRunning(boolean running) {
         boolean wasRunning = exportRunning;
-        exportRunning = running;
         if (!running) {
+            invalidateExportRun();
+            exportRunning = false;
             exportStarting = false;
-            exportStopping = false;
             fileExportDisabledForCurrentRun = false;
-            openSearchDisabledForCurrentRun = false;
-            clearResolvedIndexNamesForCurrentRun();
+            databaseDisabledForCurrentRun = false;
+            searchRecoveryReplay = false;
+            if (!exportStopping) {
+                clearExportStopForceAbort();
+                clearResolvedIndexNamesForCurrentRun();
+            }
         } else if (!wasRunning) {
+            activeExportRun.set(new ExportRunToken(exportRunGeneration.incrementAndGet()));
+            exportRunning = true;
             fileExportDisabledForCurrentRun = false;
-            openSearchDisabledForCurrentRun = false;
+            databaseDisabledForCurrentRun = false;
+            searchRecoveryReplay = false;
+            retainSearchStatsVisibility = false;
+            clearExportStopForceAbort();
+        } else {
+            exportRunning = true;
         }
+        refreshTrafficExportGate();
+    }
+
+    /**
+     * Resets export-run generation state for deterministic tests.
+     *
+     * <p>Production lifecycle code must use {@link #setExportRunning(boolean)} and
+     * {@link #invalidateExportRun()} instead.</p>
+     */
+    public static synchronized void resetExportRunForTests() {
+        exportRunning = false;
+        exportStarting = false;
+        exportStopping = false;
+        searchRecoveryReplay = false;
+        activeExportRun.set(ExportRunToken.invalid());
+        lastInvalidatedExportRun.set(ExportRunToken.invalid());
+        exportRunGeneration.set(0L);
+        exportStopForceAbort.set(false);
+        exportStopWorker.set(null);
+        exportStopDeadlineNanos.set(0L);
+        clearResolvedIndexNamesForCurrentRun();
         refreshTrafficExportGate();
     }
 
@@ -181,7 +336,15 @@ public final class RuntimeConfig {
         refreshTrafficExportGate();
     }
 
-    /** Updates the runtime config state with a normalized, non-null value. */
+    /**
+     * Updates runtime config with a normalized, non-null snapshot.
+     *
+     * <p>A {@code null} input resets to defaults. Active run-level destination suppression is
+     * reapplied, the traffic gate is refreshed, and listeners are invoked synchronously on the
+     * calling thread. Listener exceptions propagate after the state has been installed.</p>
+     *
+     * @param newState state to normalize, or {@code null} to restore runtime defaults
+     */
     public static void updateState(ConfigState.State newState) {
         state = applyCurrentRunDestinationSuppression(normalize(newState));
         refreshTrafficExportGate();
@@ -199,25 +362,33 @@ public final class RuntimeConfig {
     }
 
     /**
-     * Disables only the OpenSearch destination in the current runtime state.
+     * Disables only the search database destination in the current runtime state.
      *
      * <p>This is used for runtime shutdown of a failing destination while allowing any configured
      * file export destination to continue. The disable remains sticky for the active export run so
-     * later UI refreshes do not silently re-enable OpenSearch until export is stopped.</p>
+     * later UI refreshes do not silently re-enable the database destination until export is
+     * stopped. State listeners are notified synchronously when a disable occurs.</p>
      *
-     * @return {@code true} when OpenSearch was enabled and is now disabled; {@code false} otherwise
+     * @return {@code true} when the database destination was enabled and is now disabled;
+     *         {@code false} otherwise
      */
-    public static boolean disableOpenSearchDestination() {
+    public static boolean disableDatabaseDestination() {
         ConfigState.State current = normalize(state);
         ConfigState.Sinks sinks = current.sinks();
-        if (sinks == null || !sinks.osEnabled()) {
+        if (sinks == null || !sinks.databaseEnabled()) {
             return false;
         }
         if (exportRunning || exportStarting) {
-            openSearchDisabledForCurrentRun = true;
+            databaseDisabledForCurrentRun = true;
+            retainSearchStatsVisibility = true;
         }
-        updateState(withOpenSearchEnabled(current, false));
+        updateState(withDatabaseEnabled(current, false));
         return true;
+    }
+
+    /** Disables only the search database destination in the current runtime state. */
+    public static boolean disableOpenSearchDestination() {
+        return disableDatabaseDestination();
     }
 
     /**
@@ -225,7 +396,8 @@ public final class RuntimeConfig {
      *
      * <p>This is used for runtime shutdown of a failing file destination while allowing any
      * configured OpenSearch destination to continue. The disable remains sticky for the active
-     * export run so later UI refreshes do not silently re-enable Files until export is stopped.</p>
+     * export run so later UI refreshes do not silently re-enable Files until export is stopped.
+     * State listeners are notified synchronously when a disable occurs.</p>
      *
      * @return {@code true} when Files were enabled and are now disabled; {@code false} otherwise
      */
@@ -247,12 +419,165 @@ public final class RuntimeConfig {
         return fileExportDisabledForCurrentRun;
     }
 
-    /** True when OpenSearch has been suppressed for the active export run. */
-    public static boolean isOpenSearchDisabledForCurrentRun() {
-        return openSearchDisabledForCurrentRun;
+    /** True when the search database destination has been suppressed for the active export run. */
+    public static boolean isDatabaseDisabledForCurrentRun() {
+        return databaseDisabledForCurrentRun;
     }
 
-    /** Registers a listener for runtime-state changes and immediately replays the current state. */
+    /** True when the search database destination has been suppressed for the active export run. */
+    public static boolean isOpenSearchDisabledForCurrentRun() {
+        return isDatabaseDisabledForCurrentRun();
+    }
+
+    /**
+     * Marks a database-only snapshot replay after destination recovery.
+     *
+     * <p>While active, snapshot documents are rebuilt for a replaced or emptied search cluster but
+     * are not appended to Files a second time. The flag is run-scoped and cleared by Stop.</p>
+     *
+     * @param active {@code true} while recovery replay owns snapshot production
+     */
+    public static void setSearchRecoveryReplay(boolean active) {
+        searchRecoveryReplay = exportRunning && active;
+    }
+
+    /**
+     * Returns whether a database-only recovery replay is active.
+     *
+     * @return {@code true} while recovered indexes are being reseeded
+     */
+    public static boolean isSearchRecoveryReplay() {
+        return searchRecoveryReplay;
+    }
+
+    /**
+     * Returns whether Stats should keep Database Counts / OpenSearch charts visible after a mid-run
+     * database destination disable.
+     *
+     * <p>Sticky until the next Start so operators can still review the just-finished run after Stop
+     * or a forced destination disable. Cleared when export transitions to running.</p>
+     *
+     * @return {@code true} when search Stats sections should remain visible
+     */
+    public static boolean shouldRetainSearchStatsVisibility() {
+        return retainSearchStatsVisibility;
+    }
+
+    /**
+     * Starts the shared Stop wall-clock budget at the first Stop click.
+     *
+     * <p>Caller must invoke on the EDT before scheduling shutdown work. This preserves a force
+     * request made before worker registration and ensures executor delay consumes the same absolute
+     * budget as the remaining Stop phases.</p>
+     */
+    public static void beginExportStop() {
+        exportStopForceAbort.set(false);
+        exportStopDeadlineNanos.set(
+                System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(EXPORT_STOP_UX_WALL_CLOCK_MS));
+    }
+
+    /**
+     * Registers the cooperative Stop worker thread so a second Stop click can interrupt long waits.
+     *
+     * <p>Registration does not reset the deadline or force flag established by
+     * {@link #beginExportStop()}. If force-abort was requested before registration, the worker is
+     * interrupted immediately. Pair with {@link #endExportStopWorker()}.</p>
+     *
+     * @param worker Stop worker thread; ignored when {@code null}
+     */
+    public static void beginExportStopWorker(Thread worker) {
+        if (worker == null) {
+            return;
+        }
+        exportStopWorker.set(worker);
+        if (exportStopForceAbort.get()) {
+            worker.interrupt();
+        }
+    }
+
+    /**
+     * Completes Stop after final pushes, counts, and connection close have finished.
+     *
+     * <p>Clears the worker/deadline and releases the frozen index-name snapshot.</p>
+     */
+    public static void endExportStopWorker() {
+        exportStopWorker.set(null);
+        exportStopDeadlineNanos.set(0L);
+        clearResolvedIndexNamesForCurrentRun();
+    }
+
+    /**
+     * Returns milliseconds remaining in the cooperative Stop UX wall-clock budget.
+     *
+     * <p>Returns {@code 0} when the deadline has passed or Stop is not active. Callers should skip
+     * or shorten remaining Stop phases when this reaches {@code 0}.</p>
+     *
+     * @return remaining Stop budget in milliseconds; never negative
+     */
+    public static long remainingExportStopBudgetMs() {
+        long deadline = exportStopDeadlineNanos.get();
+        if (deadline <= 0L) {
+            return 0L;
+        }
+        long remainingNanos = deadline - System.nanoTime();
+        if (remainingNanos <= 0L) {
+            return 0L;
+        }
+        return TimeUnit.NANOSECONDS.toMillis(remainingNanos);
+    }
+
+    /**
+     * Returns whether the cooperative Stop UX wall-clock budget has expired.
+     *
+     * @return {@code true} when Stop should finish immediately and discard remaining work
+     */
+    public static boolean isExportStopBudgetExpired() {
+        long deadline = exportStopDeadlineNanos.get();
+        return deadline > 0L && System.nanoTime() >= deadline;
+    }
+
+    /**
+     * Requests force-abort of an in-progress cooperative Stop.
+     *
+     * <p>Sets the abort flag and interrupts the registered Stop worker so long joins (retry drain,
+     * final counts, connection reclaim) can exit early. Safe to call more than once; only the first
+     * request returns {@code true}.</p>
+     *
+     * @return {@code true} when this call newly requested force-abort
+     */
+    public static boolean requestExportStopForceAbort() {
+        boolean first = exportStopForceAbort.compareAndSet(false, true);
+        Thread worker = exportStopWorker.get();
+        if (worker != null) {
+            worker.interrupt();
+        }
+        return first;
+    }
+
+    /**
+     * Returns whether the operator requested force-abort of the current Stop.
+     *
+     * @return {@code true} when force-stop was requested
+     */
+    public static boolean isExportStopForceAbortRequested() {
+        return exportStopForceAbort.get();
+    }
+
+    /**
+     * Clears the force-abort flag after Stop UI returns to Stopped / Start.
+     */
+    public static void clearExportStopForceAbort() {
+        exportStopForceAbort.set(false);
+    }
+
+    /**
+     * Registers a listener and immediately replays the current state.
+     *
+     * <p>The replay and later notifications run synchronously on the registering or updating
+     * thread. The listener is added at most once. Listener exceptions propagate to the caller.</p>
+     *
+     * @param listener listener to register; {@code null} is ignored
+     */
     public static void registerStateListener(StateListener listener) {
         if (listener == null) {
             return;
@@ -261,7 +586,11 @@ public final class RuntimeConfig {
         listener.onStateChanged(state);
     }
 
-    /** Removes a previously registered runtime-state listener. */
+    /**
+     * Removes a previously registered runtime-state listener.
+     *
+     * @param listener listener to remove; {@code null} is ignored
+     */
     public static void unregisterStateListener(StateListener listener) {
         if (listener != null) {
             listeners.remove(listener);
@@ -278,7 +607,7 @@ public final class RuntimeConfig {
         ConfigState.State current = state;
         return current != null
                 && current.sinks() != null
-                && current.sinks().osEnabled()
+                && current.sinks().databaseEnabled()
                 && isSearchDestinationExportWired(current.sinks().searchDestinationKind())
                 && !safe(current.sinks().selectedSearchUrl()).isBlank();
     }
@@ -448,7 +777,8 @@ public final class RuntimeConfig {
     public static String indexNameForKey(String indexKey) {
         String normalizedKey = indexKey == null ? "exporter" : indexKey.trim().toLowerCase(Locale.ROOT);
         Map<String, String> resolvedForRun = resolvedIndexNamesForCurrentRun;
-        if ((exportRunning || exportStarting) && resolvedForRun.containsKey(normalizedKey)) {
+        if ((exportRunning || exportStarting || exportStopping)
+                && resolvedForRun.containsKey(normalizedKey)) {
             return resolvedForRun.get(normalizedKey);
         }
         return IndexNaming.resolveConfiguredIndexName(state, normalizedKey, Instant.now());
@@ -457,7 +787,7 @@ public final class RuntimeConfig {
     /** Returns all effective concrete index names for the current state or run snapshot. */
     public static Map<String, String> allIndexNames() {
         Map<String, String> resolvedForRun = resolvedIndexNamesForCurrentRun;
-        if ((exportRunning || exportStarting) && !resolvedForRun.isEmpty()) {
+        if ((exportRunning || exportStarting || exportStopping) && !resolvedForRun.isEmpty()) {
             return resolvedForRun;
         }
         return IndexNaming.resolveAllConfiguredNames(state, Instant.now()).namesByKey();
@@ -507,9 +837,33 @@ public final class RuntimeConfig {
                 : current.sinks().searchDestinationKind();
     }
 
+    /**
+     * Returns the configured deployment type for the selected database destination.
+     *
+     * @return normalized deployment type, or {@link ConfigState#DEPLOYMENT_AUTO} for generic
+     *         OpenSearch and unavailable state
+     */
+    public static String searchDeploymentType() {
+        ConfigState.State current = state;
+        if (current == null || current.sinks() == null) {
+            return ConfigState.DEPLOYMENT_AUTO;
+        }
+        ConfigState.Sinks sinks = current.sinks();
+        return switch (sinks.searchDestinationKind()) {
+            case OPEN_SEARCH -> ConfigState.DEPLOYMENT_AUTO;
+            case OPEN_SEARCH_AMAZON -> sinks.openSearchAmazonOptions().deploymentType();
+            case ELASTICSEARCH -> sinks.elasticSearchOptions().deploymentType();
+        };
+    }
+
     /** Returns the operator-facing name of the selected database destination. */
     public static String searchDestinationDisplayName() {
         return searchDestinationKind().displayName();
+    }
+
+    /** Returns the log prefix for messages emitted by the selected database destination. */
+    public static String searchDestinationLogPrefix() {
+        return "[" + searchDestinationDisplayName() + "]";
     }
 
     /** Returns whether Start/export is currently implemented for the selected database destination. */
@@ -518,6 +872,7 @@ public final class RuntimeConfig {
                 ? ConfigState.SearchDestination.OPEN_SEARCH
                 : destination;
         return normalized == ConfigState.SearchDestination.OPEN_SEARCH
+                || normalized == ConfigState.SearchDestination.OPEN_SEARCH_AMAZON
                 || normalized == ConfigState.SearchDestination.ELASTICSEARCH;
     }
 
@@ -626,7 +981,7 @@ public final class RuntimeConfig {
                         sinks.fileTotalCapGb(),
                         sinks.fileDiskUsagePercentEnabled(),
                         sinks.fileDiskUsagePercent(),
-                        sinks.osEnabled(),
+                        sinks.databaseEnabled(),
                         safe(sinks.openSearchUrl()),
                         safe(sinks.openSearchUser()),
                         safe(sinks.openSearchPassword()),
@@ -749,10 +1104,10 @@ public final class RuntimeConfig {
                 suppressed = withFilesEnabled(suppressed, false);
             }
         }
-        if (openSearchDisabledForCurrentRun) {
+        if (databaseDisabledForCurrentRun) {
             ConfigState.Sinks sinks = suppressed.sinks();
-            if (sinks != null && sinks.osEnabled()) {
-                suppressed = withOpenSearchEnabled(suppressed, false);
+            if (sinks != null && sinks.databaseEnabled()) {
+                suppressed = withDatabaseEnabled(suppressed, false);
             }
         }
         return suppressed;
@@ -822,7 +1177,7 @@ public final class RuntimeConfig {
     private static boolean isSearchExportEnabledForState(ConfigState.State current) {
         return current != null
                 && current.sinks() != null
-                && current.sinks().osEnabled()
+                && current.sinks().databaseEnabled()
                 && !safe(current.sinks().selectedSearchUrl()).isBlank();
     }
 
@@ -836,7 +1191,7 @@ public final class RuntimeConfig {
                 && (sinks.fileJsonlEnabled() || sinks.fileBulkNdjsonEnabled());
     }
 
-    private static ConfigState.State withOpenSearchEnabled(ConfigState.State current, boolean enabled) {
+    private static ConfigState.State withDatabaseEnabled(ConfigState.State current, boolean enabled) {
         ConfigState.Sinks sinks = current.sinks();
         if (sinks == null) {
             return current;
@@ -893,7 +1248,7 @@ public final class RuntimeConfig {
                         sinks.fileTotalCapGb(),
                         sinks.fileDiskUsagePercentEnabled(),
                         sinks.fileDiskUsagePercent(),
-                        sinks.osEnabled(),
+                        sinks.databaseEnabled(),
                         sinks.openSearchUrl(),
                         sinks.openSearchUser(),
                         sinks.openSearchPassword(),

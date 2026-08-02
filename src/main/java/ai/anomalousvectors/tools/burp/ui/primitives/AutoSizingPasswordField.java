@@ -15,6 +15,7 @@ import java.awt.Point;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.io.Serial;
 import java.util.Arrays;
 
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
@@ -23,27 +24,55 @@ import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
  * Password field whose preferred width tracks its content length within clamped bounds.
  * Uses the actual displayed character widths when revealed, and stays compact while hidden.
  *
- * <p>EDT: sizing is queried on the EDT by Swing.</p>
+ * <p>Caller must construct and mutate on the EDT. The type has no custom transient fields or
+ * deserialization reconstruction contract and is intended for live UI construction rather than
+ * persisted reuse.</p>
  */
 public final class AutoSizingPasswordField extends JPasswordField {
+    @Serial private static final long serialVersionUID = 1L;
 
-    private static final int MIN_W = 80;
+    private static final int DEFAULT_MIN_W = 80;
     private static final int MAX_W = 900;
     private static final int PADDING = 8;
     private static final int EYE_ICON_WIDTH = 18;
     private static final int EYE_ICON_GAP = 8;
     private static final int EYE_ICON_RESERVED_WIDTH = EYE_ICON_WIDTH + (EYE_ICON_GAP * 2);
 
+    /**
+     * Empty preferred-width floor for destination credential password fields.
+     *
+     * <p>Twice the default empty floor so blank auth fields stay usable before content grows them.</p>
+     */
+    public static final int CREDENTIAL_MIN_WIDTH = DEFAULT_MIN_W * 2;
+
+    private final int minWidth;
     private final char hiddenEchoChar;
     private boolean visibleText;
 
     /**
      * Creates an auto-sizing password field.
+     *
+     * <p>Caller must invoke on the EDT.</p>
      */
     public AutoSizingPasswordField() {
+        this(DEFAULT_MIN_W);
+    }
+
+    /**
+     * Creates an auto-sizing password field with a custom empty-width floor.
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @param minWidth preferred-width floor while empty or short; clamped to at least {@code 1}
+     */
+    public AutoSizingPasswordField(int minWidth) {
         super();
+        this.minWidth = Math.max(1, minWidth);
         hiddenEchoChar = getEchoChar();
         putClientProperty("html.disable", Boolean.FALSE);
+        // Burp uses FlatLaf, which paints a native reveal control when the field is focused.
+        // That control clashes with our custom eye glyph; keep only the painted eye toggle.
+        putClientProperty("JPasswordField.showRevealButton", Boolean.FALSE);
         Insets margin = getMargin();
         setMargin(new Insets(
                 margin.top,
@@ -71,8 +100,20 @@ public final class AutoSizingPasswordField extends JPasswordField {
     }
 
     /**
+     * Restores HTML and reveal-control properties after a look-and-feel update.
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     */
+    @Override
+    public void updateUI() {
+        super.updateUI();
+        putClientProperty("html.disable", Boolean.FALSE);
+        putClientProperty("JPasswordField.showRevealButton", Boolean.FALSE);
+    }
+
+    /**
      * Computes preferred size based on content length (character count), clamped between
-     * {@value MIN_W} and {@value MAX_W} with padding.
+     * this field's minimum and {@value MAX_W} with padding.
      *
      * @return preferred dimension reflecting current content length
      */
@@ -82,16 +123,26 @@ public final class AutoSizingPasswordField extends JPasswordField {
         int textWidth = visibleText ? passwordTextWidth(fm) : 0;
         Insets margin = getMargin();
         int height = super.getPreferredSize().height;
-        int w = Math.clamp(textWidth + margin.left + margin.right + PADDING, MIN_W, MAX_W);
+        int w = Math.clamp(textWidth + margin.left + margin.right + PADDING, minWidth, MAX_W);
         return new Dimension(w, height);
     }
 
+    /**
+     * Paints the password field and its reveal glyph.
+     *
+     * @param g Swing paint context
+     */
     @Override
     protected void paintComponent(Graphics g) {
         super.paintComponent(g);
         paintEyeIcon(g);
     }
 
+    /**
+     * Creates this field's HTML-enabled tooltip.
+     *
+     * @return tooltip owned by this password field
+     */
     @Override
     public JToolTip createToolTip() {
         return Tooltips.createHtmlToolTip(this);

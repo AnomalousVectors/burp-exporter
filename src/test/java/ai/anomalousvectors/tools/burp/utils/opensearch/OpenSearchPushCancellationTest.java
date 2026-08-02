@@ -45,5 +45,11 @@ class OpenSearchPushCancellationTest {
         assertThat(OpenSearchPushCancellation.shouldSuppressFailureAccounting()).isTrue();
         assertThat(OpenSearchPushCancellation.shouldSuppressPushFailure(
                 new IOException("Connection is closed"))).isTrue();
+        assertThat(OpenSearchPushCancellation.shouldSuppressPushFailure(
+                new IOException("burp-exporter-hosted-test.us-east-1.es.amazonaws.com:443 failed to respond")))
+                .isFalse();
+        assertThat(OpenSearchPushCancellation.cancelledPushLogSuffix(
+                new IOException("target server failed to respond")))
+                .contains("failed to respond");
     }
 }

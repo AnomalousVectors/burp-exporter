@@ -30,7 +30,7 @@ class RepeaterTabsStartupSummaryTest {
 
     private final List<String> capturedMessages = new ArrayList<>();
     private final Logger.LogListener listener = (level, message) -> {
-        if ("INFO".equals(level) && message.startsWith("[StartupExport] Repeater Tabs: export complete")) {
+        if ("INFO".equals(level) && message.startsWith("[StartupExport] Repeater Tabs:")) {
             capturedMessages.add(message);
         }
     };
@@ -88,7 +88,7 @@ class RepeaterTabsStartupSummaryTest {
     void logStartupExportCompletionSummary_usesProvidedStartupSession() throws Exception {
         Logger.registerListener(listener);
         try {
-            invokeStatic("logStartupExportCompletionSummary", "g1-s1");
+            invokeStatic("logStartupExportCompletionSummary", "g1-s1", true);
             drainEventDispatchThread();
 
             assertThat(capturedMessages).hasSize(1);
@@ -100,11 +100,28 @@ class RepeaterTabsStartupSummaryTest {
         }
     }
 
+    @Test
+    void logStartupExportCompletionSummary_labelsIncompleteDeliveryAsPending() throws Exception {
+        Logger.registerListener(listener);
+        try {
+            invokeStatic("logStartupExportCompletionSummary", "g1-s1", false);
+            drainEventDispatchThread();
+
+            assertThat(capturedMessages).hasSize(1);
+            assertThat(capturedMessages.get(0))
+                    .startsWith("[StartupExport] Repeater Tabs: capture complete startupSession=g1-s1 ")
+                    .contains("; delivery_pending=0;");
+        } finally {
+            Logger.unregisterListener(listener);
+            RepeaterTabsIndexReporter.clearSessionState();
+        }
+    }
+
     private static void invokeStartupExportCompletionSummary() throws Exception {
         Method sessionMethod = RepeaterTabsIndexReporter.class.getDeclaredMethod("currentStartupSessionId");
         sessionMethod.setAccessible(true);
         String sessionId = (String) sessionMethod.invoke(null);
-        invokeStatic("logStartupExportCompletionSummary", sessionId);
+        invokeStatic("logStartupExportCompletionSummary", sessionId, true);
     }
 
     private static void invokeStatic(String methodName) throws Exception {
@@ -113,10 +130,11 @@ class RepeaterTabsStartupSummaryTest {
         method.invoke(null);
     }
 
-    private static void invokeStatic(String methodName, String value) throws Exception {
-        Method method = RepeaterTabsIndexReporter.class.getDeclaredMethod(methodName, String.class);
+    private static void invokeStatic(String methodName, String value, boolean flag) throws Exception {
+        Method method = RepeaterTabsIndexReporter.class.getDeclaredMethod(
+                methodName, String.class, boolean.class);
         method.setAccessible(true);
-        method.invoke(null, value);
+        method.invoke(null, value, flag);
     }
 
     private static void drainEventDispatchThread() throws Exception {

@@ -77,4 +77,16 @@ public final class OpenSearchTestConfig {
     public boolean hasCredentials() {
         return username != null && password != null;
     }
+
+    /**
+     * Returns whether any OpenSearch test connection option was explicitly configured.
+     *
+     * @return {@code true} when the URL, username, or password is set as a system property or
+     *         environment variable
+     */
+    public static boolean hasExplicitConfiguration() {
+        return getOption(ENV_URL) != null
+                || getOption(ENV_USER) != null
+                || getOption(ENV_PASSWORD) != null;
+    }
 }

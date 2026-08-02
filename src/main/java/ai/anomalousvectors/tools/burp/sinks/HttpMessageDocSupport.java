@@ -256,6 +256,9 @@ final class HttpMessageDocSupport {
      *   <li>{@code body.text}: charset-decoded string after Content-Encoding removal (when applicable);
      *       {@code null} when the payload stays binary</li>
      * </ul>
+     *
+     * <p>Search/database export may later set {@code body.truncated=true} and shorten {@code b64}/{@code text}
+     * under live bulk-budget pressure; this builder always emits the full payload for shared sink prepare.</p>
      */
     static void putBodyFields(
             Map<String, Object> doc,

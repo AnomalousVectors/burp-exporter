@@ -10,8 +10,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
-import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 
 /**
@@ -27,6 +28,9 @@ class TrafficExportQueueTest {
         RuntimeConfig.setExportStarting(false);
         TrafficExportQueue.stopWorker();
         TrafficExportQueue.clearPendingWork();
+        ExportAdmissionController.resetForTests();
+        ExportStats.resetForTests();
+        DiskSpaceGuard.resetForTests();
     }
 
     @Test
@@ -66,17 +70,13 @@ class TrafficExportQueueTest {
     }
 
     @Test
+    void stopWorker_zeroSharedBudget_returnsWithoutWaiting() {
+        assertThatCode(() -> TrafficExportQueue.stopWorker(0L)).doesNotThrowAnyException();
+    }
+
+    @Test
     void awaitIdle_returnsFalseWhenQueuedWorkIsNotDrained() throws Exception {
-        RuntimeConfig.updateState(new ConfigState.State(
-                List.of(ConfigKeys.SRC_TRAFFIC),
-                ConfigKeys.SCOPE_ALL,
-                List.of(),
-                new ConfigState.Sinks(true, "C:\\temp", true, false, false, "", "", "", false),
-                ConfigState.DEFAULT_SETTINGS_SUB,
-                List.of("proxy"),
-                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
-                null));
-        RuntimeConfig.setExportRunning(true);
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
 
         TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
             assertThat(TrafficExportQueue.offerAccepted(trafficDoc("Proxy"))).isTrue();
@@ -93,54 +93,75 @@ class TrafficExportQueueTest {
     }
 
     @Test
-    void purgeDisabledTraffic_removesOnlyDeselectedRoutes() {
-        RuntimeConfig.updateState(new ConfigState.State(
-                List.of(ConfigKeys.SRC_TRAFFIC),
-                ConfigKeys.SCOPE_ALL,
-                List.of(),
-                new ConfigState.Sinks(true, "C:\\temp", true, false, false, "", "", "", false),
-                ConfigState.DEFAULT_SETTINGS_SUB,
-                List.of("proxy", "repeater"),
-                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
-                null));
-        RuntimeConfig.setExportRunning(true);
-        RuntimeConfig.setExportStarting(true);
+    void purgeDisabledTraffic_removesOnlyDeselectedRoutes() throws Exception {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy", "repeater"));
 
-        TrafficExportQueue.offer(trafficDoc("Proxy"));
-        TrafficExportQueue.offer(trafficDoc("Repeater"));
-        RuntimeConfig.updateState(new ConfigState.State(
-                List.of(ConfigKeys.SRC_TRAFFIC),
-                ConfigKeys.SCOPE_ALL,
-                List.of(),
-                new ConfigState.Sinks(true, "C:\\temp", true, false, false, "", "", "", false),
-                ConfigState.DEFAULT_SETTINGS_SUB,
-                List.of("proxy"),
-                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
-                null));
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            TrafficExportQueue.offer(trafficDoc("Proxy"));
+            TrafficExportQueue.offer(trafficDoc("Repeater"));
+            TrafficExportQueueTestSupport.updateTrafficTools(List.of("proxy"));
 
-        int purged = TrafficExportQueue.purgeDisabledTraffic(RuntimeConfig.trafficExportGate());
+            int purged = TrafficExportQueue.purgeDisabledTraffic(RuntimeConfig.trafficExportGate());
 
-        assertThat(purged).isEqualTo(1);
-        assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+            assertThat(purged).isEqualTo(1);
+            assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+        });
     }
 
     @Test
     void offerAccepted_rejectsLateTrafficAfterExportStopped() {
-        RuntimeConfig.updateState(new ConfigState.State(
-                List.of(ConfigKeys.SRC_TRAFFIC),
-                ConfigKeys.SCOPE_ALL,
-                List.of(),
-                new ConfigState.Sinks(true, "C:\\temp", true, false, false, "", "", "", false),
-                ConfigState.DEFAULT_SETTINGS_SUB,
-                List.of("proxy"),
-                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
-                null));
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
         RuntimeConfig.setExportRunning(false);
 
         boolean accepted = TrafficExportQueue.offerAccepted(trafficDoc("Proxy"));
 
         assertThat(accepted).isFalse();
         assertThat(TrafficExportQueue.getCurrentSize()).isZero();
+    }
+
+    @Test
+    void offerAccepted_whenMemoryAndSpillAreFull_rejectsNewestAndKeepsBacklog() throws Exception {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            ExportAdmissionController.setMemBudgetOverrideForTests(1_000_000L);
+            assertThat(TrafficExportQueue.offerAccepted(trafficDoc("Proxy"))).isTrue();
+            assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+
+            ExportAdmissionController.setMemBudgetOverrideForTests(1L);
+            ExportAdmissionController.setSpillBudgetOverrideForTests(1L);
+            assertThat(TrafficExportQueue.offerAccepted(trafficDoc("Proxy"))).isFalse();
+
+            assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+            assertThat(TrafficExportQueue.getCurrentSpillSize()).isZero();
+            assertThat(ExportStats.getTrafficDropReasonCount("spill_full_reject_new"))
+                    .isEqualTo(1L);
+        });
+    }
+
+    @Test
+    void offerAccepted_whenSpillWriteWouldBreachDiskReserve_recordsLowDiskReason()
+            throws Exception {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            ExportAdmissionController.setMemBudgetOverrideForTests(1_000_000L);
+            assertThat(TrafficExportQueue.offerAccepted(trafficDoc("Proxy"))).isTrue();
+
+            long heldBytes = TrafficExportQueue.getCurrentBytesEstimate();
+            assertThat(heldBytes).isPositive();
+            ExportAdmissionController.setMemBudgetOverrideForTests(heldBytes * 2L);
+            assertThat(ExportAdmissionController.memAccepts(heldBytes, 1L)).isTrue();
+            assertThat(ExportAdmissionController.shouldPreferSpill(heldBytes, heldBytes)).isTrue();
+            ExportAdmissionController.setSpillBudgetOverrideForTests(1_000_000L);
+            DiskSpaceGuard.setUsableSpaceOverride(ignored -> DiskSpaceGuard.MIN_FREE_BYTES);
+            assertThat(TrafficExportQueue.offerAccepted(trafficDoc("Proxy"))).isFalse();
+
+            assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+            assertThat(TrafficExportQueue.getCurrentSpillSize()).isZero();
+            assertThat(ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_new"))
+                    .isEqualTo(1L);
+        });
     }
 
     private static Map<String, Object> trafficDoc(String reporter) {

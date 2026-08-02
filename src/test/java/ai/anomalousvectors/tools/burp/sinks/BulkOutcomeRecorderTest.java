@@ -101,6 +101,18 @@ class BulkOutcomeRecorderTest {
     }
 
     @Test
+    void record_stoppedBreakdown_recordsConfirmedSuccessButSuppressesFailure() {
+        RuntimeConfig.setExportRunning(false);
+        BulkOutcomeBreakdown breakdown = new BulkOutcomeBreakdown(1, 2, 0, 1);
+
+        BulkOutcomeRecorder.record("sitemap", "Sitemap", "Bulk push", 4, 3, true, breakdown);
+
+        assertThat(ExportStats.getSuccessCount("sitemap")).isEqualTo(3);
+        assertThat(ExportStats.getFailureCount("sitemap")).isZero();
+        assertThat(ExportStats.getLastError("sitemap")).isNull();
+    }
+
+    @Test
     void record_rejectsBlankIndexKey() {
         assertThatThrownBy(() -> BulkOutcomeRecorder.record("", "X", "Bulk", 1, 1, true))
                 .isInstanceOf(IllegalArgumentException.class);

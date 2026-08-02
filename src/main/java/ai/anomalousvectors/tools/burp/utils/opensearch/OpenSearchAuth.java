@@ -32,12 +32,16 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 
 /**
- * Runtime OpenSearch authentication material resolved from UI config and session credentials.
+ * Runtime search database authentication material resolved from UI config and session credentials.
+ *
+ * <p>Instances are immutable and safe to share across transport threads. They may retain raw
+ * passwords, tokens, private-key passphrases, and credential file paths; callers must not log,
+ * serialize, or persist an instance or values returned by secret-bearing methods.</p>
  */
 public final class OpenSearchAuth {
     private static final char[] EMPTY_PASSWORD = new char[0];
 
-    /** Supported upstream OpenSearch authentication modes. */
+    /** Supported HTTP authentication modes for search database destinations. */
     public enum Mode {
         NONE,
         BASIC,
@@ -71,43 +75,85 @@ public final class OpenSearchAuth {
         this.keyPassphrase = safe(keyPassphrase);
     }
 
-    /** Returns an unauthenticated OpenSearch auth descriptor. */
+    /**
+     * Returns an unauthenticated search database auth descriptor.
+     *
+     * @return complete descriptor with mode {@link Mode#NONE}
+     */
     public static OpenSearchAuth none() {
         return new OpenSearchAuth(Mode.NONE, "", "", "", "", "", "");
     }
 
-    /** Returns a Basic auth descriptor for compatibility with existing call sites and tests. */
+    /**
+     * Returns a Basic authentication descriptor.
+     *
+     * @param username username; {@code null} is normalized to blank
+     * @param password sensitive password; {@code null} is normalized to blank
+     * @return immutable Basic authentication descriptor
+     */
     public static OpenSearchAuth basic(String username, String password) {
         return new OpenSearchAuth(Mode.BASIC, username, password, "", "", "", "");
     }
 
-    /** Returns an API key auth descriptor. */
+    /**
+     * Returns an API-key authentication descriptor.
+     *
+     * @param token sensitive API-key token; {@code null} is normalized to blank
+     * @return immutable API-key authentication descriptor
+     */
     public static OpenSearchAuth apiKey(String token) {
         return new OpenSearchAuth(Mode.API_KEY, "", "", token, "", "", "");
     }
 
-    /** Returns a bearer-token auth descriptor. */
+    /**
+     * Returns a bearer-token authentication descriptor.
+     *
+     * @param token sensitive bearer token; {@code null} is normalized to blank
+     * @return immutable bearer-token authentication descriptor
+     */
     public static OpenSearchAuth bearerToken(String token) {
         return new OpenSearchAuth(Mode.BEARER_TOKEN, "", "", token, "", "", "");
     }
 
-    /** Returns a client-certificate auth descriptor. */
+    /**
+     * Returns a client-certificate authentication descriptor.
+     *
+     * @param certificatePath certificate path; {@code null} is normalized to blank
+     * @param keyPath private-key path; {@code null} is normalized to blank
+     * @param keyPassphrase sensitive private-key passphrase; {@code null} becomes blank
+     * @return immutable client-certificate authentication descriptor
+     */
     public static OpenSearchAuth certificate(String certificatePath, String keyPath, String keyPassphrase) {
         return new OpenSearchAuth(Mode.CERTIFICATE, "", "", "", certificatePath, keyPath, keyPassphrase);
     }
 
-    /** Resolves the currently selected upstream OpenSearch auth mode from runtime/session state. */
+    /**
+     * Resolves upstream OpenSearch authentication from runtime and session state.
+     *
+     * @return immutable descriptor for the current upstream OpenSearch configuration
+     */
     public static OpenSearchAuth fromRuntime() {
         return fromRuntime(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Resolves the selected database destination's auth mode from runtime/session state. */
+    /**
+     * Resolves authentication for a database destination from runtime and session state.
+     *
+     * <p>The method reads credential material from {@link SecureCredentialStore}; it performs no
+     * network I/O and does not validate whether the resolved credentials are accepted.</p>
+     *
+     * @param destination destination to resolve; {@code null} selects upstream OpenSearch
+     * @return immutable descriptor, possibly incomplete when session credentials are absent
+     */
     public static OpenSearchAuth fromRuntime(ConfigState.SearchDestination destination) {
         ConfigState.SearchDestination selected = destination == null
                 ? ConfigState.SearchDestination.OPEN_SEARCH
                 : destination;
         if (selected == ConfigState.SearchDestination.ELASTICSEARCH) {
             return elasticsearchFromRuntime();
+        }
+        if (selected == ConfigState.SearchDestination.OPEN_SEARCH_AMAZON) {
+            return amazonOpenSearchFromRuntime();
         }
         ConfigState.State state = RuntimeConfig.getState();
         ConfigState.OpenSearchOptions options = state == null || state.sinks() == null
@@ -172,12 +218,37 @@ public final class OpenSearchAuth {
         };
     }
 
-    /** Returns the selected authentication mode. */
+    private static OpenSearchAuth amazonOpenSearchFromRuntime() {
+        ConfigState.State state = RuntimeConfig.getState();
+        ConfigState.OpenSearchAmazonOptions options = state == null || state.sinks() == null
+                ? ConfigState.defaultOpenSearchAmazonOptions()
+                : state.sinks().openSearchAmazonOptions();
+        String destination = ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey();
+        return switch (ConfigState.normalizeOpenSearchAmazonAuthType(options.authType())) {
+            case "Basic" -> {
+                SecureCredentialStore.BasicCredentials basic =
+                        SecureCredentialStore.loadBasicCredentials(destination);
+                String username = options.username().isBlank() ? basic.username() : options.username();
+                yield basic(username, basic.password());
+            }
+            default -> none();
+        };
+    }
+
+    /**
+     * Returns the selected authentication mode.
+     *
+     * @return non-null authentication mode
+     */
     public Mode mode() {
         return mode;
     }
 
-    /** Returns whether this auth descriptor has enough material to make an authenticated request. */
+    /**
+     * Returns whether this descriptor has the fields required by its selected mode.
+     *
+     * @return {@code true} when required credential fields are non-blank
+     */
     public boolean isComplete() {
         return switch (mode) {
             case NONE -> true;
@@ -187,7 +258,11 @@ public final class OpenSearchAuth {
         };
     }
 
-    /** Returns a validation message for missing auth material, or blank when complete. */
+    /**
+     * Returns a validation message for missing authentication material.
+     *
+     * @return blank when {@link #isComplete()} is true; otherwise an operator-facing message
+     */
     public String validationMessage() {
         return switch (mode) {
             case NONE -> "";
@@ -198,12 +273,20 @@ public final class OpenSearchAuth {
         };
     }
 
-    /** Returns whether requests carry an Authorization header. */
+    /**
+     * Returns whether requests carry an {@code Authorization} header.
+     *
+     * @return {@code true} for Basic, API-key, and bearer-token modes
+     */
     public boolean usesAuthorizationHeader() {
         return mode == Mode.BASIC || mode == Mode.API_KEY || mode == Mode.BEARER_TOKEN;
     }
 
-    /** Returns the redacted authorization label used in request logs. */
+    /**
+     * Returns the redacted authorization label used in request logs.
+     *
+     * @return scheme and redaction marker, or blank for non-header modes; never a raw secret
+     */
     public String redactedAuthorizationForLog() {
         return switch (mode) {
             case BASIC -> "Basic ***";
@@ -213,29 +296,55 @@ public final class OpenSearchAuth {
         };
     }
 
-    /** Returns the Authorization header value for header-based modes, or blank when not used. */
+    /**
+     * Returns the raw {@code Authorization} header value for header-based modes.
+     *
+     * <p>The result is sensitive credential material. Callers may attach it to an outbound request
+     * but must not log, serialize, cache separately, or expose it in UI text.</p>
+     *
+     * @return raw header value, or blank for modes without an Authorization header
+     */
     public String authorizationHeaderValue() {
         Header header = authorizationHeader();
         return header == null ? "" : header.getValue();
     }
 
-    /** Returns a cache-safe discriminator that never includes raw secret values. */
+    /**
+     * Returns a cache-safe discriminator that never includes raw secret values.
+     *
+     * <p>Secret fields are represented by one-way fingerprints. Certificate and key paths remain
+     * visible in the result, so it is suitable for internal cache keys but not operator logs.</p>
+     *
+     * @return stable discriminator for transport-cache partitioning
+     */
     public String cacheKey() {
         return switch (mode) {
             case NONE -> "auth=none";
             case BASIC -> "auth=basic:" + fingerprint(username + ":" + password);
             case API_KEY -> "auth=apikey:" + fingerprint(token);
             case BEARER_TOKEN -> "auth=bearer:" + fingerprint(token);
-            case CERTIFICATE -> "auth=certificate:" + certificatePath + "|" + keyPath + "|pass=" + !keyPassphrase.isBlank();
+            case CERTIFICATE -> "auth=certificate:" + certificatePath + "|" + keyPath
+                    + "|pass=" + fingerprint(keyPassphrase);
         };
     }
 
-    /** Returns default headers for API key and bearer-token auth. */
+    /**
+     * Returns default HTTP headers for header-based authentication.
+     *
+     * <p>Returned header values contain sensitive credentials and must not be logged.</p>
+     *
+     * @return new header array, empty when the selected mode does not use a header
+     */
     public Header[] defaultHeaders() {
         return authorizationHeader() == null ? new Header[0] : new Header[] { authorizationHeader() };
     }
 
-    /** Applies auth headers to a classic request builder. */
+    /**
+     * Applies authentication headers to a classic request builder.
+     *
+     * @param builder mutable builder that receives the sensitive Authorization header
+     * @throws NullPointerException if {@code builder} is {@code null} and a header is required
+     */
     public void applyTo(ClassicRequestBuilder builder) {
         Header header = authorizationHeader();
         if (header != null) {
@@ -243,7 +352,12 @@ public final class OpenSearchAuth {
         }
     }
 
-    /** Applies auth headers to a classic request. */
+    /**
+     * Applies authentication headers to a classic request.
+     *
+     * @param request mutable request that receives the sensitive Authorization header
+     * @throws NullPointerException if {@code request} is {@code null} and a header is required
+     */
     public void applyTo(HttpRequest request) {
         Header header = authorizationHeader();
         if (header != null) {
@@ -251,7 +365,17 @@ public final class OpenSearchAuth {
         }
     }
 
-    /** Loads client certificate key material into the supplied SSL context builder when selected. */
+    /**
+     * Loads selected client-certificate key material into an SSL context builder.
+     *
+     * <p>The method performs blocking file and cryptographic I/O on the calling thread. It is a
+     * no-op for modes other than {@link Mode#CERTIFICATE}.</p>
+     *
+     * @param builder mutable SSL context builder that receives key material
+     * @throws GeneralSecurityException if credentials are incomplete or key material is invalid
+     * @throws IOException if certificate or private-key files cannot be read
+     * @throws NullPointerException if {@code builder} is null in certificate mode
+     */
     public void loadClientKeyMaterial(SSLContextBuilder builder) throws GeneralSecurityException, IOException {
         if (mode != Mode.CERTIFICATE) {
             return;

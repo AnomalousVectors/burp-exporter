@@ -22,6 +22,10 @@ class BulkErrorClassificationTest {
         assertThat(BulkErrorClassification.of("validation_exception")).isEqualTo(BulkErrorClassification.PERMANENT);
         assertThat(BulkErrorClassification.of("parse_exception")).isEqualTo(BulkErrorClassification.PERMANENT);
         assertThat(BulkErrorClassification.of("query_shard_exception")).isEqualTo(BulkErrorClassification.PERMANENT);
+        assertThat(BulkErrorClassification.of(BulkErrorClassification.DOCUMENT_TOO_LARGE_TYPE))
+                .isEqualTo(BulkErrorClassification.PERMANENT);
+        assertThat(BulkErrorClassification.of(BulkErrorClassification.SEARCH_MAX_BUDGET_EXCEEDED_TYPE))
+                .isEqualTo(BulkErrorClassification.PERMANENT);
     }
 
     @Test
@@ -37,6 +41,8 @@ class BulkErrorClassificationTest {
         assertThat(BulkErrorClassification.of("cluster_block_exception")).isEqualTo(BulkErrorClassification.TRANSIENT);
         assertThat(BulkErrorClassification.of("unavailable_shards_exception")).isEqualTo(BulkErrorClassification.TRANSIENT);
         assertThat(BulkErrorClassification.of("process_cluster_event_timeout_exception")).isEqualTo(BulkErrorClassification.TRANSIENT);
+        assertThat(BulkErrorClassification.of("live_bulk_budget_exceeded"))
+                .isEqualTo(BulkErrorClassification.TRANSIENT);
     }
 
     @Test

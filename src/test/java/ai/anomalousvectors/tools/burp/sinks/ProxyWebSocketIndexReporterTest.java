@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
@@ -515,15 +516,23 @@ class ProxyWebSocketIndexReporterTest {
                 ConfigState.DEFAULT_FINDINGS_SEVERITIES,
                 null));
         MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
-        when(api.proxy().webSocketHistory()).thenReturn(List.of());
+        CountDownLatch historyReadStarted = new CountDownLatch(1);
+        CountDownLatch allowHistoryReadToFinish = new CountDownLatch(1);
+        when(api.proxy().webSocketHistory()).thenAnswer(invocation -> {
+            historyReadStarted.countDown();
+            assertThat(allowHistoryReadToFinish.await(2, TimeUnit.SECONDS)).isTrue();
+            return List.of();
+        });
         MontoyaApiProvider.set(api);
 
         ProxyWebSocketIndexReporter.pushHistoricSnapshotNow();
+        assertThat(historyReadStarted.await(2, TimeUnit.SECONDS)).isTrue();
         assertThat(schedulerField().isStarted()).isFalse();
 
         ProxyWebSocketIndexReporter.startLivePoll();
+        allowHistoryReadToFinish.countDown();
 
-        assertThat(schedulerField().isStarted()).isTrue();
+        assertEventuallySchedulerStarted();
     }
 
     private static LazyScheduler schedulerField() throws Exception {

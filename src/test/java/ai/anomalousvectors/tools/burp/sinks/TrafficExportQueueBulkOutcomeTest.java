@@ -81,6 +81,28 @@ class TrafficExportQueueBulkOutcomeTest {
     }
 
     @Test
+    void applyBulkOutcome_stoppedPartial_recordsSuccessMapsButSuppressesFailures() {
+        RuntimeConfig.setExportRunning(false);
+        ChunkedBulkSender.Result result = new ChunkedBulkSender.Result(
+                1,
+                2,
+                1_000L,
+                400L,
+                Map.of("PROXY", 1),
+                Map.of("REPEATER", 1),
+                Map.of("proxy_live_http", 1),
+                Map.of("repeater_live_http", 1));
+
+        TrafficExportQueue.applyBulkOutcome(result, 100L, 10);
+
+        assertThat(ExportStats.getSuccessCount("traffic")).isEqualTo(1);
+        assertThat(ExportStats.getFailureCount("traffic")).isZero();
+        assertThat(ExportStats.getTrafficToolTypeSuccessCount("PROXY")).isEqualTo(1);
+        assertThat(ExportStats.getTrafficToolTypeFailureCount("REPEATER")).isZero();
+        assertThat(ExportStats.getTrafficSourceFailureCount("repeater_live_http")).isZero();
+    }
+
+    @Test
     void applyBulkOutcome_zeroAttempted_noCountersAdvance() {
         ChunkedBulkSender.Result result = new ChunkedBulkSender.Result(
                 0,

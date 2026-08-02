@@ -18,6 +18,8 @@ import net.miginfocom.swing.MigLayout;
 
 /**
  * Inline OpenSearch authentication and TLS sub-panels extracted from {@link ConfigPanel}.
+ *
+ * <p>This helper is not thread-safe. Caller must invoke its builders on the EDT.</p>
  */
 final class ConfigOpenSearchInlinePanels {
 
@@ -32,11 +34,19 @@ final class ConfigOpenSearchInlinePanels {
             JTextField jwtTokenField,
             JTextField certPathField,
             JTextField certKeyPathField,
-            JPasswordField certPassphraseField) {
+            JPasswordField certPassphraseField,
+            javax.swing.JLabel bearerTokenWarningLabel) {
     }
 
     /**
      * Builds the auth-type selector and credential cards shown on the OpenSearch destination row.
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @param fields non-null caller-owned credential controls
+     * @param onAuthTypeChanged callback invoked on the EDT after operator selection changes
+     * @param suppressAuthSync reports whether programmatic selection should suppress the callback
+     * @return assembled auth form and its auth-type combo box
      */
     static AuthFormResult buildAuthFormPanel(AuthFormFields fields, Runnable onAuthTypeChanged,
             BooleanSupplier suppressAuthSync) {
@@ -44,25 +54,35 @@ final class ConfigOpenSearchInlinePanels {
         JComboBox<String> authTypeCombo = new Tooltips.ItemTooltipComboBox<>(authTypes,
                 java.util.Map.of(
                         "API key", Tooltips.htmlRaw(
-                                "Recommended for programmatic access when available.",
-                                "Use a scoped API key for indexing/export operations.",
-                                "Note: OpenSearch API keys are a newer OpenSearch Security feature, so older clusters may not support them.",
+                                "<b>API key</b>",
+                                "Recommended for programmatic OpenSearch export/indexing when the cluster supports API keys.",
+                                "Prefer a scoped key that can outlast the export run.",
+                                "Note: OpenSearch API keys are a newer OpenSearch Security feature; older clusters may not support them.",
+                                "",
                                 "Reference: https://docs.opensearch.org/latest/security/access-control/api-keys/"),
-                        "Bearer token", Tooltips.htmlRaw(
-                                "Use when the OpenSearch cluster is configured for token-based authentication, such as JWT, OIDC, service-account tokens, or another bearer-token workflow.",
-                                "This is a good option when your organization already issues short-lived or centrally managed tokens.",
+                        "Bearer token", ConfigPanel.withTemporaryCredentialRisk(
+                                "<b>Bearer token</b>",
+                                "Use when OpenSearch accepts JWT, OIDC, service-account tokens, or another bearer-token workflow.",
+                                "Many bearer tokens are short-lived. Prefer <b>API key</b> (when available) or <b>Basic</b> for multi-day or unattended export runs.",
+                                "",
                                 "References:",
                                 "https://docs.opensearch.org/latest/security/authentication-backends/jwt/",
                                 "https://docs.opensearch.org/latest/security/access-control/authentication-tokens/"),
                         "Certificate", Tooltips.htmlRaw(
+                                "<b>Certificate</b>",
                                 "Use client certificate authentication when the cluster requires mutual TLS or certificate-based identity.",
-                                "This is strong, but usually requires more setup because users must provide a client certificate, private key, and the cluster must trust the issuing CA.",
+                                "Provide a client certificate, private key, and any required passphrase; the cluster must trust the issuing CA.",
+                                "Strong, but usually more setup than API key or Basic.",
+                                "",
                                 "Reference: https://docs.opensearch.org/latest/security/authentication-backends/client-auth/"),
                         "Basic", Tooltips.htmlRaw(
-                                "Use a username and password for clusters using the OpenSearch internal user database, LDAP/Active Directory-backed users, or another backend exposed through HTTP Basic authentication.",
-                                "This is common and easy to configure, but API keys or short-lived tokens are usually better for service-style integrations.",
+                                "<b>Basic</b>",
+                                "Use a username and password for the OpenSearch internal user database, LDAP/Active Directory-backed users, or another HTTP Basic backend.",
+                                "Common and easy to configure. API keys are usually better for service-style integrations when the cluster supports them.",
+                                "",
                                 "Reference: https://docs.opensearch.org/latest/security/authentication-backends/basic-authc/"),
                         "None", Tooltips.htmlRaw(
+                                "<b>None</b>",
                                 "Send requests without authentication headers.",
                                 "Use only for local testing, isolated lab clusters, or deployments where access is enforced by the network or an upstream proxy.")));
         authTypeCombo.setName("os.authType");
@@ -115,20 +135,42 @@ final class ConfigOpenSearchInlinePanels {
         });
         applyAuthTypeCardVisibility.accept(String.valueOf(authTypeCombo.getSelectedItem()));
 
-        JPanel form = new JPanel(new MigLayout("insets 0", "[pref][pref][grow]", "[top]"));
+        JPanel form = new JPanel(new MigLayout("insets 0, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[top]"));
         form.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-        String authTypeTip = Tooltips.html("Select how requests to OpenSearch authenticate.");
-        String basicUserTip = Tooltips.html("OpenSearch Basic auth username.", "Stored only within in-process memory.");
-        String basicPasswordTip = Tooltips.html("OpenSearch Basic auth password.", "Stored only within in-process memory.");
-        String apiKeyTokenTip = Tooltips.html(
-                "OpenSearch API key.",
-                "Use the token returned by upstream OpenSearch API key creation.",
+        String authTypeTip = Tooltips.htmlRaw(
+                "<b>Auth type</b>",
+                "Select how requests to OpenSearch authenticate.",
+                "Hover each dropdown item for guidance.",
+                "API key is usually best for long or unattended export runs when the cluster supports it.");
+        String basicUserTip = Tooltips.htmlRaw(
+                "<b>Username</b>",
+                "OpenSearch Basic auth username.",
                 "Stored only within in-process memory.");
-        String jwtTip = Tooltips.html("OpenSearch bearer token.", "Stored only within in-process memory.");
-        String certPathTip = Tooltips.html("Path to the client certificate file used for OpenSearch authentication.");
-        String keyPathTip = Tooltips.html("Path to the client private key file used for OpenSearch authentication.");
-        String passphraseTip = Tooltips.html("Client key passphrase.", "Stored only within in-process memory.");
+        String basicPasswordTip = Tooltips.htmlRaw(
+                "<b>Password</b>",
+                "OpenSearch Basic auth password.",
+                "Stored only within in-process memory.");
+        String apiKeyTokenTip = Tooltips.htmlRaw(
+                "<b>API Key</b>",
+                "OpenSearch API key token returned by upstream API key creation.",
+                "Prefer a scoped key that can outlast the export run.",
+                "Stored only within in-process memory.");
+        String jwtTip = ConfigPanel.withTemporaryCredentialRisk(
+                "<b>Bearer Token</b>",
+                "OpenSearch bearer/JWT/OIDC access token.",
+                "Many bearer tokens are short-lived. Prefer <b>API key</b> (when available) or <b>Basic</b> for multi-day or unattended export runs.",
+                "Stored only within in-process memory.");
+        String certPathTip = Tooltips.htmlRaw(
+                "<b>Cert Path</b>",
+                "Path to the client certificate file used for OpenSearch mutual TLS / certificate auth.");
+        String keyPathTip = Tooltips.htmlRaw(
+                "<b>Key Path</b>",
+                "Path to the client private key file used with the OpenSearch client certificate.");
+        String passphraseTip = Tooltips.htmlRaw(
+                "<b>Passphrase</b>",
+                "Optional passphrase for the OpenSearch client private key.",
+                "Stored only within in-process memory.");
 
         Tooltips.apply(fields.userField(), basicUserTip);
         Tooltips.apply(fields.passwordField(), basicPasswordTip);
@@ -144,20 +186,25 @@ final class ConfigOpenSearchInlinePanels {
         addAuthFieldRow(apiKeyCard, "API Key:", fields.apiKeyTokenField(), apiKeyTokenTip);
 
         addAuthFieldRow(jwtCard, "Bearer Token:", fields.jwtTokenField(), jwtTip);
+        if (fields.bearerTokenWarningLabel() != null) {
+            fields.bearerTokenWarningLabel().setName("os.bearer.warning");
+            jwtCard.add(fields.bearerTokenWarningLabel(), "span 2, growx, wrap");
+        }
 
         addAuthFieldRow(clientCertCard, "Cert Path:", fields.certPathField(), certPathTip);
         addAuthFieldRow(clientCertCard, "Key Path:", fields.certKeyPathField(), keyPathTip);
         addAuthFieldRow(clientCertCard, "Passphrase:", fields.certPassphraseField(), passphraseTip);
 
         form.add(Tooltips.label("Auth type:", authTypeTip), "top");
-        form.add(authTypeCombo, "top");
-        form.add(contentCards, "gapleft 15, top");
+        form.add(authTypeCombo, "top, wrap");
+        form.add(contentCards, "span 2, top");
 
         return new AuthFormResult(form, authTypeCombo);
     }
 
     private static JPanel authCardPanel() {
-        JPanel panel = new JPanel(new MigLayout("insets 0, wrap 2", "[pref][pref]", "[]"));
+        JPanel panel = new JPanel(new MigLayout(
+                "insets 0, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[]"));
         panel.setOpaque(false);
         return panel;
     }
@@ -175,6 +222,12 @@ final class ConfigOpenSearchInlinePanels {
 
     /**
      * Builds TLS mode and pinned-certificate import controls for the OpenSearch destination row.
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @param fields non-null caller-owned TLS controls
+     * @param onTlsModeSelected callback invoked on the EDT after operator selection changes
+     * @return assembled TLS controls
      */
     static JPanel buildTlsPanel(TlsFormFields fields, Consumer<String> onTlsModeSelected) {
         fields.tlsModeCombo().setName("os.tlsMode");
@@ -205,26 +258,39 @@ final class ConfigOpenSearchInlinePanels {
             controls.repaint();
         });
 
-        String tlsModeTip = Tooltips.html(
-                "Select how OpenSearch TLS server certificates are trusted.",
-                "- Verify: uses the system trust store.",
-                "- Trust pinned certificate: requires an imported X.509 server certificate.",
-                "- Trust all certificates: disables verification. Use with caution.");
-        String importTip = Tooltips.html(
+        String tlsModeTip = Tooltips.htmlRaw(
+                "<b>TLS mode</b>",
+                "Select how OpenSearch HTTPS server certificates are trusted.",
+                "",
+                "<b>Verify</b>",
+                "&nbsp;&nbsp;Use the JVM/system trust store. Recommended for production.",
+                "<b>Trust pinned certificate</b>",
+                "&nbsp;&nbsp;Trust only an imported X.509 server certificate for this Burp session.",
+                "<b>Trust all certificates</b>",
+                "&nbsp;&nbsp;Disable verification. Lab/testing only; allows man-in-the-middle interception.");
+        String importTip = Tooltips.htmlRaw(
+                "<b>Import pinned certificate</b>",
                 "Import a pinned X.509 server certificate for OpenSearch TLS trust.",
-                "  Common file types: .cer, .crt, .der, .pem.",
-                "  The imported certificate bytes and source path are stored only within in-process memory.");
+                "Common file types: <code>.cer</code>, <code>.crt</code>, <code>.der</code>, <code>.pem</code>.",
+                "Imported certificate bytes and source path stay in session memory only.");
         Tooltips.apply(fields.importPinnedCertificateButton(), importTip);
 
-        JPanel form = new JPanel(new MigLayout("insets 0", "[pref][pref][pref]", "[]"));
+        JPanel form = new JPanel(new MigLayout(
+                "insets 0, hidemode 3, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[]"));
         form.setOpaque(false);
         form.setAlignmentX(Component.LEFT_ALIGNMENT);
         form.add(Tooltips.label("TLS mode:", tlsModeTip));
-        form.add(fields.tlsModeCombo());
-        form.add(controls, "gapleft 12");
+        form.add(fields.tlsModeCombo(), "wrap");
+        form.add(controls, "span 2");
         return form;
     }
 
+    /**
+     * Normalizes a UI TLS label to a runtime configuration value.
+     *
+     * @param label selected UI label; null, blank, and unknown labels select verification
+     * @return one of the canonical {@link ConfigState} TLS mode values
+     */
     static String normalizeTlsModeLabel(String label) {
         if (label == null || label.isBlank()) {
             return ConfigState.OPEN_SEARCH_TLS_VERIFY;

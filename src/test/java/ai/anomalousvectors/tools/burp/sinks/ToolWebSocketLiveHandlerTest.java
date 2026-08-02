@@ -223,17 +223,7 @@ class ToolWebSocketLiveHandlerTest {
 
     @Test
     void textMessageHandler_enqueuesFilteredDocumentWhenExportRunning() throws Exception {
-        RuntimeConfig.updateState(new ConfigState.State(
-                List.of("traffic"),
-                "all",
-                List.of(),
-                new ConfigState.Sinks(false, null, true, "https://opensearch.url:9200", null, null, false),
-                ConfigState.DEFAULT_SETTINGS_SUB,
-                List.of("repeater"),
-                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
-                null));
-        RuntimeConfig.setExportRunning(true);
-        RuntimeConfig.setExportStarting(false);
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("repeater"));
 
         MessageHandler handler = registerRepeaterHandler();
 
@@ -250,17 +240,7 @@ class ToolWebSocketLiveHandlerTest {
 
     @Test
     void binaryMessageHandler_enqueuesBase64PayloadWhenExportRunning() throws Exception {
-        RuntimeConfig.updateState(new ConfigState.State(
-                List.of("traffic"),
-                "all",
-                List.of(),
-                new ConfigState.Sinks(false, null, true, "https://opensearch.url:9200", null, null, false),
-                ConfigState.DEFAULT_SETTINGS_SUB,
-                List.of("intruder"),
-                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
-                null));
-        RuntimeConfig.setExportRunning(true);
-        RuntimeConfig.setExportStarting(false);
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("intruder"));
 
         MessageHandler handler = registerIntruderHandler();
 

@@ -168,7 +168,9 @@ class SitemapIndexReporterIT {
             try {
                 SitemapIndexReporter.start();
                 SitemapIndexReporter.pushSnapshotNow();
-                awaitInfoLog(infoLines, "[StartupExport] Sitemap: exporting backlog: 1 item(s).");
+                awaitInfoLog(
+                        infoLines,
+                        "[StartupExport] Sitemap: exporting backlog: 1 item(s) with adaptive startup slices.");
                 awaitInfoLogStartingWith(infoLines, "[SnapshotExport] Sitemap: snapshot complete: captured=");
             } finally {
                 Logger.unregisterListener(logListener);

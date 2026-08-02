@@ -3,9 +3,12 @@ package ai.anomalousvectors.tools.burp.sinks;
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.ControlStatusBridge;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
+import ai.anomalousvectors.tools.burp.utils.ExportControlBridge;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
+import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
@@ -75,14 +78,18 @@ public final class ExportReporterLifecycle {
      * runtime matches what the Start/Stop controls show.</p>
      */
     public static void stopAndClearPendingExportWork() {
+        ExportRunToken token = RuntimeConfig.currentExportRunToken();
         RuntimeConfig.setExportRunning(false);
+        StartupSnapshotCoordinator.cancelRun(token);
         stopBackgroundReporters();
+        StartupSnapshotCoordinator.awaitIdle(token, RuntimeConfig.EXPORT_STOP_UX_WALL_CLOCK_MS);
         TrafficLiveAttributionSummary.clearRunState();
         clearRepeaterRunState();
         TrafficExportQueue.stopWorker();
         TrafficExportQueue.clearPendingWork();
-        IndexingRetryCoordinator.getInstance().clearPendingWork();
         IndexingRetryCoordinator.getInstance().stopDrainThread();
+        IndexingRetryCoordinator.getInstance().clearPendingWork();
+        FileExportService.validateRunArtifacts();
         FileExportService.resetForRuntime();
     }
 
@@ -110,22 +117,45 @@ public final class ExportReporterLifecycle {
     /**
      * Awaits completion of the most recent {@link #releaseRunResourcesAsync()} worker, if any.
      *
-     * <p>Intended for test teardown so a Stop-triggered async {@link OpenSearchConnector#closeAll()}
-     * cannot race with a subsequent integration test that fetches a cached client. Returns once
-     * the thread terminates or the wait expires; thread-interruption is preserved.</p>
+     * <p>Intended for test teardown so a Stop-triggered async
+     * {@link OpenSearchConnector#closeAll()} cannot race with a subsequent integration test that
+     * fetches a cached client. Returns once the thread terminates or the wait expires; thread
+     * interruption is preserved. This method blocks the caller and must not be invoked on the
+     * EDT.</p>
      *
      * @param timeoutMillis maximum time to wait, in milliseconds; {@code 0} waits indefinitely
+     * @throws IllegalArgumentException if {@code timeoutMillis} is negative and a worker is present
      */
     public static void awaitStopReclaim(long timeoutMillis) {
-        Thread t = lastStopReclaimThread.getAndSet(null);
+        awaitStopReclaimComplete(timeoutMillis);
+    }
+
+    /**
+     * Awaits completion of the most recent connection-reclaim worker.
+     *
+     * <p>This method blocks the caller and must not be invoked on the EDT. If interrupted, it
+     * restores the interrupt flag and returns {@code false}.</p>
+     *
+     * @param timeoutMillis maximum wait in milliseconds; {@code 0} waits indefinitely
+     * @return {@code true} when no worker exists or the worker terminated within the timeout
+     * @throws IllegalArgumentException if {@code timeoutMillis} is negative and a worker is present
+     */
+    public static boolean awaitStopReclaimComplete(long timeoutMillis) {
+        Thread t = lastStopReclaimThread.get();
         if (t == null) {
-            return;
+            return true;
         }
         try {
             t.join(timeoutMillis);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         }
+        boolean complete = !t.isAlive();
+        if (complete) {
+            lastStopReclaimThread.compareAndSet(t, null);
+        }
+        return complete;
     }
 
     /**
@@ -156,8 +186,11 @@ public final class ExportReporterLifecycle {
         awaitStopReclaim(5_000L);
         stopAndClearSessionState();
         ControlStatusBridge.clear();
+        ExportControlBridge.clear();
         DiskSpaceGuard.resetForTests();
         ExportStats.resetForTests();
         FileExportService.resetForTests();
+        StartupSnapshotCoordinator.resetForTests();
+        RuntimeConfig.resetExportRunForTests();
     }
 }

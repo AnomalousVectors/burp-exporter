@@ -12,6 +12,7 @@ import burp.api.montoya.logging.Logging;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 class LoggerTest {
 
@@ -68,6 +69,61 @@ class LoggerTest {
 
             verify(burpLogging).logToOutput(burpLine);
             assertThat(panel).containsExactly(panelLine);
+        } finally {
+            Logger.resetState();
+        }
+    }
+
+    @Test
+    void generalRuntimeMethods_doNotWriteToBurpConsole() throws Exception {
+        try {
+            Logging burpLogging = mock(Logging.class);
+            Logger.initialize(burpLogging);
+            List<String> panel = new ArrayList<>();
+            Logger.registerListener((level, msg) -> panel.add(level + ":" + msg));
+
+            SwingUtilities.invokeAndWait(() -> {
+                Logger.logInfo("runtime-info");
+                Logger.logWarn("runtime-warn");
+                Logger.logError("runtime-error");
+                Logger.logError("runtime-exception", new IllegalStateException("boom"));
+            });
+
+            verifyNoInteractions(burpLogging);
+            assertThat(panel)
+                    .anyMatch(line -> line.equals("INFO:runtime-info"))
+                    .anyMatch(line -> line.equals("WARN:runtime-warn"))
+                    .anyMatch(line -> line.equals("ERROR:runtime-error"))
+                    .anyMatch(line -> line.contains("ERROR:runtime-exception")
+                            && line.contains("IllegalStateException"));
+        } finally {
+            Logger.resetState();
+        }
+    }
+
+    @Test
+    void lifecycleError_usesBurpErrorConsoleAndPanelText() throws Exception {
+        try {
+            Logging burpLogging = mock(Logging.class);
+            Logger.initialize(burpLogging);
+            List<String> panel = new ArrayList<>();
+            Logger.registerListener((level, msg) -> panel.add(msg));
+            IllegalStateException failure = new IllegalStateException("boom");
+
+            SwingUtilities.invokeAndWait(() -> Logger.logErrorPanelAndBurp(
+                    "[Exporter] initialization failed",
+                    "Burp Exporter initialization failed",
+                    failure));
+
+            verify(burpLogging).logToError(org.mockito.ArgumentMatchers.<String>argThat(
+                    line -> line.contains("Burp Exporter initialization failed")
+                            && line.contains("IllegalStateException")));
+            assertThat(panel)
+                    .singleElement()
+                    .asString()
+                    .contains("[Exporter] initialization failed")
+                    .contains("IllegalStateException")
+                    .containsOnlyOnce("boom");
         } finally {
             Logger.resetState();
         }

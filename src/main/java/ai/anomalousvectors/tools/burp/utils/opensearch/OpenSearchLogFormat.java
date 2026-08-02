@@ -6,9 +6,16 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Shared formatting for OpenSearch HTTP request/response logging (Test Connection only).
- * Produces one log entry per request and per response, with indented raw content from the wire.
- * Protocol reflects actual HTTP version when known; otherwise "HTTP (version unknown)" (e.g. SSL failure before any response).
+ * Shared formatting for search-database HTTP request/response logging.
+ *
+ * <p>Used by Test Connection probes and bulk failure DEBUG lines so multi-line bodies (HTML gateway
+ * pages, JSON errors) stay indented and readable in the Log panel.</p>
+ *
+ * <p>Protocol reflects actual HTTP version when known; otherwise {@code HTTP (version unknown)}
+ * (for example SSL failure before any response).</p>
+ *
+ * <p>Stateless and thread-safe. Header helpers redact known credential-bearing headers, but
+ * arbitrary bodies and exception messages are not secret-scanned.</p>
  */
 public final class OpenSearchLogFormat {
 
@@ -17,14 +24,32 @@ public final class OpenSearchLogFormat {
     private OpenSearchLogFormat() {}
 
     /**
-     * Builds the actual request as sent for logging: request line, Host, and redacted Authorization when auth was used.
-     * Use for Test Connection so the log reflects what was on the wire (with credentials redacted).
+     * Builds a request-line summary with a redacted Basic Authorization label.
+     *
+     * @param method HTTP method
+     * @param path request path
+     * @param baseUrl base URL used to derive the Host header
+     * @param protocol negotiated protocol, or blank when unknown
+     * @param authUsed whether Basic authentication was attached
+     * @return request summary containing no raw Basic credentials
      */
     public static String formatRequestForLog(String method, String path, String baseUrl, String protocol, boolean authUsed) {
         return formatRequestForLog(method, path, baseUrl, protocol, authUsed ? "Basic ***" : "");
     }
 
-    /** Builds the actual request as sent for logging with the supplied redacted Authorization value. */
+    /**
+     * Builds a request-line summary with a caller-supplied redacted Authorization label.
+     *
+     * <p>{@code redactedAuthorization} is appended verbatim. Callers must pass only a scheme and
+     * redaction marker, never a raw credential or signature.</p>
+     *
+     * @param method HTTP method
+     * @param path request path
+     * @param baseUrl base URL used to derive the Host header
+     * @param protocol negotiated protocol, or blank when unknown
+     * @param redactedAuthorization pre-redacted label, or blank to omit the header
+     * @return formatted request summary
+     */
     public static String formatRequestForLog(
             String method, String path, String baseUrl, String protocol, String redactedAuthorization) {
         String proto = protocol != null && !protocol.isBlank() ? protocol : PROTOCOL_UNKNOWN;
@@ -51,8 +76,18 @@ public final class OpenSearchLogFormat {
     }
 
     /**
-     * Builds a response string from real status and headers (redacted). Use for Test Connection.
-     * If headerLines is null or empty, omits header block and uses only status line + body.
+     * Builds a response string from status, pre-redacted headers, and body.
+     *
+     * <p>Header lines and body are appended verbatim. Callers must redact sensitive header values
+     * with {@link #shouldRedactHeader(String)} before passing them and must decide whether the
+     * response body is appropriate to log.</p>
+     *
+     * @param body response body; {@code null} becomes blank
+     * @param protocol negotiated protocol, or blank when unknown
+     * @param statusCode HTTP status code
+     * @param reasonPhrase HTTP reason phrase; {@code null} becomes blank
+     * @param headerLines pre-redacted header lines; empty adds a JSON content-type placeholder
+     * @return formatted multi-line response
      */
     public static String buildRawResponseWithHeaders(String body, String protocol, int statusCode, String reasonPhrase, List<String> headerLines) {
         String proto = protocol != null && !protocol.isBlank() ? protocol : PROTOCOL_UNKNOWN;
@@ -70,16 +105,29 @@ public final class OpenSearchLogFormat {
         return sb.toString();
     }
 
-    /** Returns true for header names that should have their value redacted in logs (e.g. Authorization, Set-Cookie). */
+    /**
+     * Returns whether a header's value must be redacted in logs.
+     *
+     * @param name header name; {@code null} is not classified as sensitive
+     * @return {@code true} for known credential-, cookie-, or SigV4-bearing headers
+     */
     public static boolean shouldRedactHeader(String name) {
         if (name == null) return false;
         String n = name.trim().toLowerCase(java.util.Locale.ROOT);
-        return n.equals("authorization") || n.equals("proxy-authorization") || n.equals("set-cookie") || n.equals("cookie");
+        return n.equals("authorization")
+                || n.equals("proxy-authorization")
+                || n.equals("set-cookie")
+                || n.equals("cookie")
+                || n.equals("x-amz-security-token")
+                || n.equals("x-amz-signature");
     }
 
     /**
-     * Extracts the HTTP protocol from an OpenSearch/HttpClient exception message when present.
-     * e.g. "status line [HTTP/2.0 401 Unauthorized]" -> "HTTP/2.0"; "status line [HTTP/1.1 200 OK]" -> "HTTP/1.1".
+     * Extracts an HTTP protocol from a search-client exception chain.
+     *
+     * <p>Recognizes status-line messages for HTTP/1.1 and HTTP/2.0.</p>
+     *
+     * @param t exception chain root; may be {@code null}
      * @return protocol string or null if not found
      */
     public static String parseProtocolFromException(Throwable t) {
@@ -93,7 +141,12 @@ public final class OpenSearchLogFormat {
 
     private static final Pattern STATUS_LINE = Pattern.compile("(?i)status\\s+line\\s+\\[(?:HTTP/[^\\s]+)\\s+(\\d+)\\s+([^\\]]*)\\]");
 
-    /** Extracts status code from exception; returns 500 if not parseable. */
+    /**
+     * Extracts an HTTP status code from an exception chain.
+     *
+     * @param t exception chain root; may be {@code null}
+     * @return parsed status code, or {@code 500} when unavailable
+     */
     public static int parseStatusCodeFromException(Throwable t) {
         if (t == null) return 500;
         String msg = t.getMessage();
@@ -103,7 +156,12 @@ public final class OpenSearchLogFormat {
         return parseStatusCodeFromException(t.getCause());
     }
 
-    /** Extracts reason phrase from exception (e.g. "Unauthorized" from "status line [HTTP/2.0 401 Unauthorized]"). */
+    /**
+     * Extracts an HTTP reason phrase from an exception chain.
+     *
+     * @param t exception chain root; may be {@code null}
+     * @return parsed reason phrase, or {@code Error} when unavailable
+     */
     public static String parseReasonFromException(Throwable t) {
         if (t == null) return "Error";
         String msg = t.getMessage();
@@ -116,9 +174,72 @@ public final class OpenSearchLogFormat {
         return parseReasonFromException(t.getCause());
     }
 
-    /** Prefixes each line so raw request/response aligns with wrapped-line indent in the log. */
+    /**
+     * Prefixes each line for alignment in the log.
+     *
+     * @param raw request or response text; {@code null} is returned unchanged
+     * @return indented text, or the original null/empty value
+     */
     public static String indentRaw(String raw) {
         if (raw == null || raw.isEmpty()) return raw;
         return "  " + raw.replace("\n", "\n  ");
+    }
+
+    /**
+     * Formats an HTTP failure status and response body for DEBUG logs.
+     *
+     * <p>Puts the status on the first line, then indents the body with {@link #indentRaw(String)}
+     * so multi-line HTML gateway pages and JSON errors match Test Connection {@code Response:}
+     * formatting instead of flush-left lines that look like new log entries.</p>
+     *
+     * @param status HTTP status code
+     * @param responseBody response entity text; {@code null}/blank yields status only
+     * @return status, or status plus indented body
+     */
+    public static String formatStatusAndIndentedBody(int status, String responseBody) {
+        String body = responseBody == null ? "" : responseBody.stripTrailing();
+        if (body.isEmpty()) {
+            return Integer.toString(status);
+        }
+        return status + "\n" + indentRaw(body);
+    }
+
+    /**
+     * Formats a bounded exception chain for transport diagnostics without stack-trace noise.
+     *
+     * <p>Exception messages are normalized and length-bounded but not secret-redacted. Callers must
+     * ensure the exception chain does not contain credentials or request bodies before logging the
+     * result.</p>
+     *
+     * @param failure exception chain root; may be {@code null}
+     * @return bounded single-line description
+     */
+    static String describeExceptionChain(Throwable failure) {
+        if (failure == null) {
+            return "unknown";
+        }
+        StringBuilder detail = new StringBuilder(256);
+        Throwable current = failure;
+        int depth = 0;
+        while (current != null && depth < 5) {
+            if (detail.length() > 0) {
+                detail.append(" <- ");
+            }
+            detail.append(current.getClass().getSimpleName());
+            String message = current.getMessage();
+            if (message != null && !message.isBlank()) {
+                detail.append(": ").append(message.trim().replace('\n', ' ').replace('\r', ' '));
+            }
+            Throwable cause = current.getCause();
+            if (cause == current) {
+                break;
+            }
+            current = cause;
+            depth++;
+        }
+        if (current != null) {
+            detail.append(" <- ...");
+        }
+        return detail.length() <= 600 ? detail.toString() : detail.substring(0, 597) + "...";
     }
 }

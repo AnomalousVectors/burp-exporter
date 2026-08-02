@@ -72,8 +72,8 @@ public final class SettingsIndexReporter {
             if (!RuntimeConfig.isAnySinkEnabled()) {
                 return;
             }
-            String baseUrl = RuntimeConfig.openSearchUrl();
-            boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
+            String baseUrl = RuntimeConfig.searchBaseUrl();
+            boolean openSearchActive = RuntimeConfig.isSearchActive();
             List<String> sources = RuntimeConfig.getState().dataSources();
             if (sources == null || !sources.contains(ConfigKeys.SRC_SETTINGS)) {
                 return;
@@ -98,7 +98,7 @@ public final class SettingsIndexReporter {
             }
         } catch (Exception e) {
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            SingleDocOutcomeRecorder.record("settings", false, RuntimeConfig.isOpenSearchActive(), msg);
+            SingleDocOutcomeRecorder.record("settings", false, RuntimeConfig.isSearchActive(), msg);
             Logger.logWarnPanelOnly("[SnapshotExport] Settings: push failed for "
                     + RuntimeConfig.activeSinkSummary() + ": " + msg);
         }
@@ -110,8 +110,13 @@ public final class SettingsIndexReporter {
      * call from any thread.
      */
     public static void start() {
+        RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
         SCHEDULER.startRecurring(
-                SettingsIndexReporter::pushSnapshotIfChanged,
+                () -> {
+                    if (RuntimeConfig.isExportRunActive(token)) {
+                        pushSnapshotIfChanged();
+                    }
+                },
                 INTERVAL_SECONDS,
                 INTERVAL_SECONDS,
                 TimeUnit.SECONDS);
@@ -143,8 +148,8 @@ public final class SettingsIndexReporter {
             if (!RuntimeConfig.isAnySinkEnabled()) {
                 return;
             }
-            String baseUrl = RuntimeConfig.openSearchUrl();
-            boolean openSearchActive = RuntimeConfig.isOpenSearchActive();
+            String baseUrl = RuntimeConfig.searchBaseUrl();
+            boolean openSearchActive = RuntimeConfig.isSearchActive();
             List<String> sources = RuntimeConfig.getState().dataSources();
             if (sources == null || !sources.contains(ConfigKeys.SRC_SETTINGS)) {
                 return;
@@ -173,7 +178,7 @@ public final class SettingsIndexReporter {
             }
         } catch (Exception e) {
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            SingleDocOutcomeRecorder.record("settings", false, RuntimeConfig.isOpenSearchActive(), msg);
+            SingleDocOutcomeRecorder.record("settings", false, RuntimeConfig.isSearchActive(), msg);
             Logger.logWarnPanelOnly("[PeriodicExport] Settings: push failed for "
                     + RuntimeConfig.activeSinkSummary() + ": " + msg);
         }

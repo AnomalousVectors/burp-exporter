@@ -23,69 +23,127 @@ import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
  *
  * <p>The persisted TLS mode lives in {@link RuntimeConfig}. Imported pinned certificate material is
  * session-scoped and held only in {@link SecureCredentialStore}, similar to auth secrets.</p>
+ *
+ * <p>Stateless and safe for concurrent callers. Certificate import and SSL-context construction
+ * perform blocking file or cryptographic work on the calling thread.</p>
  */
 public final class OpenSearchTlsSupport {
 
     private OpenSearchTlsSupport() { }
 
-    /** Returns the effective OpenSearch TLS mode, honoring the insecure override property when set. */
+    /**
+     * Returns the effective upstream OpenSearch TLS mode.
+     *
+     * @return normalized TLS mode, honoring the insecure override property
+     */
     public static String currentTlsMode() {
         return currentTlsMode(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Returns the effective TLS mode for one database destination. */
+    /**
+     * Returns the effective TLS mode for one database destination.
+     *
+     * @param destination destination to inspect; {@code null} selects upstream OpenSearch
+     * @return normalized TLS mode, honoring the insecure override property
+     */
     public static String currentTlsMode(ConfigState.SearchDestination destination) {
         return "true".equalsIgnoreCase(System.getProperty("OPENSEARCH_INSECURE", "").trim())
                 ? ConfigState.OPEN_SEARCH_TLS_INSECURE
                 : configuredTlsMode(destination);
     }
 
-    /** Returns whether the current TLS mode trusts all certificates insecurely. */
+    /**
+     * Returns whether upstream OpenSearch trusts all certificates insecurely.
+     *
+     * @return {@code true} when insecure trust-all mode is active
+     */
     public static boolean isInsecureMode() {
         return isInsecureMode(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Returns whether one destination's current TLS mode trusts all certificates insecurely. */
+    /**
+     * Returns whether one destination trusts all certificates insecurely.
+     *
+     * @param destination destination to inspect; {@code null} selects upstream OpenSearch
+     * @return {@code true} when insecure trust-all mode is active
+     */
     public static boolean isInsecureMode(ConfigState.SearchDestination destination) {
         return isInsecureMode(currentTlsMode(destination));
     }
 
-    /** Returns whether a TLS mode value trusts all certificates insecurely. */
+    /**
+     * Returns whether a TLS mode value selects insecure trust-all behavior.
+     *
+     * @param tlsMode persisted or normalized mode; {@code null} normalizes to the default
+     * @return {@code true} for insecure trust-all mode
+     */
     public static boolean isInsecureMode(String tlsMode) {
         return ConfigState.OPEN_SEARCH_TLS_INSECURE.equals(ConfigState.normalizeOpenSearchTlsMode(tlsMode));
     }
 
-    /** Returns whether the current TLS mode requires a pinned certificate. */
+    /**
+     * Returns whether upstream OpenSearch requires a pinned certificate.
+     *
+     * @return {@code true} when pinned-certificate mode is active
+     */
     public static boolean isPinnedMode() {
         return isPinnedMode(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Returns whether one destination's current TLS mode requires a pinned certificate. */
+    /**
+     * Returns whether one destination requires a pinned certificate.
+     *
+     * @param destination destination to inspect; {@code null} selects upstream OpenSearch
+     * @return {@code true} when pinned-certificate mode is active
+     */
     public static boolean isPinnedMode(ConfigState.SearchDestination destination) {
         return isPinnedMode(currentTlsMode(destination));
     }
 
-    /** Returns whether a TLS mode value requires a pinned certificate. */
+    /**
+     * Returns whether a TLS mode value selects pinned-certificate behavior.
+     *
+     * @param tlsMode persisted or normalized mode; {@code null} normalizes to the default
+     * @return {@code true} for pinned-certificate mode
+     */
     public static boolean isPinnedMode(String tlsMode) {
         return ConfigState.OPEN_SEARCH_TLS_PINNED.equals(ConfigState.normalizeOpenSearchTlsMode(tlsMode));
     }
 
-    /** Returns whether pinned certificate material is currently loaded in session memory. */
+    /**
+     * Returns whether upstream OpenSearch has pinned certificate material in session memory.
+     *
+     * @return {@code true} when encoded certificate material is loaded
+     */
     public static boolean hasPinnedCertificate() {
         return hasPinnedCertificate(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Returns whether one destination has pinned certificate material loaded in session memory. */
+    /**
+     * Returns whether one destination has pinned certificate material in session memory.
+     *
+     * @param destination destination to inspect; {@code null} selects upstream OpenSearch
+     * @return {@code true} when encoded certificate material is loaded
+     */
     public static boolean hasPinnedCertificate(ConfigState.SearchDestination destination) {
         return pinnedCertificate(destination).encodedBytes().length > 0;
     }
 
-    /** Returns the loaded pinned certificate fingerprint, or blank when none is loaded. */
+    /**
+     * Returns upstream OpenSearch's loaded pinned-certificate fingerprint.
+     *
+     * @return SHA-256 fingerprint, or blank when no pin is loaded
+     */
     public static String pinnedCertificateFingerprint() {
         return pinnedCertificateFingerprint(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Returns one destination's loaded pinned certificate fingerprint, or blank when none is loaded. */
+    /**
+     * Returns one destination's loaded pinned-certificate fingerprint.
+     *
+     * @param destination destination to inspect; {@code null} selects upstream OpenSearch
+     * @return SHA-256 fingerprint, or blank when no pin is loaded
+     */
     public static String pinnedCertificateFingerprint(ConfigState.SearchDestination destination) {
         return pinnedCertificate(destination).fingerprintSha256();
     }
@@ -123,23 +181,45 @@ public final class OpenSearchTlsSupport {
         }
     }
 
-    /** Builds an SSL context that trusts only the currently imported pinned certificate. */
+    /**
+     * Builds an SSL context that trusts only upstream OpenSearch's imported pin.
+     *
+     * @return initialized pinned-trust SSL context
+     * @throws GeneralSecurityException if no pin is loaded or trust setup fails
+     */
     public static SSLContext buildPinnedSslContext() throws GeneralSecurityException {
         return buildPinnedSslContext(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Builds an SSL context that trusts only one destination's imported pinned certificate. */
+    /**
+     * Builds an SSL context that trusts only one destination's imported pin.
+     *
+     * @param destination destination to configure; {@code null} selects upstream OpenSearch
+     * @return initialized pinned-trust SSL context
+     * @throws GeneralSecurityException if no pin is loaded or trust setup fails
+     */
     public static SSLContext buildPinnedSslContext(ConfigState.SearchDestination destination)
             throws GeneralSecurityException {
         return pinnedSslContextBuilder(destination).build();
     }
 
-    /** Builds an SSL context builder that trusts only the currently imported pinned certificate. */
+    /**
+     * Builds an SSL context builder that trusts only upstream OpenSearch's imported pin.
+     *
+     * @return pinned-trust SSL context builder
+     * @throws GeneralSecurityException if no pin is loaded or trust setup fails
+     */
     public static SSLContextBuilder pinnedSslContextBuilder() throws GeneralSecurityException {
         return pinnedSslContextBuilder(ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Builds an SSL context builder that trusts only one destination's imported pinned certificate. */
+    /**
+     * Builds an SSL context builder that trusts only one destination's imported pin.
+     *
+     * @param destination destination to configure; {@code null} selects upstream OpenSearch
+     * @return pinned-trust SSL context builder
+     * @throws GeneralSecurityException if no pin is loaded or trust setup fails
+     */
     public static SSLContextBuilder pinnedSslContextBuilder(ConfigState.SearchDestination destination)
             throws GeneralSecurityException {
         SecureCredentialStore.PinnedTlsCertificate pinned = pinnedCertificate(destination);
@@ -151,12 +231,23 @@ public final class OpenSearchTlsSupport {
                 .loadTrustMaterial((chain, authType) -> leafMatchesPinnedCertificate(chain, expected));
     }
 
-    /** Returns a user-facing trust summary for successful connections under the current mode. */
+    /**
+     * Returns a trust summary for a successful upstream OpenSearch connection.
+     *
+     * @param baseUrl connected base URL
+     * @return operator-facing trust summary
+     */
     public static String successTrustSummary(String baseUrl) {
         return successTrustSummary(baseUrl, ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Returns a user-facing trust summary for a destination's successful connection. */
+    /**
+     * Returns a trust summary for a destination's successful connection.
+     *
+     * @param baseUrl connected base URL
+     * @param destination destination that was tested; {@code null} selects upstream OpenSearch
+     * @return operator-facing trust summary
+     */
     public static String successTrustSummary(String baseUrl, ConfigState.SearchDestination destination) {
         if (!isHttps(baseUrl)) {
             return "Not applicable (HTTP)";
@@ -174,12 +265,28 @@ public final class OpenSearchTlsSupport {
         };
     }
 
-    /** Returns a user-facing trust summary for failed connections under the current mode. */
+    /**
+     * Returns a trust summary for a failed upstream OpenSearch connection.
+     *
+     * @param baseUrl attempted base URL
+     * @param detail failure detail; {@code null} becomes blank
+     * @return operator-facing trust summary
+     */
     public static String failureTrustSummary(String baseUrl, String detail) {
         return failureTrustSummary(baseUrl, detail, ConfigState.SearchDestination.OPEN_SEARCH);
     }
 
-    /** Returns a user-facing trust summary for a destination's failed connection. */
+    /**
+     * Returns a trust summary for a destination's failed connection.
+     *
+     * <p>The returned string may include {@code detail} verbatim when it appears TLS-related.
+     * Callers must not pass credentials or other secrets in the detail.</p>
+     *
+     * @param baseUrl attempted base URL
+     * @param detail failure detail; {@code null} becomes blank
+     * @param destination destination that was tested; {@code null} selects upstream OpenSearch
+     * @return operator-facing trust summary
+     */
     public static String failureTrustSummary(
             String baseUrl, String detail, ConfigState.SearchDestination destination) {
         if (!isHttps(baseUrl)) {
@@ -196,11 +303,17 @@ public final class OpenSearchTlsSupport {
         return switch (mode) {
             case ConfigState.OPEN_SEARCH_TLS_PINNED -> "Pinned certificate not verified";
             case ConfigState.OPEN_SEARCH_TLS_INSECURE -> "Trust-all certificates (insecure)";
-            default -> "System trust verification failed";
+            // Non-TLS failures (auth, signing, HTTP) must not be labeled as trust failures.
+            default -> "Not tested";
         };
     }
 
-    /** Returns true when the message looks like a TLS trust, pin, or hostname-verification failure. */
+    /**
+     * Returns whether a message looks like a TLS trust, pin, or hostname-verification failure.
+     *
+     * @param message failure detail; {@code null} is not a trust failure
+     * @return {@code true} when a known TLS/trust marker is present
+     */
     public static boolean looksLikeTrustFailure(String message) {
         if (message == null || message.isBlank()) {
             return false;

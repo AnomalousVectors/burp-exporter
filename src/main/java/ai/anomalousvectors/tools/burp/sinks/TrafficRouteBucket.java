@@ -6,6 +6,7 @@ import java.util.Map;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
+import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 
@@ -21,7 +22,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  *       document rather than the requesting Burp tool.</li>
  * </ul>
  *
- * <p>Keeping the decision in one place ensures OpenSearch bulk accounting, file-sink accounting,
+ * <p>Keeping the decision in one place ensures database bulk accounting, file-sink accounting,
  * and {@code StatsPanel} display all agree about which bucket a given document belongs to.
  * Sinks should build a {@link Route} once and use the record/resolve helpers here instead of
  * re-implementing the tool label -> bucket mapping locally.</p>
@@ -198,8 +199,58 @@ public final class TrafficRouteBucket {
     }
 
     /**
-     * Records a traffic bulk outcome for OpenSearch, consolidating the success/failure bookkeeping
-     * used by one-shot snapshot reporters (Proxy History, Proxy WebSocket).
+     * Records recovered search-destination retries for a traffic route.
+     *
+     * @param route traffic attribution route; {@code null} is ignored
+     * @param count recovered document count; non-positive values are ignored
+     */
+    public static void recordOpenSearchRecovery(Route route, long count) {
+        if (route == null || count <= 0) {
+            return;
+        }
+        if (route.kind() == Kind.SOURCE) {
+            ExportStats.recordTrafficSourceRecovery(route.key(), count);
+        } else {
+            ExportStats.recordTrafficToolTypeRecovery(route.key(), count);
+        }
+    }
+
+    /**
+     * Records retry-queue capacity drops for a traffic route.
+     *
+     * @param route traffic attribution route; {@code null} is ignored
+     * @param count dropped document count; non-positive values are ignored
+     */
+    public static void recordOpenSearchRetryQueueDrop(Route route, long count) {
+        if (route == null || count <= 0) {
+            return;
+        }
+        if (route.kind() == Kind.SOURCE) {
+            ExportStats.recordTrafficSourceRetryQueueDrop(route.key(), count);
+        } else {
+            ExportStats.recordTrafficToolTypeRetryQueueDrop(route.key(), count);
+        }
+    }
+
+    /**
+     * Records permanent search-destination drops for a traffic route.
+     *
+     * @param route traffic attribution route; {@code null} is ignored
+     * @param count dropped document count; non-positive values are ignored
+     */
+    public static void recordOpenSearchPermanentDrop(Route route, long count) {
+        if (route == null || count <= 0) {
+            return;
+        }
+        if (route.kind() == Kind.SOURCE) {
+            ExportStats.recordTrafficSourcePermanentDrop(route.key(), count);
+        } else {
+            ExportStats.recordTrafficToolTypePermanentDrop(route.key(), count);
+        }
+    }
+
+    /**
+     * Records a traffic search-destination bulk outcome.
      *
      * <p>Delegates the index-key totals and panel/error reporting to
      * {@link BulkOutcomeRecorder#record(String, String, String, int, int, boolean)} so traffic
@@ -216,9 +267,9 @@ public final class TrafficRouteBucket {
      *
      * @param route route for the bulk; {@code null} resolves to a no-op
      * @param attempted number of documents attempted in the bulk; negative values are clamped to 0
-     * @param sent number of documents acknowledged successful by OpenSearch; clamped to
+     * @param sent number of documents acknowledged by the search destination; clamped to
      *             {@code [0, max(0, attempted)]}
-     * @param openSearchActive whether the OpenSearch sink was active for this bulk
+     * @param openSearchActive whether the search destination was active for this bulk
      * @param logLabel short label for log messages (for example {@code "Proxy history chunk"})
      */
     public static void recordBulkOutcome(
@@ -230,6 +281,17 @@ public final class TrafficRouteBucket {
         recordBulkOutcome(route, attempted, sent, openSearchActive, logLabel, null);
     }
 
+    /**
+     * Records a prepared traffic bulk outcome and its item-level breakdown.
+     *
+     * <p>Safe to call from any thread. Updates index and route counters and may emit a failure
+     * warning. Expected cancellation suppresses failure accounting.</p>
+     *
+     * @param route route for the bulk; {@code null} is ignored
+     * @param outcome bulk result; {@code null} is ignored
+     * @param openSearchActive whether the search destination was active for this bulk
+     * @param logLabel short operation label used in failure details
+     */
     public static void recordBulkOutcome(
             Route route,
             BulkPushOutcome outcome,
@@ -247,6 +309,19 @@ public final class TrafficRouteBucket {
                 outcome.breakdown());
     }
 
+    /**
+     * Records aggregate traffic bulk counts with an optional item-level breakdown.
+     *
+     * <p>Attempted and sent counts are clamped by {@link BulkOutcomeRecorder}. When the search
+     * destination is inactive, route and index counters are unchanged.</p>
+     *
+     * @param route route for the bulk; {@code null} is ignored
+     * @param attempted attempted document count; negative values are treated as zero
+     * @param sent acknowledged document count; clamped to {@code [0, attempted]}
+     * @param openSearchActive whether the search destination was active for this bulk
+     * @param logLabel short operation label used in failure details
+     * @param breakdown item-level outcome counts; {@code null} uses aggregate counts
+     */
     public static void recordBulkOutcome(
             Route route,
             int attempted,
@@ -257,16 +332,16 @@ public final class TrafficRouteBucket {
         if (route == null) {
             return;
         }
-        int clampedSent = BulkOutcomeRecorder.record(
+        BulkOutcomeRecorder.RecordResult recorded = BulkOutcomeRecorder.recordDetailed(
                 INDEX_KEY, logSource(route), logLabel, attempted, sent, openSearchActive, breakdown);
         if (!openSearchActive) {
             return;
         }
-        if (clampedSent > 0) {
-            recordOpenSearchSuccess(route, clampedSent);
+        if (recorded.sent() > 0) {
+            recordOpenSearchSuccess(route, recorded.sent());
         }
-        int failure = Math.max(0, attempted) - clampedSent;
-        if (failure > 0) {
+        int failure = Math.max(0, attempted) - recorded.sent();
+        if (!recorded.failuresSuppressed() && failure > 0) {
             recordOpenSearchFailure(route, failure);
         }
     }
@@ -370,6 +445,100 @@ public final class TrafficRouteBucket {
             total += ExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_WEBSOCKET);
         }
         return total;
+    }
+
+    /**
+     * Resolves the displayed recovered count for a Traffic-by-source database row.
+     *
+     * @param sourceKey displayed tool/source key
+     * @return current recovered count, including folded Proxy-family source buckets
+     */
+    public static long resolveOpenSearchSourceRecovery(String sourceKey) {
+        long total = ExportStats.getTrafficToolTypeRecoveryCount(sourceKey);
+        if ("PROXY_HISTORY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourceRecoveryCount(SOURCE_PROXY_HISTORY_SNAPSHOT);
+            total += ExportStats.getTrafficSourceRecoveryCount(SOURCE_PROXY_WEBSOCKET);
+        }
+        return total;
+    }
+
+    /**
+     * Resolves the displayed retry-queue drop count for a Traffic-by-source row.
+     *
+     * @param sourceKey displayed tool/source key
+     * @return current retry-queue drop count, including folded Proxy-family source buckets
+     */
+    public static long resolveOpenSearchSourceRetryQueueDrops(String sourceKey) {
+        long total = ExportStats.getTrafficToolTypeRetryQueueDrops(sourceKey);
+        if ("PROXY_HISTORY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourceRetryQueueDrops(SOURCE_PROXY_HISTORY_SNAPSHOT);
+            total += ExportStats.getTrafficSourceRetryQueueDrops(SOURCE_PROXY_WEBSOCKET);
+        }
+        return total;
+    }
+
+    /**
+     * Resolves the displayed permanent-drop count for a Traffic-by-source row.
+     *
+     * @param sourceKey displayed tool/source key
+     * @return current permanent-drop count, including folded Proxy-family source buckets
+     */
+    public static long resolveOpenSearchSourcePermanentDrops(String sourceKey) {
+        long total = ExportStats.getTrafficToolTypePermanentDrops(sourceKey);
+        if ("PROXY_HISTORY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourcePermanentDrops(SOURCE_PROXY_HISTORY_SNAPSHOT);
+            total += ExportStats.getTrafficSourcePermanentDrops(SOURCE_PROXY_WEBSOCKET);
+        }
+        return total;
+    }
+
+    /**
+     * Returns whether {@code route} contributes to the Stats Traffic sub-row labeled
+     * {@code displaySourceKey}.
+     *
+     * <p>Proxy History snapshot and Proxy WebSocket source buckets fold into the
+     * {@code PROXY_HISTORY} display row, matching {@link #resolveOpenSearchSourceSuccess(String)}.</p>
+     *
+     * @param displaySourceKey Stats sub-row key (for example {@code PROXY_HISTORY})
+     * @param route traffic route from a queued or dropped document
+     * @return {@code true} when the route should increment that display row
+     */
+    public static boolean contributesToDisplaySource(String displaySourceKey, Route route) {
+        if (displaySourceKey == null || displaySourceKey.isBlank() || route == null) {
+            return false;
+        }
+        if ("PROXY_HISTORY".equals(displaySourceKey)) {
+            if (route.kind() == Kind.SOURCE) {
+                return SOURCE_PROXY_HISTORY_SNAPSHOT.equals(route.key())
+                        || SOURCE_PROXY_WEBSOCKET.equals(route.key());
+            }
+            return "PROXY_HISTORY".equals(route.key());
+        }
+        return route.kind() == Kind.TOOL_TYPE && displaySourceKey.equals(route.key());
+    }
+
+    /**
+     * Counts prepared documents in {@code documents} that attribute to {@code displaySourceKey}.
+     *
+     * @param displaySourceKey Stats traffic sub-row key
+     * @param documents prepared documents to inspect; {@code null} treated as empty
+     * @return non-negative count
+     */
+    public static int countQueuedForDisplaySource(
+            String displaySourceKey, Iterable<PreparedExportDocument> documents) {
+        if (displaySourceKey == null || displaySourceKey.isBlank() || documents == null) {
+            return 0;
+        }
+        int count = 0;
+        for (PreparedExportDocument prepared : documents) {
+            if (prepared == null) {
+                continue;
+            }
+            if (contributesToDisplaySource(displaySourceKey, fromDocument(prepared.document()))) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** Resolves the displayed success count for a "Traffic by source" row in file stats. */

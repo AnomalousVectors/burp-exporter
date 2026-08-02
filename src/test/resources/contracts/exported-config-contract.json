@@ -36,10 +36,10 @@
       }
       },
       "openSearchAmazon": {
-        "allowedKeys": [ "url", "region", "profile", "tlsMode", "auth", "pinnedTlsCertificate" ],
+        "allowedKeys": [ "url", "region", "profile", "credentialsFilePath", "configFilePath", "deploymentType", "tlsMode", "auth", "pinnedTlsCertificate" ],
         "auth": {
           "allowedKeys": [ "type", "username" ],
-          "allowedTypes": [ "IAM (sigV4)", "Basic", "None" ]
+          "allowedTypes": [ "IAM SigV4 - Profile", "IAM SigV4 - Static credentials", "Basic", "None" ]
         },
         "pinnedTlsCertificate": {
           "allowedKeys": [ "sourcePath", "fingerprintSha256", "encodedBase64" ]

@@ -30,6 +30,7 @@ import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.burpsuite.BurpSuite;
 import burp.api.montoya.core.Version;
@@ -73,6 +74,7 @@ class SettingsIndexReporterIT {
     void pushSnapshotNow_indexesDocument_withExpectedShapeAndContent() {
         Assumptions.assumeTrue(OpenSearchReachable.isReachable(), "OpenSearch dev cluster not reachable");
         try {
+            IndexingRetryCoordinator.getInstance().clearPendingWork();
             createSettingsIndex();
             setRuntimeConfigForSettingsExport();
             setMockMontoyaApi();
@@ -99,6 +101,7 @@ class SettingsIndexReporterIT {
             Map<?, ?> meta = nestedMap(doc, "meta");
             assertContainsKeys(meta, "schema_version", "extension_version", "indexed_at");
         } finally {
+            IndexingRetryCoordinator.getInstance().clearPendingWork();
             cleanup();
         }
     }

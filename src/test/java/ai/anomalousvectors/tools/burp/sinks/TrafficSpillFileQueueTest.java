@@ -3,6 +3,7 @@ package ai.anomalousvectors.tools.burp.sinks;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -110,6 +111,45 @@ class TrafficSpillFileQueueTest {
     }
 
     @Test
+    void initializeFromDisk_legacyPreparedEnvelopeGeneratesStableOperationIdentity()
+            throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-legacy-prepared");
+        try {
+            String payload = """
+                    {
+                      "meta":{"schema_version":"1"},
+                      "document":{"id":99,"url":"https://legacy.example"},
+                      "prepared":{
+                        "index_name":"tool-burp-traffic",
+                        "index_key":"traffic",
+                        "estimated_bulk_bytes":3,
+                        "bulk_ndjson_bytes":"e30K"
+                      }
+                    }
+                    """;
+            Files.writeString(
+                    dir.resolve("test-project-00000000000000000001.json"),
+                    payload,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING);
+
+            TrafficSpillFileQueue queue = new TrafficSpillFileQueue(
+                    dir, 10, 1024 * 1024);
+            TrafficQueueEntry recovered = queue.pollEntry();
+
+            assertThat(recovered).isNotNull();
+            assertThat(recovered.prepared().operationId()).isNotBlank();
+            assertThat(new String(
+                    recovered.prepared().bulkNdjsonBytes(),
+                    StandardCharsets.UTF_8))
+                    .startsWith("{\"index\":{\"_id\":\""
+                            + recovered.prepared().operationId() + "\"}}");
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
+
+    @Test
     void offerDetailed_preservesPreparedEntryForRefill() throws IOException {
         Path dir = TestPathSupport.createDirectory("traffic-spill-prepared");
         try {
@@ -120,6 +160,7 @@ class TrafficSpillFileQueueTest {
 
             TrafficQueueEntry recovered = queue.pollEntry();
             assertThat(recovered).isNotNull();
+            assertThat(recovered.prepared().operationId()).isEqualTo(entry.prepared().operationId());
             assertThat(recovered.prepared().bulkNdjsonBytes()).isEqualTo(entry.prepared().bulkNdjsonBytes());
             assertThat(recovered.prepared().estimatedBulkBytes()).isEqualTo(entry.prepared().estimatedBulkBytes());
             assertThat(recovered.document()).isEqualTo(entry.document());

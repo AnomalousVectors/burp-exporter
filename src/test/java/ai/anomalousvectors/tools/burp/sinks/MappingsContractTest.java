@@ -9,10 +9,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import ai.anomalousvectors.tools.burp.utils.config.SearchMappingResources;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Contract tests for the OpenSearch index mapping resources.
+ * Contract tests for the search index mapping resources.
  * Ensures required JSON files are present, parseable, and contain the structure
  * that OpenSearchSink.createIndexFromResource() expects: both "settings" and "mappings"
  * (with non-empty "mappings.properties").
@@ -27,7 +29,7 @@ class MappingsContractTest {
             "traffic.json"
     );
 
-    private static final String RESOURCE_ROOT = "/opensearch/mappings/";
+    private static final String RESOURCE_ROOT = SearchMappingResources.DEFAULT_ROOT;
     private static final String HTTP_DATE_FORMAT =
             "EEE, dd MMM yyyy HH:mm:ss zzz||EEE, d MMM yyyy HH:mm:ss zzz||EEE, dd-MMM-yyyy HH:mm:ss zzz"
                     + "||EEE, d-MMM-yyyy HH:mm:ss zzz||EEE, dd-MMM-yy HH:mm:ss zzz"
@@ -53,10 +55,19 @@ class MappingsContractTest {
                 assertThat(root.has("settings"))
                         .withFailMessage("Missing 'settings' in %s", file)
                         .isTrue();
-                JsonNode settings = root.get("settings");
-                assertThat(settings != null && settings.isObject())
+                JsonNode settings = root.path("settings");
+                assertThat(settings.isObject())
                         .withFailMessage("'settings' must be a JSON object (can be empty) in %s", file)
                         .isTrue();
+                assertThat(settings.path("number_of_shards").asInt())
+                        .withFailMessage("%s must default newly created indexes to one primary shard", file)
+                        .isEqualTo(1);
+                assertThat(settings.path("auto_expand_replicas").asText())
+                        .withFailMessage("%s must retain one replica only when a second node exists", file)
+                        .isEqualTo("0-1");
+                assertThat(settings.path("refresh_interval").asText())
+                        .withFailMessage("%s must use the conservative refresh default", file)
+                        .isEqualTo("5s");
 
                 assertThat(root.has("mappings"))
                         .withFailMessage("Missing 'mappings' in %s", file)
@@ -182,7 +193,29 @@ class MappingsContractTest {
             assertThat(payload.has("b64")).isTrue();
             assertThat(payload.has("length")).isTrue();
             assertThat(payload.has("text")).isTrue();
+            assertThat(payload.path("truncated").path("type").asText()).isEqualTo("boolean");
             assertThat(props.has("ws_upgrade_request")).isFalse();
+        }
+    }
+
+    @Test
+    void bodyTruncatedFlag_isBoolean_acrossHttpAndFindingsBodies() throws Exception {
+        assertBodyTruncatedBoolean("traffic.json", "request");
+        assertBodyTruncatedBoolean("traffic.json", "response");
+        assertBodyTruncatedBoolean("sitemap.json", "request");
+        assertBodyTruncatedBoolean("sitemap.json", "response");
+
+        try (InputStream in = getClass().getResourceAsStream(RESOURCE_ROOT + "findings.json")) {
+            assertThat(in).isNotNull();
+            JsonNode root = mapper.readTree(in);
+            JsonNode rr = root.path("mappings")
+                    .path("properties")
+                    .path("requests_responses")
+                    .path("properties");
+            assertThat(rr.path("request").path("properties").path("body").path("properties")
+                    .path("truncated").path("type").asText()).isEqualTo("boolean");
+            assertThat(rr.path("response").path("properties").path("body").path("properties")
+                    .path("truncated").path("type").asText()).isEqualTo("boolean");
         }
     }
 
@@ -448,6 +481,20 @@ class MappingsContractTest {
             assertThat(rr.path("response").path("properties").has("etag_header")).isFalse();
             assertThat(rr.path("response").path("properties").has("last_modified_header")).isFalse();
             assertThat(rr.path("response").path("properties").has("content_location")).isFalse();
+        }
+    }
+
+    private void assertBodyTruncatedBoolean(String mappingFile, String side) throws Exception {
+        try (InputStream in = getClass().getResourceAsStream(RESOURCE_ROOT + mappingFile)) {
+            assertThat(in).isNotNull();
+            JsonNode root = mapper.readTree(in);
+            JsonNode bodyProps = root.path("mappings")
+                    .path("properties")
+                    .path(side)
+                    .path("properties")
+                    .path("body")
+                    .path("properties");
+            assertThat(bodyProps.path("truncated").path("type").asText()).isEqualTo("boolean");
         }
     }
 

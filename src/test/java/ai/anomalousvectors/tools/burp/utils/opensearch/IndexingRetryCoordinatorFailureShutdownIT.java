@@ -26,7 +26,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 class IndexingRetryCoordinatorFailureShutdownIT {
 
     @Test
-    void repeatedAuthFailures_disableOpenSearch_and_keepFilesDestinationRunning() throws Exception {
+    void repeatedAuthFailures_pauseOpenSearch_and_keepFilesDestinationRunning() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(OpenSearchReachable.isReachable(), "OpenSearch dev cluster not reachable");
 
         ConfigState.State previous = RuntimeConfig.getState();
@@ -46,11 +46,13 @@ class IndexingRetryCoordinatorFailureShutdownIT {
             }
 
             assertThat(RuntimeConfig.isExportRunning()).isTrue();
-            assertThat(RuntimeConfig.isOpenSearchExportEnabled()).isFalse();
+            assertThat(RuntimeConfig.isOpenSearchExportEnabled()).isTrue();
             assertThat(RuntimeConfig.isAnyFileExportEnabled()).isTrue();
-            assertThat(RuntimeConfig.activeSinkSummary()).isEqualTo("Files");
-            assertThat(status.get()).contains("OpenSearch export disabled after repeated authentication failures");
-            assertThat(status.get()).contains("Files export will continue");
+            assertThat(RuntimeConfig.activeSinkSummary()).contains("Files");
+            assertThat(IndexingRetryCoordinator.getInstance().isAuthorizationRecoveryPaused()).isTrue();
+            assertThat(IndexingRetryCoordinator.getInstance().getTotalQueueSize()).isEqualTo(3);
+            assertThat(status.get()).contains("Paused (authorization recovery");
+            assertThat(status.get()).contains("retained retry=3");
         } finally {
             ControlStatusBridge.clear();
             IndexingRetryCoordinator.getInstance().clearPendingWork();
@@ -67,7 +69,7 @@ class IndexingRetryCoordinatorFailureShutdownIT {
     }
 
     @Test
-    void repeatedAuthFailures_disableOpenSearch_and_stopExport_whenNoOtherDestinationRemains() throws Exception {
+    void repeatedAuthFailures_pauseOpenSearch_withoutStopping_whenNoOtherDestinationRemains() throws Exception {
         org.junit.jupiter.api.Assumptions.assumeTrue(OpenSearchReachable.isReachable(), "OpenSearch dev cluster not reachable");
 
         ConfigState.State previous = RuntimeConfig.getState();
@@ -85,11 +87,12 @@ class IndexingRetryCoordinatorFailureShutdownIT {
                 IndexingRetryCoordinator.getInstance().pushDocument(OpenSearchReachable.BASE_URL, indexName, sampleDoc(i), "exporter");
             }
 
-            assertThat(RuntimeConfig.isExportRunning()).isFalse();
-            assertThat(RuntimeConfig.isOpenSearchExportEnabled()).isFalse();
-            assertThat(RuntimeConfig.isAnySinkEnabled()).isFalse();
-            assertThat(status.get()).contains("OpenSearch export disabled after repeated authentication failures");
-            assertThat(status.get()).contains("No destinations remain; export stopped");
+            assertThat(RuntimeConfig.isExportRunning()).isTrue();
+            assertThat(RuntimeConfig.isOpenSearchExportEnabled()).isTrue();
+            assertThat(RuntimeConfig.isAnySinkEnabled()).isTrue();
+            assertThat(IndexingRetryCoordinator.getInstance().isAuthorizationRecoveryPaused()).isTrue();
+            assertThat(IndexingRetryCoordinator.getInstance().getTotalQueueSize()).isEqualTo(3);
+            assertThat(status.get()).contains("Paused (authorization recovery");
         } finally {
             ControlStatusBridge.clear();
             IndexingRetryCoordinator.getInstance().clearPendingWork();

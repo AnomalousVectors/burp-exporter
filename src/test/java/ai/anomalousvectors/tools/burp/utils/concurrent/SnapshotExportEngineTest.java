@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.sinks.ExportReporterLifecycle;
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
@@ -30,10 +31,24 @@ class SnapshotExportEngineTest {
 
     @Test
     void queueCapacity_scalesWithWorkersAndChunkTargetWithinBounds() {
-        assertThat(SnapshotExportEngine.queueCapacity(1, 1)).isEqualTo(256);
-        assertThat(SnapshotExportEngine.queueCapacity(4, 250)).isEqualTo(1024);
-        assertThat(SnapshotExportEngine.queueCapacity(4, 1500)).isEqualTo(3000);
-        assertThat(SnapshotExportEngine.queueCapacity(4, 10_000)).isEqualTo(4096);
+        assertThat(SnapshotExportEngine.queueCapacity(1, 1)).isEqualTo(64);
+        assertThat(SnapshotExportEngine.queueCapacity(4, 100)).isBetween(64, 512);
+        assertThat(SnapshotExportEngine.queueCapacity(4, 250)).isBetween(64, 512);
+        assertThat(SnapshotExportEngine.queueCapacity(4, 10_000)).isEqualTo(512);
+    }
+
+    @Test
+    void buildAheadReservationPermits_boundsQueuedPreparedBytes() {
+        assertThat(SnapshotExportEngine.buildAheadReservationPermits(0L)).isEqualTo(1);
+        assertThat(SnapshotExportEngine.buildAheadReservationPermits(64L * 1024L)).isEqualTo(1);
+        assertThat(SnapshotExportEngine.buildAheadReservationPermits((64L * 1024L) + 1L)).isEqualTo(2);
+        assertThat(SnapshotExportEngine.buildAheadReservationPermits(
+                        SnapshotExportEngine.MAX_BUILD_AHEAD_BYTES))
+                .isEqualTo(1_024);
+        assertThat(SnapshotExportEngine.buildAheadReservationPermits(Long.MAX_VALUE)).isEqualTo(1_024);
+        assertThat(SnapshotExportEngine.buildAheadReservationBytes(1)).isEqualTo(64L * 1024L);
+        assertThat(SnapshotExportEngine.buildAheadReservationBytes(1_024))
+                .isEqualTo(SnapshotExportEngine.MAX_BUILD_AHEAD_BYTES);
     }
 
     @Test
@@ -72,7 +87,8 @@ class SnapshotExportEngineTest {
                 "https://opensearch.url:9200",
                 "burp-exporter-test",
                 "traffic",
-                unused -> new PreparedExportDocument("idx", "traffic", java.util.Map.of(), 1L, new byte[0]),
+                unused -> new PreparedExportDocument(
+                        "interrupted-gate-test", "idx", "traffic", java.util.Map.of(), 1L, new byte[0]),
                 null);
 
         assertThat(result.attempted()).isZero();
@@ -105,7 +121,7 @@ class SnapshotExportEngineTest {
                     item -> preparedTrafficDoc(indexName, item, bytesPerDoc),
                     (chunk, outcome, nextTarget) -> maxObservedChunkBytes.updateAndGet(
                             prev -> Math.max(prev, chunk.stream().mapToLong(
-                                    document -> document.estimatedBulkBytes()).sum())));
+                                    document -> document.resolvedBulkBytes()).sum())));
 
             int countOnlyChunks = (itemCount + 499) / 500;
             assertThat(result.attempted()).isEqualTo(itemCount);
@@ -144,6 +160,42 @@ class SnapshotExportEngineTest {
             assertThat(result.success()).isEqualTo(itemCount);
             assertThat(result.chunks()).isPositive();
             assertThat(result.buildWallMs()).isPositive();
+            assertThat(ExportStats.getPeakSnapshotBuildAheadReservedBytes()).isPositive();
+            assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
+        } finally {
+            ExportReporterLifecycle.resetForTests();
+        }
+    }
+
+    @Test
+    void run_preparerRuntimeException_countsFailureAndContinuesWorkerStride() throws Exception {
+        try {
+            Path root = TestPathSupport.createDirectory("snapshot-engine-preparation-failure");
+            RuntimeConfig.updateState(fileOnlyTrafficState(root));
+            RuntimeConfig.setExportRunning(true);
+
+            String indexName = IndexNaming.indexNameForShortName("traffic");
+            SnapshotExportEngine.Result result = SnapshotExportEngine.run(
+                    List.of(0, 1, 2, 3, 4),
+                    1,
+                    5_000_000L,
+                    250,
+                    null,
+                    null,
+                    "",
+                    indexName,
+                    "traffic",
+                    item -> {
+                        if (item == 1) {
+                            throw new IllegalStateException("bad snapshot item");
+                        }
+                        return preparedTrafficDoc(indexName, item, 2_048L);
+                    },
+                    null);
+
+            assertThat(result.preparationFailures()).isEqualTo(1);
+            assertThat(result.attempted()).isEqualTo(4);
+            assertThat(result.success()).isEqualTo(4);
         } finally {
             ExportReporterLifecycle.resetForTests();
         }

@@ -20,6 +20,7 @@ import javax.swing.SwingUtilities;
 import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
+import ai.anomalousvectors.tools.burp.utils.ExportControlBridge;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import net.miginfocom.swing.MigLayout;
@@ -59,7 +60,11 @@ class ConfigControlPanelHeadlessTest {
 
             assertThat(startStop).isNotNull();
             assertThat(startStop.getText()).isEqualTo("Start");
-            assertThat(startStop.getToolTipText()).isEqualTo("<html>Start exporting to the configured destination(s).</html>");
+            assertThat(startStop.getToolTipText()).contains("Start exporting to the configured destination(s).");
+            assertThat(startStop.getToolTipText()).contains("During export");
+            assertThat(startStop.getToolTipText()).contains("spill");
+            assertThat(startStop.getToolTipLocation(null))
+                    .isEqualTo(new java.awt.Point(startStop.getWidth() + 8, 0));
             assertThat(indicator).isNotNull();
         } finally {
             resetExportRunning();
@@ -193,6 +198,106 @@ class ConfigControlPanelHeadlessTest {
         } finally {
             Logger.unregisterListener(listener);
             Logger.resetState();
+            resetExportRunning();
+        }
+    }
+
+    @Test
+    void stop_click_keeps_stop_label_until_onStopComplete() throws Exception {
+        resetExportRunning();
+        try {
+            AtomicReference<Runnable> stopCompleteRef = new AtomicReference<>();
+            JPanel root = buildPanel(
+                    callbacks -> callbacks.onStartSuccess().run(),
+                    callbacks -> stopCompleteRef.set(callbacks.onStopComplete())
+            );
+            runEdt(() -> {
+                root.setSize(600, 400);
+                root.doLayout();
+            });
+            JButton startStop = findByName(root, "control.startStop", JButton.class);
+
+            runEdt(startStop::doClick);
+            runEdt(() -> { });
+            runEdt(startStop::doClick);
+
+            assertThat(RuntimeConfig.isExportStopping()).isTrue();
+            assertThat(startStop.getText()).isEqualTo("Stop");
+
+            runEdt(() -> stopCompleteRef.get().run());
+            assertThat(startStop.getText()).isEqualTo("Start");
+        } finally {
+            resetExportRunning();
+        }
+    }
+
+    @Test
+    void second_stop_click_while_stopping_requests_force_abort() throws Exception {
+        resetExportRunning();
+        try {
+            AtomicReference<Runnable> stopCompleteRef = new AtomicReference<>();
+            AtomicReference<JTextArea> controlStatusRef = new AtomicReference<>();
+            JPanel root = buildPanel(
+                    callbacks -> callbacks.onStartSuccess().run(),
+                    callbacks -> stopCompleteRef.set(callbacks.onStopComplete()),
+                    controlStatusRef
+            );
+            runEdt(() -> {
+                root.setSize(600, 400);
+                root.doLayout();
+            });
+            JButton startStop = findByName(root, "control.startStop", JButton.class);
+
+            runEdt(startStop::doClick);
+            runEdt(() -> { });
+            runEdt(startStop::doClick);
+            assertThat(RuntimeConfig.isExportStopping()).isTrue();
+            assertThat(RuntimeConfig.isExportStopForceAbortRequested()).isFalse();
+
+            runEdt(startStop::doClick);
+            assertThat(RuntimeConfig.isExportStopForceAbortRequested()).isTrue();
+            assertThat(controlStatusRef.get().getText())
+                    .isEqualTo(ExportShutdownStatus.forceStoppingMessage());
+
+            runEdt(() -> stopCompleteRef.get().run());
+            assertThat(RuntimeConfig.isExportStopping()).isFalse();
+            assertThat(RuntimeConfig.isExportStopForceAbortRequested()).isFalse();
+            assertThat(startStop.getText()).isEqualTo("Start");
+            assertThat(controlStatusRef.get().getText())
+                    .isEqualTo(ExportShutdownStatus.forceStoppedMessage());
+        } finally {
+            resetExportRunning();
+        }
+    }
+
+    @Test
+    void forced_stop_bridge_syncs_button_and_indicator_to_stopped() throws Exception {
+        resetExportRunning();
+        try {
+            JPanel root = buildPanel(
+                    callbacks -> callbacks.onStartSuccess().run(),
+                    noOpStopAction()
+            );
+            runEdt(() -> {
+                root.setSize(600, 400);
+                root.doLayout();
+            });
+            JButton startStop = findByName(root, "control.startStop", JButton.class);
+            JComponent indicator = findByName(root, "control.exportIndicator", JComponent.class);
+
+            runEdt(startStop::doClick);
+            runEdt(() -> { });
+            assertThat(startStop.getText()).isEqualTo("Stop");
+            assertThat(indicator.getToolTipText()).isEqualTo("<html>Export is running</html>");
+
+            runEdt(() -> {
+                RuntimeConfig.setExportRunning(false);
+                ExportControlBridge.notifyForcedStopped();
+            });
+            assertThat(startStop.getText()).isEqualTo("Start");
+            assertThat(indicator.getToolTipText()).isEqualTo("<html>Export is stopped</html>");
+        } finally {
+            ExportControlBridge.clear();
             resetExportRunning();
         }
     }

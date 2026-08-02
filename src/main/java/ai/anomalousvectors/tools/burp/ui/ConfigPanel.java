@@ -1,8 +1,12 @@
 package ai.anomalousvectors.tools.burp.ui;
 
+import java.awt.Color;
 import java.awt.Component;
+import java.awt.Container;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.awt.event.FocusAdapter;
+import java.awt.event.FocusEvent;
 import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.IOException;
@@ -22,6 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 import javax.swing.AbstractAction;
+import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.ButtonGroup;
 import javax.swing.Icon;
@@ -38,7 +43,9 @@ import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.KeyStroke;
 import javax.swing.SwingUtilities;
+import javax.swing.Timer;
 import javax.swing.UIManager;
+import javax.swing.border.Border;
 import javax.swing.event.DocumentListener;
 import javax.swing.filechooser.FileNameExtensionFilter;
 
@@ -80,14 +87,17 @@ import ai.anomalousvectors.tools.burp.utils.FileUtil;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
+import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigJsonMapper;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchTlsSupport;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDeployment;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.BurpSuiteEdition;
 import net.miginfocom.swing.MigLayout;
@@ -218,10 +228,14 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private static final String DESTINATION_OPENSEARCH_AMAZON = "Amazon OpenSearch";
     private static final String DESTINATION_ELASTICSEARCH = "Elasticsearch";
     private static final String OPENSEARCH_DEFAULT_URL = "https://opensearch.url:9200";
-    private static final String OPENSEARCH_AMAZON_PLACEHOLDER_URL = OPENSEARCH_DEFAULT_URL;
-    private static final String ELASTICSEARCH_DEFAULT_URL = "https://elasticsearch.url:443";
+    private static final String OPENSEARCH_AMAZON_PLACEHOLDER_URL = "https://amazonopensearch.url";
+    private static final String ELASTICSEARCH_DEFAULT_URL = "https://elasticsearch.url";
     private static final String[] OPENSEARCH_AMAZON_AUTH_TYPES = {
-            "IAM (sigV4)", "Basic", "None" };
+            ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE,
+            ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC,
+            "Basic",
+            "None" };
+    private static final String[] AMAZON_DEPLOYMENT_TYPES = { "Hosted", "Serverless" };
     private static final String[] ELASTICSEARCH_AUTH_TYPES = {
             "API key", "Bearer token", "Certificate", "Basic", "None" };
     private static final String[] OPENSEARCH_TLS_MODES = {
@@ -229,43 +243,77 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     private static Map<String, String> openSearchAmazonAuthTooltips() {
         return Map.of(
-                "IAM (sigV4)", Tooltips.htmlRaw(
-                        "Recommended for Amazon OpenSearch Service.",
-                        "Use AWS Signature Version 4 when the domain access policy uses IAM users or roles, or when you want AWS-native credential handling through profiles, instance roles, ECS/EKS roles, or temporary credentials.",
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE, Tooltips.htmlRaw(
+                        "<b>IAM SigV4 - Profile</b>",
+                        "Recommended for long or unattended Amazon OpenSearch export runs.",
+                        "Profile name and optional credentials/config file paths are non-secret; resolved credentials stay outside exported config.",
+                        "",
+                        "<b>Credential resolution</b>",
+                        "Each signed request re-resolves credentials from the selected AWS profile.",
+                        "Temporary credentials renew only when that profile is SSO, assume-role, or credential_process and the AWS SDK refresh succeeds.",
+                        "A profile that stores a fixed session token does not renew.",
+                        "",
+                        "Reference: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-signing-service-requests.html"),
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC, Tooltips.htmlRaw(
+                        "<b>IAM SigV4 - Static credentials</b>",
+                        "Use when you paste long-term AWS access keys for SigV4 signing.",
+                        "Access key ID, secret access key, and optional session token stay in session memory only.",
+                        "Leave Session Token blank for long-term keys. Prefer <b>IAM SigV4 - Profile</b> for SSO/role chains.",
+                        "",
+                        "<b>Session token</b>",
+                        "If Session Token is filled, credentials expire and are not renewed by the exporter.",
+                        "That raises mid-run authentication-failure risk on long exports.",
+                        "",
                         "Reference: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-signing-service-requests.html"),
                 "Basic", Tooltips.htmlRaw(
+                        "<b>Basic</b>",
                         "Use a username and password when the Amazon OpenSearch Service domain uses fine-grained access control with the internal user database.",
-                        "This is common for direct OpenSearch API access when an internal master user or internal users are configured.",
+                        "Common for direct OpenSearch API access with an internal master user or internal users.",
+                        "Password is session-only; username can be exported as a non-secret.",
+                        "",
                         "References:",
                         "https://docs.aws.amazon.com/opensearch-service/latest/developerguide/fgac.html",
                         "https://docs.aws.amazon.com/opensearch-service/latest/developerguide/dashboards.html"),
                 "None", Tooltips.htmlRaw(
+                        "<b>None</b>",
                         "Send unsigned requests without authentication headers.",
                         "Use only for domains that intentionally allow unsigned OpenSearch API requests, such as permissive lab domains, VPC-only domains with network-based trust, or deployments protected by an upstream proxy.",
                         "AWS service configuration API requests still require signing.",
+                        "",
                         "Reference: https://docs.aws.amazon.com/opensearch-service/latest/developerguide/managedomains-signing-service-requests.html"));
     }
 
     private static Map<String, String> elasticSearchAuthTooltips() {
         return Map.of(
                 "API key", Tooltips.htmlRaw(
-                        "Recommended for programmatic access.",
-                        "Use a scoped Elasticsearch API key for export/indexing operations.",
-                        "This is the preferred option for most application and automation integrations.",
+                        "<b>API key</b>",
+                        "Recommended for programmatic Elasticsearch export/indexing.",
+                        "Prefer a scoped key that can outlast the export run and be rotated independently of interactive users.",
+                        "Stored only within in-process memory.",
+                        "",
                         "Reference: https://www.elastic.co/docs/deploy-manage/api-keys/elasticsearch-api-keys"),
-                "Bearer token", Tooltips.htmlRaw(
-                        "Use when Elasticsearch is configured to accept token-based authentication.",
-                        "This is useful for environments that issue access tokens through Elastic token services or another supported token workflow.",
+                "Bearer token", withTemporaryCredentialRisk(
+                        "<b>Bearer token</b>",
+                        "Use when Elasticsearch accepts token-based authentication (Elastic token services, OIDC/JWT, or another bearer workflow).",
+                        "Many bearer tokens are short-lived. Prefer <b>API key</b> for multi-day or unattended export runs.",
+                        "",
                         "Reference: https://www.elastic.co/docs/deploy-manage/users-roles/cluster-or-deployment-auth/token-based-authentication-services"),
                 "Certificate", Tooltips.htmlRaw(
-                        "Use client certificate authentication when Elasticsearch requires mutual TLS or PKI-based authentication.",
-                        "This is strong, but usually requires more setup because users must provide a client certificate, private key, and trust material.",
+                        "<b>Certificate</b>",
+                        "Use client certificate authentication when Elasticsearch requires mutual TLS or PKI-based identity.",
+                        "Provide a client certificate, private key, and any required passphrase; the cluster must trust the issuing CA.",
+                        "Strong, but usually more setup than API key or Basic.",
+                        "",
                         "Reference: https://www.elastic.co/guide/en/elasticsearch/reference/current/pki-realm.html"),
                 "Basic", Tooltips.htmlRaw(
+                        "<b>Basic</b>",
                         "Use a username and password for Elasticsearch users.",
-                        "This is common and simple, but API keys are usually better for service-style integrations because they can be scoped, rotated, and revoked independently.",
+                        "Simple and common. API keys are usually better for service-style integrations because they can be scoped, rotated, and revoked independently.",
+                        "Password is session-only; username can be exported as a non-secret.",
+                        "",
                         "Reference: https://www.elastic.co/docs/deploy-manage/security/httprest-clients-security"),
                 "None", Tooltips.htmlRaw(
+                        "<b>None</b>",
                         "Send requests without authentication headers.",
                         "Use only for local testing, isolated self-managed clusters, or deployments where Elasticsearch security is disabled or access is enforced outside Elasticsearch."));
     }
@@ -273,14 +321,106 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private static Map<String, String> openSearchTlsModeTooltips() {
         return Map.of(
                 "Verify", Tooltips.htmlRaw(
-                        "Use the system trust store to verify the OpenSearch server certificate.",
-                        "Recommended for production clusters with a certificate chain trusted by the host JVM."),
+                        "<b>Verify</b>",
+                        "Use the JVM/system trust store to verify the server certificate.",
+                        "Recommended for production clusters whose certificate chain is already trusted by the host."),
                 "Trust pinned certificate", Tooltips.htmlRaw(
-                        "Trust only the imported OpenSearch server certificate for this Burp session.",
-                        "Use when the cluster has a self-signed or private-CA certificate that is not in the system trust store."),
+                        "<b>Trust pinned certificate</b>",
+                        "Trust only the imported server certificate for this Burp session.",
+                        "Use when the cluster presents a self-signed or private-CA certificate that is not in the system trust store.",
+                        "Import a .cer/.crt/.der/.pem file; pinned bytes stay in session memory only."),
                 "Trust all certificates", Tooltips.htmlRaw(
-                        "Disable OpenSearch server certificate verification.",
-                        "Use only for temporary testing or isolated lab clusters because this allows man-in-the-middle interception."));
+                        "<b>Trust all certificates</b>",
+                        "Disable server-certificate and hostname verification.",
+                        "Use only for temporary testing or isolated lab clusters.",
+                        "This allows man-in-the-middle interception and is not appropriate for production."));
+    }
+
+
+    /** Creates a hidden inline warning label for temporary-credential guidance. */
+    private static JLabel temporaryCredentialWarningLabel(String name) {
+        JLabel label = new Tooltips.HtmlLabel("");
+        label.setName(name);
+        label.setVisible(false);
+        return label;
+    }
+
+    /**
+     * Shows or hides an inline temporary-credential warning label.
+     *
+     * <p>Caller must invoke on the EDT. Newlines in {@code text} become HTML line breaks. Color and
+     * bold are embedded in the HTML so dark Burp themes cannot mute {@link JLabel#setForeground}.</p>
+     */
+    private static void updateTemporaryCredentialWarning(JLabel label, boolean show, String text) {
+        if (label == null) {
+            return;
+        }
+        if (!show || text == null || text.isBlank()) {
+            label.setText("");
+            label.setVisible(false);
+            return;
+        }
+        String htmlBody = Tooltips.escapeHtml(text).replace("\n", "<br>");
+        label.setText("<html><b><font color=\"#FF5555\">" + htmlBody + "</font></b></html>");
+        label.setVisible(true);
+    }
+
+    /** Refreshes Amazon session-token and OpenSearch/Elasticsearch bearer inline warnings. */
+    private void refreshTemporaryCredentialWarnings() {
+        String amazonAuth = String.valueOf(openSearchAmazonAuthTypeCombo.getSelectedItem());
+        updateTemporaryCredentialWarning(
+                openSearchAmazonSessionTokenWarning,
+                TemporaryCredentialAdvisory.forAmazonSessionToken(
+                        amazonAuth, passwordText(openSearchAmazonSessionTokenField)).isPresent(),
+                TemporaryCredentialAdvisory.SESSION_TOKEN_UI_WARNING);
+
+        String openSearchAuth = openSearchAuthTypeCombo == null
+                ? ""
+                : String.valueOf(openSearchAuthTypeCombo.getSelectedItem());
+        updateTemporaryCredentialWarning(
+                openSearchBearerTokenWarning,
+                TemporaryCredentialAdvisory.forBearerToken(
+                        ConfigState.SearchDestination.OPEN_SEARCH.displayName(),
+                        openSearchAuth,
+                        openSearchJwtTokenField.getText()).isPresent(),
+                TemporaryCredentialAdvisory.BEARER_UI_WARNING);
+
+        String elasticAuth = String.valueOf(elasticSearchAuthTypeCombo.getSelectedItem());
+        updateTemporaryCredentialWarning(
+                elasticSearchBearerTokenWarning,
+                TemporaryCredentialAdvisory.forBearerToken(
+                        ConfigState.SearchDestination.ELASTICSEARCH.displayName(),
+                        elasticAuth,
+                        passwordText(elasticSearchBearerTokenField)).isPresent(),
+                TemporaryCredentialAdvisory.BEARER_UI_WARNING);
+    }
+
+    /**
+     * Emits a non-blocking WARN when the active destination uses a temporary pasted credential.
+     *
+     * <p>Also posts a short control-status note. Does not abort Start or Test Connection.</p>
+     */
+    private void emitTemporaryCredentialAdvisoryIfNeeded() {
+        TemporaryCredentialAdvisory.forRuntimeSelection().ifPresent(advisory -> {
+            Logger.logWarnPanelOnly(advisory.logMessage());
+            onControlStatus(advisory.logMessage());
+        });
+    }
+    /**
+     * Builds an Index Base Name-style tooltip that appends temporary-credential risk and spill guidance.
+     */
+    static String withTemporaryCredentialRisk(String... prefixLines) {
+        String spillPath = Tooltips.escapeHtml(
+                ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths.spillDirectory().toString());
+        java.util.List<String> lines = new java.util.ArrayList<>(java.util.Arrays.asList(prefixLines));
+        lines.add("");
+        lines.add("<b>If credentials expire mid-run</b>");
+        lines.add("Destination pushes can start failing with authentication or connectivity errors.");
+        lines.add("The exporter then enters retry/outage handling and may disable the database destination after repeated failures.");
+        lines.add("If live traffic keeps arriving while the in-memory queue is full, overflow can spill to disk under:");
+        lines.add("&nbsp;&nbsp;<code>" + spillPath + "</code>");
+        lines.add("Spill is the general backlog overflow path, not unique to auth expiry; expired credentials are one way to enter that failure mode.");
+        return Tooltips.htmlRaw(lines.toArray(String[]::new));
     }
 
     private final JCheckBox databaseSinkCheckbox = new Tooltips.HtmlCheckBox("Database", true);
@@ -291,19 +431,48 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private final JTextField openSearchUrlField     = new AutoSizingTextField(OPENSEARCH_DEFAULT_URL);
     private final JTextField openSearchAmazonUrlField  = new AutoSizingTextField(OPENSEARCH_AMAZON_PLACEHOLDER_URL);
     private final JTextField elasticSearchUrlField  = new AutoSizingTextField(ELASTICSEARCH_DEFAULT_URL);
-    private final JTextField openSearchAmazonUserField = new AutoSizingTextField("");
-    private final JPasswordField openSearchAmazonPasswordField = new AutoSizingPasswordField();
-    private final JTextField openSearchAmazonRegionField = new AutoSizingTextField("");
-    private final JTextField openSearchAmazonProfileField = new AutoSizingTextField("");
-    private final JTextField elasticSearchUserField = new AutoSizingTextField("");
-    private final JPasswordField elasticSearchPasswordField = new AutoSizingPasswordField();
-    private final JPasswordField elasticSearchApiKeyTokenField = new AutoSizingPasswordField();
-    private final JPasswordField elasticSearchBearerTokenField = new AutoSizingPasswordField();
-    private final JTextField elasticSearchCertPathField = new AutoSizingTextField("");
-    private final JTextField elasticSearchCertKeyPathField = new AutoSizingTextField("");
-    private final JPasswordField elasticSearchCertPassphraseField = new AutoSizingPasswordField();
+    private final JTextField openSearchAmazonUserField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField openSearchAmazonPasswordField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField openSearchAmazonRegionField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField openSearchAmazonProfileField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField openSearchAmazonCredentialsFileField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField openSearchAmazonConfigFileField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField openSearchAmazonAccessKeyIdField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField openSearchAmazonSecretAccessKeyField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField openSearchAmazonSessionTokenField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
+    private final JLabel openSearchAmazonSessionTokenWarning = temporaryCredentialWarningLabel("os.amazon.sessionToken.warning");
+    private final JLabel openSearchBearerTokenWarning = temporaryCredentialWarningLabel("os.bearer.warning");
+    private final JLabel elasticSearchBearerTokenWarning = temporaryCredentialWarningLabel("os.elasticsearch.bearer.warning");
+    private final JTextField elasticSearchUserField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField elasticSearchPasswordField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField elasticSearchApiKeyTokenField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField elasticSearchBearerTokenField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField elasticSearchCertPathField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField elasticSearchCertKeyPathField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField elasticSearchCertPassphraseField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
     private final JComboBox<String> openSearchAmazonAuthTypeCombo =
             new Tooltips.ItemTooltipComboBox<>(OPENSEARCH_AMAZON_AUTH_TYPES, openSearchAmazonAuthTooltips());
+    private final JComboBox<String> openSearchAmazonDeploymentTypeCombo =
+            new Tooltips.ItemTooltipComboBox<>(AMAZON_DEPLOYMENT_TYPES, amazonDeploymentTypeTooltips());
+    private final JLabel openSearchAmazonRegionLabel = new Tooltips.HtmlLabel("Region:");
+    private final JPanel openSearchAmazonDeploymentTypePanel =
+            new JPanel(new MigLayout("insets 0, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[]"));
     private final JComboBox<String> elasticSearchAuthTypeCombo =
             new Tooltips.ItemTooltipComboBox<>(ELASTICSEARCH_AUTH_TYPES, elasticSearchAuthTooltips());
     private final JComboBox<String> openSearchTlsModeCombo =
@@ -325,16 +494,23 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     /** Auth type dropdown (used in buildCurrentState to clear creds when None). Set in buildAuthFormPanel. */
     private JComboBox<String> openSearchAuthTypeCombo;
     /** Basic auth fields (used in auth form and buildCurrentState). */
-    private final JTextField openSearchUserField   = new AutoSizingTextField("");
-    private final JPasswordField openSearchPasswordField = new AutoSizingPasswordField();
+    private final JTextField openSearchUserField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField openSearchPasswordField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
     /** API key auth field. */
-    private final JPasswordField openSearchApiKeyTokenField = new AutoSizingPasswordField();
+    private final JPasswordField openSearchApiKeyTokenField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
     /** Bearer-token auth field. */
-    private final JTextField openSearchJwtTokenField = new AutoSizingTextField("");
+    private final JTextField openSearchJwtTokenField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
     /** Certificate auth fields. */
-    private final JTextField openSearchCertPathField = new AutoSizingTextField("");
-    private final JTextField openSearchCertKeyPathField = new AutoSizingTextField("");
-    private final JPasswordField openSearchCertPassphraseField = new AutoSizingPasswordField();
+    private final JTextField openSearchCertPathField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JTextField openSearchCertKeyPathField = new AutoSizingTextField(
+            "", AutoSizingTextField.CREDENTIAL_MIN_WIDTH);
+    private final JPasswordField openSearchCertPassphraseField =
+            new AutoSizingPasswordField(AutoSizingPasswordField.CREDENTIAL_MIN_WIDTH);
     private final JTextArea  databaseStatus       = new JTextArea();
     private final JPanel     databaseStatusWrapper
             = new JPanel(new MigLayout(MIG_STATUS_INSETS, MIG_PREF_COL));
@@ -345,6 +521,22 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private transient boolean scopeGridListenerRegistered;
     private transient boolean buttonStylesNormalized;
     private transient boolean suppressAuthSync;
+    private transient boolean amazonDeploymentTypePromptShown;
+    private transient Border amazonDeploymentTypeDefaultBorder;
+
+    private static Map<String, String> amazonDeploymentTypeTooltips() {
+        return Map.of(
+                "Hosted", Tooltips.htmlRaw(
+                        "<b>Hosted</b>",
+                        "Amazon OpenSearch Service managed domain.",
+                        "SigV4 requests are signed with AWS service name <code>es</code>.",
+                        "Usually auto-detected from <code>.es.amazonaws.com</code> endpoints."),
+                "Serverless", Tooltips.htmlRaw(
+                        "<b>Serverless</b>",
+                        "Amazon OpenSearch Serverless collection.",
+                        "SigV4 requests are signed with AWS service name <code>aoss</code>.",
+                        "Usually auto-detected from <code>.aoss.amazonaws.com</code> endpoints."));
+    }
 
     /** Action controller (transient; rebuilt on deserialization). */
     private transient ConfigController controller;
@@ -367,7 +559,13 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     /** Creates the panel with its default controller. Caller must invoke on the EDT. */
     public ConfigPanel() { this(null); }
 
-    /** Dependency-injected constructor (tests). */
+    /**
+     * Creates the panel with an optional injected controller.
+     *
+     * <p>Caller must invoke on the EDT. A null controller is created lazily when first needed.</p>
+     *
+     * @param injectedController controller to use, or {@code null} for the default controller
+     */
     public ConfigPanel(ConfigController injectedController) {
         this.controller = injectedController;
         ControlStatusBridge.register(this::onControlStatus);
@@ -512,6 +710,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         refreshIndexNameBaseValidationState();
     }
 
+    /**
+     * Registers hierarchy-dependent listeners and normalizes button styling.
+     *
+     * <p>Caller must invoke on the EDT. Repeated notifications do not duplicate the scope-grid
+     * listener or style pass.</p>
+     */
     @Override
     public void addNotify() {
         super.addNotify();
@@ -538,7 +742,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         try {
             openSearchAuthTypeCombo.setSelectedItem(selectedType);
             openSearchAmazonAuthTypeCombo.setSelectedItem(loadDestinationAuthType(
-                    ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(), "IAM (sigV4)"));
+                    ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(),
+                    ConfigState.DEFAULT_OPEN_SEARCH_AMAZON_AUTH_TYPE));
             elasticSearchAuthTypeCombo.setSelectedItem(loadDestinationAuthType(
                     ConfigState.SearchDestination.ELASTICSEARCH.configKey(), ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE));
             loadSessionAuthFields();
@@ -597,6 +802,11 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 SecureCredentialStore.loadBasicCredentials(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey());
         openSearchAmazonUserField.setText(awsBasic.username());
         openSearchAmazonPasswordField.setText(awsBasic.password());
+        SecureCredentialStore.AwsStaticCredentials awsStatic =
+                SecureCredentialStore.loadAwsStaticCredentials(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey());
+        openSearchAmazonAccessKeyIdField.setText(awsStatic.accessKeyId());
+        openSearchAmazonSecretAccessKeyField.setText(awsStatic.secretAccessKey());
+        openSearchAmazonSessionTokenField.setText(awsStatic.sessionToken());
 
         String elasticDestination = ConfigState.SearchDestination.ELASTICSEARCH.configKey();
         SecureCredentialStore.BasicCredentials elasticBasic = SecureCredentialStore.loadBasicCredentials(elasticDestination);
@@ -618,34 +828,168 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      */
     private void runExportStopAsync(ConfigControlPanel.StopUiCallbacks callbacks) {
         ExportShutdownStatus.Snapshot snapshot = callbacks.snapshot();
-        startupExecutor.execute(() -> {
-            postStopProgress(callbacks, ExportShutdownStatus.waitingForBatchMessage());
-            ParameterIntegritySessionLog.flushStopDebugValidation();
-            ExportReporterLifecycle.stopBackgroundReporters();
-            TrafficExportQueue.stopWorker();
-            TrafficLiveAttributionSummary.logAndClearForCurrentRun();
-            postStopProgress(callbacks, ExportShutdownStatus.clearingQueuedTrafficMessage(snapshot));
-            ExportReporterLifecycle.clearRepeaterRunState();
-            TrafficExportQueue.clearPendingWork();
-            FileExportService.resetForRuntime();
-            postStopProgress(callbacks, ExportShutdownStatus.pushingFinalStatsMessage());
-            ExporterStatsPushOutcome finalPush = ExporterIndexStatsReporter.pushFinalSnapshotNow();
-            ParameterIntegritySessionLog.logFinalExporterStatsPush(finalPush);
-            if (RuntimeConfig.isOpenSearchActive()) {
-                postStopProgress(callbacks, ExportShutdownStatus.collectingOpenSearchCountsMessage());
+        Thread stopThread = new Thread(() -> {
+            RuntimeConfig.beginExportStopWorker(Thread.currentThread());
+            boolean forceAborted = false;
+            RuntimeConfig.ExportRunToken stoppedRun = RuntimeConfig.lastInvalidatedExportRunToken();
+            try {
+                postStopProgress(callbacks, ExportShutdownStatus.waitingForBatchMessage());
+                ParameterIntegritySessionLog.flushStopDebugValidation();
+                StartupSnapshotCoordinator.cancelRun(stoppedRun);
+                ExportReporterLifecycle.stopBackgroundReporters();
+                if (!isStopForceAbortRequested() && !RuntimeConfig.isExportStopBudgetExpired()) {
+                    boolean startupIdle = StartupSnapshotCoordinator.awaitIdle(
+                            stoppedRun,
+                            RuntimeConfig.remainingExportStopBudgetMs());
+                    if (!startupIdle) {
+                        forceAborted = true;
+                        RuntimeConfig.requestExportStopForceAbort();
+                        Logger.logWarnPanelOnly(
+                                "[Export] Startup snapshot cancellation exceeded the Stop UX budget.");
+                    }
+                }
+                TrafficExportQueue.stopWorker(RuntimeConfig.remainingExportStopBudgetMs());
+                TrafficLiveAttributionSummary.logAndClearForCurrentRun();
+                postStopProgress(callbacks, ExportShutdownStatus.clearingQueuedTrafficMessage(snapshot));
+                ExportReporterLifecycle.clearRepeaterRunState();
+                TrafficExportQueue.clearPendingWork();
+                IndexingRetryCoordinator retryCoordinator = IndexingRetryCoordinator.getInstance();
+                // Entire Stop UX shares one wall-clock budget (EXPORT_STOP_UX_WALL_CLOCK_MS).
+                if (RuntimeConfig.isSearchExportEnabled()
+                        && !isStopForceAbortRequested()
+                        && !RuntimeConfig.isExportStopBudgetExpired()) {
+                    postStopProgress(callbacks, ExportShutdownStatus.waitingForInFlightRetryMessage());
+                }
+                boolean retryOwnerReleased = true;
+                if (!isStopForceAbortRequested() && !RuntimeConfig.isExportStopBudgetExpired()) {
+                    long joinMs = Math.min(
+                            IndexingRetryCoordinator.STOP_DRAIN_THREAD_JOIN_MS,
+                            RuntimeConfig.remainingExportStopBudgetMs());
+                    retryOwnerReleased = retryCoordinator.stopDrainThread(Math.max(0L, joinMs));
+                }
+                if (!retryOwnerReleased) {
+                    forceAborted = true;
+                    RuntimeConfig.requestExportStopForceAbort();
+                    Logger.logWarnPanelOnly(
+                            "[Export] Retry drain worker did not stop within the Stop UX budget; "
+                                    + "skipping the competing synchronous retry drain.");
+                    retryCoordinator.clearPendingWork();
+                } else if (isStopForceAbortRequested()) {
+                    forceAborted = true;
+                    logForceAbortSkip("in-flight retry join / retry drain / final stats");
+                    retryCoordinator.clearPendingWork();
+                } else if (RuntimeConfig.isExportStopBudgetExpired()) {
+                    Logger.logWarnPanelOnly(
+                            "[Export] Stop UX budget exhausted before retry drain; discarding remaining retries.");
+                    retryCoordinator.clearPendingWork();
+                } else {
+                    drainRetriesDuringStop(callbacks, retryCoordinator);
+                    if (isStopForceAbortRequested()) {
+                        forceAborted = true;
+                        logForceAbortSkip("final exporter stats");
+                        retryCoordinator.clearPendingWork();
+                    } else if (RuntimeConfig.remainingExportStopBudgetMs() >= 500L) {
+                        retryCoordinator.clearPendingWork();
+                        postStopProgress(callbacks, ExportShutdownStatus.pushingFinalStatsMessage());
+                        ExporterStatsPushOutcome finalPush = ExporterIndexStatsReporter.pushFinalSnapshotNow();
+                        ParameterIntegritySessionLog.logFinalExporterStatsPush(finalPush);
+                        // Brief second pass only if budget remains (no stacked 20s drains).
+                        if (RuntimeConfig.remainingExportStopBudgetMs() >= 500L
+                                && !isStopForceAbortRequested()) {
+                            drainRetriesDuringStop(callbacks, retryCoordinator);
+                        }
+                        if (isStopForceAbortRequested()) {
+                            forceAborted = true;
+                            logForceAbortSkip("connection reclaim wait");
+                            retryCoordinator.clearPendingWork();
+                        } else {
+                            retryCoordinator.clearPendingWork();
+                        }
+                    } else {
+                        Logger.logWarnPanelOnly(
+                                "[Export] Stop UX budget exhausted; skipping final exporter stats.");
+                        retryCoordinator.clearPendingWork();
+                    }
+                }
+                retryCoordinator.clearPendingWork();
+                IndexingRetryCoordinator.warnIfOutstandingFailuresRemain();
+                if (FileExportService.hasTrackedArtifacts()) {
+                    postStopProgress(callbacks, ExportShutdownStatus.validatingFileArtifactsMessage());
+                    FileExportService.validateRunArtifacts();
+                }
+                StatsClipboardSnapshot.logSessionStopSummary();
+                FileExportService.resetForRuntime();
+                postStopProgress(callbacks, ExportShutdownStatus.closingConnectionsMessage());
+                ExportReporterLifecycle.releaseRunResourcesAsync();
+                long reclaimMs = forceAborted || isStopForceAbortRequested()
+                        ? Math.min(500L, RuntimeConfig.remainingExportStopBudgetMs())
+                        : RuntimeConfig.remainingExportStopBudgetMs();
+                boolean connectionsClosed = reclaimMs > 0L
+                        && ExportReporterLifecycle.awaitStopReclaimComplete(reclaimMs);
+                if (!connectionsClosed) {
+                    forceAborted = true;
+                    RuntimeConfig.requestExportStopForceAbort();
+                    Logger.logWarnPanelOnly(
+                            "[Export] Connection close exceeded the Stop UX budget; marking Stop forced.");
+                }
+                if (forceAborted || isStopForceAbortRequested()) {
+                    Logger.logWarnPanelOnly("[Export] Force-stopped.");
+                } else {
+                    Logger.logInfoPanelOnly("[Export] Stopped.");
+                }
+            } finally {
+                FileExportService.resetForRuntime();
+                RuntimeConfig.endExportStopWorker();
+                boolean forced = forceAborted || RuntimeConfig.isExportStopForceAbortRequested();
+                String doneMessage = forced
+                        ? ExportShutdownStatus.forceStoppedMessage()
+                        : ExportShutdownStatus.stoppedMessage();
+                SwingUtilities.invokeLater(() -> {
+                    callbacks.onStopProgress().accept(doneMessage);
+                    callbacks.onStopComplete().run();
+                });
             }
-            StatsClipboardSnapshot.logSessionStopSummaryWithOpenSearchCounts();
-            IndexingRetryCoordinator.getInstance().clearPendingWork();
-            IndexingRetryCoordinator.getInstance().stopDrainThread();
-            postStopProgress(callbacks, ExportShutdownStatus.closingConnectionsMessage());
-            ExportReporterLifecycle.releaseRunResourcesAsync();
-            ExportReporterLifecycle.awaitStopReclaim(ExportReporterLifecycle.STOP_UI_RECLAIM_TIMEOUT_MS);
-            Logger.logInfoPanelOnly("[Export] Stopped.");
-            SwingUtilities.invokeLater(() -> {
-                callbacks.onStopProgress().accept(ExportShutdownStatus.stoppedMessage());
-                callbacks.onStopComplete().run();
-            });
-        });
+        }, "burp-exporter-stop");
+        stopThread.setDaemon(true);
+        stopThread.start();
+    }
+
+    private static boolean isStopForceAbortRequested() {
+        return RuntimeConfig.isExportStopForceAbortRequested()
+                || Thread.currentThread().isInterrupted();
+    }
+
+    private static void logForceAbortSkip(String remainingSteps) {
+        // Clear interrupt so cleanup (clearPendingWork / close) can proceed after force-abort.
+        Thread.interrupted();
+        Logger.logWarnPanelOnly("[Export] Force-stop: skipping " + remainingSteps + ".");
+    }
+
+    /**
+     * Runs the bounded Stop-time retry drain when search export is enabled and the queue is non-empty.
+     *
+     * @param callbacks stop UI hooks for phased status
+     * @param retryCoordinator shared retry coordinator
+     */
+    private void drainRetriesDuringStop(
+            ConfigControlPanel.StopUiCallbacks callbacks,
+            IndexingRetryCoordinator retryCoordinator) {
+        if (!RuntimeConfig.isSearchExportEnabled()) {
+            return;
+        }
+        int retryQueued = retryCoordinator.getTotalQueueSize();
+        if (retryQueued <= 0) {
+            return;
+        }
+        long budgetMs = RuntimeConfig.remainingExportStopBudgetMs();
+        if (budgetMs <= 0L) {
+            Logger.logWarnPanelOnly(
+                    "[Export] Stop UX budget exhausted; skipping retry drain ("
+                            + retryQueued + " queued).");
+            return;
+        }
+        postStopProgress(callbacks, ExportShutdownStatus.drainingRetriesMessage(retryQueued));
+        retryCoordinator.drainPendingRetriesDuringShutdown(budgetMs);
     }
 
     private static void postStopProgress(ConfigControlPanel.StopUiCallbacks callbacks, String message) {
@@ -657,9 +1001,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         });
     }
 
-    private static void postStartProgress(ConfigControlPanel.StartUiCallbacks callbacks, String message) {
+    private static void postStartProgress(
+            RuntimeConfig.ExportRunToken token,
+            ConfigControlPanel.StartUiCallbacks callbacks,
+            String message) {
         SwingUtilities.invokeLater(() -> {
-            if (RuntimeConfig.isExportStarting()) {
+            if (RuntimeConfig.isExportStarting() && RuntimeConfig.isExportRunActive(token)) {
                 callbacks.onStartProgress().accept(message);
             }
         });
@@ -669,7 +1016,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * Starts export without blocking the EDT.
      *
      * <p>Caller must invoke on the EDT. This method captures UI state, marks export running
-     * immediately, then performs OpenSearch bootstrap and initial snapshot pushes on a background
+     * immediately, then performs database bootstrap and initial snapshot pushes on a background
      * executor. If bootstrap fails, runtime state and UI start/stop controls are reverted on EDT.</p>
      *
      * @param uiCallbacks callbacks from {@link ConfigControlPanel} to revert or complete Start UI state
@@ -678,6 +1025,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         if (!RuntimeConfig.isExportRunning()) {
             return;
         }
+        RuntimeConfig.ExportRunToken runToken = RuntimeConfig.currentExportRunToken();
         syncSelectedAuthStateFromUi();
         ai.anomalousvectors.tools.burp.utils.IndexNaming.ResolutionResult indexNamingResolution =
                 RuntimeConfig.prepareIndexNamesForCurrentRun();
@@ -686,7 +1034,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             return;
         }
         boolean filesSelected = fileSinkCheckbox.isSelected();
-        boolean openSearchSelected = isOpenSearchExportSelected();
+        boolean databaseSelected = isOpenSearchExportSelected();
         if (fileSinkCheckbox.isSelected() && !hasSelectedFileFormat()) {
             abortStartOnEdt(
                     "select at least one file format when Files export is enabled.",
@@ -694,7 +1042,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             return;
         }
         List<String> startupIssues = validateSelectedDestinationConfiguration();
-        if (!RuntimeConfig.isAnyFileExportEnabled() && !openSearchSelected) {
+        if (!RuntimeConfig.isAnyFileExportEnabled() && !databaseSelected) {
             String reason = startupIssues.isEmpty()
                     ? "configure at least one destination."
                     : String.join(" ", startupIssues);
@@ -704,25 +1052,28 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         String url = selectedSearchUrlField().getText().trim();
         List<String> sources = List.copyOf(getSelectedSources());
         ExportStartupStatus.Snapshot startupSnapshot =
-                new ExportStartupStatus.Snapshot(filesSelected, openSearchSelected);
-        postStartProgress(uiCallbacks, ExportStartupStatus.initialStartingMessage(startupSnapshot));
+                new ExportStartupStatus.Snapshot(filesSelected, databaseSelected);
+        postStartProgress(runToken, uiCallbacks, ExportStartupStatus.initialStartingMessage(startupSnapshot));
         Logger.logDebug("[Export] Runtime traffic tool types at Start: "
                 + (RuntimeConfig.getState() == null || RuntimeConfig.getState().trafficToolTypes() == null
                         ? "[]"
                         : RuntimeConfig.getState().trafficToolTypes()));
         ExportStats.recordExportStartRequested();
+        BulkRateLimitBackoff.resetForStart();
         Logger.logInfoPanelOnly("[Export] Starting. Selected destinations: "
-                + summarizeSelectedDestinations(filesSelected, openSearchSelected) + ".");
+                + summarizeSelectedDestinations(filesSelected, databaseSelected) + ".");
+        emitTemporaryCredentialAdvisoryIfNeeded();
         RuntimeConfig.setExportRunning(true);
+        StartupSnapshotCoordinator.beginRun(runToken);
         RepeaterTabsIndexReporter.clearRunState();
-        TrafficStartupBacklogSummary.startForCurrentRun();
+        TrafficStartupBacklogSummary.startForCurrentRun(runToken);
         UrlParameterTruncationLog.startForCurrentRun();
         BodyParameterTruncationLog.startForCurrentRun();
         BodyEnumerationSkippedLog.startForCurrentRun();
         CompressedWireBodyParamsLog.startForCurrentRun();
         TrafficLiveAttributionSummary.startForCurrentRun();
         startupExecutor.execute(() -> runStartupPipeline(
-                url, sources, uiCallbacks, startupIssues, filesSelected, openSearchSelected));
+                runToken, url, sources, uiCallbacks, startupIssues, filesSelected, databaseSelected));
     }
 
     /** Returns whether at least one file-export format checkbox is selected. */
@@ -731,37 +1082,50 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     }
 
     /**
-     * Runs OpenSearch bootstrap and initial reporter startup on a background thread.
+     * Runs database bootstrap and initial reporter startup on a background thread.
      *
      * <p>Not EDT-only. On bootstrap failure, this method posts revert work to EDT so UI state
      * remains consistent with runtime state.</p>
      *
-     * @param url OpenSearch base URL from UI
+     * @param runToken committed run token captured before asynchronous startup
+     * @param url selected database base URL from UI
      * @param sources selected source keys at Start time
      * @param uiCallbacks callbacks to revert or complete Start button/indicator state
      */
     private void runStartupPipeline(
+            RuntimeConfig.ExportRunToken runToken,
             String url,
             List<String> sources,
             ConfigControlPanel.StartUiCallbacks uiCallbacks,
             List<String> startupIssues,
             boolean filesSelected,
-            boolean openSearchSelected
+            boolean databaseSelected
     ) {
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
+            return;
+        }
+        if (!ExportReporterLifecycle.awaitStopReclaimComplete(
+                ExportReporterLifecycle.STOP_UI_RECLAIM_TIMEOUT_MS)) {
+            ExportReporterLifecycle.stopAndClearPendingExportWork();
+            abortStartFromWorker(
+                    "previous run connection cleanup did not quiesce.",
+                    uiCallbacks);
+            return;
+        }
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         List<String> runtimeStartIssues = new ArrayList<>(startupIssues);
-        if (!openSearchSelected && RuntimeConfig.getState() != null && RuntimeConfig.getState().sinks() != null
-                && RuntimeConfig.getState().sinks().osEnabled()) {
-            RuntimeConfig.disableOpenSearchDestination();
+        if (!databaseSelected && RuntimeConfig.getState() != null && RuntimeConfig.getState().sinks() != null
+                && RuntimeConfig.getState().sinks().databaseEnabled()) {
+            RuntimeConfig.disableDatabaseDestination();
         }
         if (filesSelected) {
-            postStartProgress(uiCallbacks, ExportStartupStatus.initializingFilesMessage());
+            postStartProgress(runToken, uiCallbacks, ExportStartupStatus.initializingFilesMessage());
         }
-        boolean openSearchEnabled = RuntimeConfig.getState() != null
+        boolean databaseEnabled = RuntimeConfig.getState() != null
                 && RuntimeConfig.getState().sinks() != null
-                && openSearchSelected
+                && databaseSelected
                 && !url.isEmpty();
         if (RuntimeConfig.isAnyFileExportEnabled()) {
             try {
@@ -772,7 +1136,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 Logger.logInfoPanelOnly("[Files] Initializing files for selected sources.");
                 Logger.logDebug("[Files] Ensuring files for sources: " + sources);
                 List<FileExportService.FileInitResult> fileResults =
-                        FileExportService.createSelectedExportFiles(sources, RuntimeConfig::isExportRunning);
+                        FileExportService.createSelectedExportFiles(
+                                sources,
+                                () -> RuntimeConfig.isExportRunActive(runToken));
+                if (!RuntimeConfig.isExportRunActive(runToken)) {
+                    return;
+                }
                 for (FileExportService.FileInitResult result : fileResults) {
                     Logger.logDebug("[Files] File "
                             + (result.path() != null ? result.path().getFileName() : result.shortName())
@@ -782,28 +1151,30 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 if (fileResults.stream().anyMatch(r -> r.status() == FileUtil.Status.FAILED)) {
                     String reason = "one or more export files failed to initialize.";
                     logFileInitializationFailures(fileResults);
-                    if (!openSearchEnabled) {
+                    if (!databaseEnabled) {
                         ExportReporterLifecycle.stopAndClearPendingExportWork();
                         abortStartFromWorker(reason, uiCallbacks);
                         return;
                     }
                     recordStartIssue(runtimeStartIssues, "Files failed during start: " + reason);
-                    FileExportService.disableCurrentRoot("File export initialization failed. OpenSearch export will continue.");
+                    FileExportService.disableCurrentRoot("File export initialization failed. "
+                            + RuntimeConfig.searchDestinationDisplayName() + " export will continue.");
                 }
             } catch (IOException | RuntimeException e) {
                 String reason = e.getMessage() == null || e.getMessage().isBlank()
                         ? "File export preflight failed."
                         : "File export preflight failed: " + e.getMessage();
-                if (!openSearchEnabled) {
+                if (!databaseEnabled) {
                     ExportReporterLifecycle.stopAndClearPendingExportWork();
                     abortStartFromWorker(reason, uiCallbacks);
                     return;
                 }
                 recordStartIssue(runtimeStartIssues, "Files failed during start: " + reason);
-                FileExportService.disableCurrentRoot(reason + " OpenSearch export will continue.");
+                FileExportService.disableCurrentRoot(reason + " "
+                        + RuntimeConfig.searchDestinationDisplayName() + " export will continue.");
             }
         }
-        if (openSearchEnabled && !url.isEmpty()) {
+        if (databaseEnabled && !url.isEmpty()) {
             ConfigState.SearchDestination databaseDestination = RuntimeConfig.searchDestinationKind();
             String databaseName = databaseDestination.displayName();
             OpenSearchAuth openSearchAuth = OpenSearchAuth.fromRuntime(databaseDestination);
@@ -815,23 +1186,23 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                     return;
                 }
                 recordStartIssue(runtimeStartIssues, databaseName + " failed during start: " + reason);
-                disableOpenSearchForCurrentRun(reason + " Files export will continue.");
-                openSearchEnabled = false;
+                disableDatabaseForCurrentRun(reason + " Files export will continue.");
+                databaseEnabled = false;
             }
         }
-        if (openSearchEnabled && !url.isEmpty()) {
+        if (databaseEnabled && !url.isEmpty()) {
             ConfigState.SearchDestination databaseDestination = RuntimeConfig.searchDestinationKind();
             String databaseName = databaseDestination.displayName();
             OpenSearchAuth openSearchAuth = OpenSearchAuth.fromRuntime(databaseDestination);
-            postStartProgress(uiCallbacks, "Starting: testing " + databaseName + " connection …");
+            postStartProgress(runToken, uiCallbacks, "Starting: testing " + databaseName + " connection …");
             Logger.logDebug("[" + databaseName + "] Preflight connection test for " + url);
             var preflight = ai.anomalousvectors.tools.burp.utils.search.SearchConnectionTester.safeTestConnection(
                     databaseDestination, url);
-            Logger.logDebug("[" + databaseName + "] Preflight result: success=" + preflight.success()
-                    + ", message=" + preflight.message());
-            if (!RuntimeConfig.isExportRunning()) {
+            if (!RuntimeConfig.isExportRunActive(runToken)) {
                 return;
             }
+            Logger.logDebug("[" + databaseName + "] Preflight result: success=" + preflight.success()
+                    + ", message=" + preflight.message());
             if (!preflight.success()) {
                 String reason = preflight.message() == null || preflight.message().isBlank()
                         ? databaseName + " preflight failed."
@@ -842,26 +1213,28 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                     return;
                 }
                 recordStartIssue(runtimeStartIssues, databaseName + " failed during start: " + reason);
-                disableOpenSearchForCurrentRun(reason + " Files export will continue.");
-                openSearchEnabled = false;
+                disableDatabaseForCurrentRun(reason + " Files export will continue.");
+                databaseEnabled = false;
+            } else {
+                IndexingRetryCoordinator.getInstance().recordHealthyClusterIdentity(preflight.clusterUuid());
             }
 
-            if (openSearchEnabled) {
-                postStartProgress(uiCallbacks, "Starting: creating " + databaseName + " indexes …");
+            if (databaseEnabled) {
+                postStartProgress(runToken, uiCallbacks, "Starting: creating " + databaseName + " indexes …");
                 Logger.logInfoPanelOnly("[" + databaseName + "] Initializing indexes for selected sources.");
                 Logger.logDebug("[" + databaseName + "] Ensuring indexes for sources: " + sources);
                 List<OpenSearchSink.IndexResult> results = OpenSearchSink.createSelectedIndexes(url, sources,
-                        openSearchAuth, RuntimeConfig::isExportRunning);
+                        openSearchAuth, () -> RuntimeConfig.isExportRunActive(runToken));
+                if (!RuntimeConfig.isExportRunActive(runToken)) {
+                    return;
+                }
                 for (OpenSearchSink.IndexResult r : results) {
                     Logger.logDebug("[" + databaseName + "] Index " + r.fullName() + ": " + r.status()
                             + (r.error() != null ? " (" + r.error() + ")" : ""));
                 }
-                if (!RuntimeConfig.isExportRunning()) {
-                    return;
-                }
                 if (results.stream().anyMatch(r -> r.status() == OpenSearchSink.IndexResult.Status.FAILED)) {
-                    String reason = "one or more OpenSearch indexes failed to initialize.";
-                    logOpenSearchIndexInitializationFailures(results);
+                    String reason = "one or more search database indexes failed to initialize.";
+                    logDatabaseIndexInitializationFailures(results);
                     if (!RuntimeConfig.isAnyFileExportEnabled()) {
                         ExportReporterLifecycle.stopAndClearPendingExportWork();
                         abortStartFromWorker(reason, uiCallbacks);
@@ -870,16 +1243,16 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                     recordStartIssue(
                             runtimeStartIssues,
                             databaseName + " failed during start: " + reason);
-                    disableOpenSearchForCurrentRun(databaseName
+                    disableDatabaseForCurrentRun(databaseName
                             + " index initialization failed. Files export will continue.");
                 }
             }
         }
 
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
-        postStartProgress(uiCallbacks, ExportStartupStatus.startingBackgroundReportersMessage());
+        postStartProgress(runToken, uiCallbacks, ExportStartupStatus.startingBackgroundReportersMessage());
         if (!TrafficStartupBacklogSummary.hasExpectedStartupComponents()) {
             UrlParameterTruncationLog.flushStartupSummary();
             BodyParameterTruncationLog.flushStartupSummary();
@@ -887,55 +1260,58 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             CompressedWireBodyParamsLog.flushStartupSummary();
         }
         RuntimeConfig.setExportStarting(false);
-        String runningStatus = buildRunningStatusMessage(runtimeStartIssues, filesSelected, openSearchSelected);
+        String runningStatus = buildRunningStatusMessage(runtimeStartIssues, filesSelected, databaseSelected);
         SwingUtilities.invokeLater(() -> {
+            if (!RuntimeConfig.isExportRunActive(runToken)) {
+                return;
+            }
             uiCallbacks.onStartSuccess().run();
             onControlStatus(runningStatus);
             RepeaterTabsIndexReporter.scheduleStartupTabWalk();
         });
         if (RuntimeConfig.isAnySinkEnabled()) {
             ExporterIndexConfigReporter.pushConfigSnapshot();
-            if (!RuntimeConfig.isExportRunning()) {
+            if (!RuntimeConfig.isExportRunActive(runToken)) {
                 return;
             }
             ExporterIndexStatsReporter.start();
             BodyEnumerationSkippedLog.startPeriodicFlusher();
             CompressedWireBodyParamsLog.startPeriodicFlusher();
         }
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         SettingsIndexReporter.pushSnapshotNow();
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         SettingsIndexReporter.start();
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         FindingsIndexReporter.pushSnapshotNow();
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         FindingsIndexReporter.start();
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         SitemapIndexReporter.pushSnapshotNow();
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         SitemapIndexReporter.start();
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         ProxyHistoryIndexReporter.pushSnapshotNow();
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
         if (isTrafficToolSelected("proxy_history")) {
             ProxyWebSocketIndexReporter.pushHistoricSnapshotNow();
-            if (!RuntimeConfig.isExportRunning()) {
+            if (!RuntimeConfig.isExportRunActive(runToken)) {
                 return;
             }
         }
@@ -946,9 +1322,10 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 ProxyWebSocketIndexReporter.startLivePoll();
             }
         }
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
+        StartupSnapshotCoordinator.activateRun(runToken);
         Logger.logInfoPanelOnly("[Export] Started. Destinations: " + RuntimeConfig.activeSinkSummary() + ".");
     }
 
@@ -962,10 +1339,10 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         return trafficTypes != null && trafficTypes.contains(toolTypeKey);
     }
 
-    private void disableOpenSearchForCurrentRun(String reason) {
-        if (RuntimeConfig.disableOpenSearchDestination()) {
+    private void disableDatabaseForCurrentRun(String reason) {
+        if (RuntimeConfig.disableDatabaseDestination()) {
             IndexingRetryCoordinator.getInstance().clearPendingWork();
-            Logger.logErrorPanelOnly("[OpenSearch] " + reason);
+            Logger.logErrorPanelOnly("[" + RuntimeConfig.searchDestinationDisplayName() + "] " + reason);
         }
     }
 
@@ -993,6 +1370,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     }
 
     private void abortStartOnEdt(String reason, ConfigControlPanel.StartUiCallbacks uiCallbacks) {
+        RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        RuntimeConfig.setExportRunning(false);
+        StartupSnapshotCoordinator.cancelRun(token);
         Logger.logErrorPanelOnly("[Export] Start aborted: " + reason);
         UrlParameterTruncationLog.flushStartupSummary();
         BodyParameterTruncationLog.flushStartupSummary();
@@ -1003,6 +1383,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     }
 
     private void abortStartFromWorker(String reason, ConfigControlPanel.StartUiCallbacks uiCallbacks) {
+        RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        RuntimeConfig.setExportRunning(false);
+        StartupSnapshotCoordinator.cancelRun(token);
         Logger.logErrorPanelOnly("[Export] Start aborted: " + reason);
         UrlParameterTruncationLog.flushStartupSummary();
         BodyParameterTruncationLog.flushStartupSummary();
@@ -1014,22 +1397,23 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         });
     }
 
-    private static String summarizeSelectedDestinations(boolean filesSelected, boolean openSearchSelected) {
+    private static String summarizeSelectedDestinations(boolean filesSelected, boolean databaseSelected) {
         String databaseName = RuntimeConfig.searchDestinationDisplayName();
-        if (filesSelected && openSearchSelected) {
+        if (filesSelected && databaseSelected) {
             return "Files and " + databaseName;
         }
         if (filesSelected) {
             return "Files";
         }
-        if (openSearchSelected) {
+        if (databaseSelected) {
             return databaseName;
         }
         return "none";
     }
 
-    private static void logOpenSearchIndexInitializationFailures(List<OpenSearchSink.IndexResult> results) {
-        Logger.logErrorPanelOnly("[OpenSearch] Index initialization failed for one or more selected indexes.");
+    private static void logDatabaseIndexInitializationFailures(List<OpenSearchSink.IndexResult> results) {
+        String databaseName = RuntimeConfig.searchDestinationDisplayName();
+        Logger.logErrorPanelOnly("[" + databaseName + "] Index initialization failed for one or more selected indexes.");
         if (results == null) {
             return;
         }
@@ -1038,7 +1422,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 continue;
             }
             String detail = result.error() == null || result.error().isBlank() ? "unknown error" : result.error();
-            Logger.logErrorPanelOnly("[OpenSearch] Index initialization failed for "
+            Logger.logErrorPanelOnly("[" + databaseName + "] Index initialization failed for "
                     + result.fullName() + ": " + detail);
         }
     }
@@ -1061,18 +1445,22 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private static String buildRunningStatusMessage(
             List<String> startupIssues,
             boolean filesSelected,
-            boolean openSearchSelected
+            boolean databaseSelected
     ) {
         String filesStatus = filesSelected
                 ? (RuntimeConfig.isAnyFileExportEnabled()
                 ? "Running -> " + activeFilesDestination()
                 : "Not running")
                 : null;
-        String databaseStatus = openSearchSelected
-                ? (RuntimeConfig.isOpenSearchExportEnabled()
+        String databaseStatus = databaseSelected
+                ? (RuntimeConfig.isSearchExportEnabled()
                 ? "Running -> " + activeOpenSearchDestination()
                 : "Not running")
                 : null;
+        if (databaseStatus != null
+                && IndexingRetryCoordinator.getInstance().isAuthorizationRecoveryPaused()) {
+            databaseStatus = "Paused (authorization recovery; queued work retained)";
+        }
         if (startupIssues != null) {
             for (String issue : startupIssues) {
                 if (issue == null || issue.isBlank()) {
@@ -1099,22 +1487,25 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         if (message == null || message.isBlank()) {
             return message;
         }
-        if (message.startsWith("OpenSearch export disabled after repeated ")
+        String destination = RuntimeConfig.searchDestinationDisplayName();
+        String databaseDisabledPrefix = destination + " export disabled after repeated ";
+        String databaseContinuesSuffix = " " + destination + " export continues.";
+        if (message.startsWith(databaseDisabledPrefix)
                 && message.endsWith(" Files export will continue.")) {
             String detail = message.substring(
-                    "OpenSearch export disabled after repeated ".length(),
+                    databaseDisabledPrefix.length(),
                     message.length() - " Files export will continue.".length());
             return buildDestinationStatusMessage("Running", "Stopped (" + shortStatusDetail(detail) + ")");
         }
         if (message.startsWith("File export stopped: ")
-                && message.endsWith(" OpenSearch export continues.")) {
+                && message.endsWith(databaseContinuesSuffix)) {
             String detail = message.substring(
                     "File export stopped: ".length(),
-                    message.length() - " OpenSearch export continues.".length());
+                    message.length() - databaseContinuesSuffix.length());
             return buildDestinationStatusMessage("Stopped (" + shortStatusDetail(detail) + ")", "Running");
         }
         if (message.startsWith("Local disk writes stopped")
-                && message.endsWith("OpenSearch export continues.")) {
+                && message.endsWith(databaseContinuesSuffix.trim())) {
             return buildDestinationStatusMessage("Stopped (" + shortStatusDetail(message) + ")", "Running");
         }
         return message;
@@ -1126,7 +1517,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             lines.add("Files: " + filesStatus);
         }
         if (databaseStatus != null && !databaseStatus.isBlank()) {
-            lines.add("OpenSearch: " + databaseStatus);
+            lines.add(RuntimeConfig.searchDestinationDisplayName() + ": " + databaseStatus);
         }
         return lines.isEmpty() ? "Running" : String.join("\n", lines);
     }
@@ -1259,11 +1650,17 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     /* ----------------------- ConfigController.Ui ----------------------- */
 
-    /** File-export runtime messages are routed through Config Control instead. */
+    /**
+     * Ignores file-export runtime messages because Config Control owns that status surface.
+     *
+     * @param message ignored file-export status text
+     */
     @Override public void onFileStatus(String message) { }
 
     /**
-     * Updates the database-destination status area on the EDT with the provided message.
+     * Updates the database-destination status area.
+     *
+     * <p>Caller must invoke on the EDT.</p>
      *
      * @param message status text to display (nullable)
      */
@@ -1274,6 +1671,10 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     /**
      * Updates the Control status area on the EDT.
+     *
+     * <p>Safe to call from any thread. Calls from a background thread wait for the EDT; if that
+     * wait is interrupted or the EDT callback fails, the update is posted asynchronously.
+     * Start/Stop phase messages take precedence and cause this update to be ignored.</p>
      *
      * @param message status text to display (nullable)
      */
@@ -1300,7 +1701,10 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * Applies an imported state to the UI.
      *
      * <p>For custom scope, rows are applied first and then the Custom radio is selected to ensure
-     * enablement is updated on the final state.</p>
+     * enablement is updated on the final state. Safe to call from any thread; background callers
+     * post the update asynchronously to the EDT.</p>
+     *
+     * @param state imported configuration; must not be {@code null}
      */
     public void onImportResult(ConfigState.State state) {
         Runnable r = () -> {
@@ -1354,7 +1758,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 fileTotalCapField.setText(formatGiBLimit(sinks.fileTotalCapGb()));
                 fileDiskUsagePercentCheckbox.setSelected(sinks.fileDiskUsagePercentEnabled());
                 fileDiskUsagePercentField.setText(String.valueOf(sinks.fileDiskUsagePercent()));
-                databaseSinkCheckbox.setSelected(sinks.osEnabled());
+                databaseSinkCheckbox.setSelected(sinks.databaseEnabled());
                 switch (sinks.searchDestinationKind()) {
                     case OPEN_SEARCH_AMAZON -> openSearchAmazonDestinationRadio.setSelected(true);
                     case ELASTICSEARCH -> elasticSearchDestinationRadio.setSelected(true);
@@ -1370,6 +1774,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 openSearchAmazonUserField.setText(awsOptions.username());
                 openSearchAmazonRegionField.setText(awsOptions.region());
                 openSearchAmazonProfileField.setText(awsOptions.profile());
+                openSearchAmazonCredentialsFileField.setText(awsOptions.credentialsFilePath());
+                openSearchAmazonConfigFileField.setText(awsOptions.configFilePath());
+                applyAmazonDeploymentTypeSelection(awsOptions.deploymentType());
                 openSearchAmazonTlsModeCombo.setSelectedItem(labelForTlsMode(awsOptions.tlsMode()));
                 applyImportedPinnedTlsCertificate(awsOptions);
                 ConfigState.ElasticsearchOptions elasticOptions = sinks.elasticSearchOptions() == null
@@ -1381,6 +1788,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 elasticSearchCertKeyPathField.setText(elasticOptions.certKeyPath());
                 elasticSearchTlsModeCombo.setSelectedItem(labelForTlsMode(elasticOptions.tlsMode()));
                 applyImportedPinnedTlsCertificate(elasticOptions);
+                refreshElasticsearchAuthTypesForEndpoint();
                 boolean previousSuppressAuthSync = suppressAuthSync;
                 suppressAuthSync = true;
                 try {
@@ -1677,6 +2085,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         ActionListener searchDestinationUpdater = e -> {
             applySearchDestinationSelection();
             sinkUpdater.actionPerformed(e);
+            refreshTemporaryCredentialWarnings();
         };
         databaseSinkCheckbox.addActionListener(searchDestinationUpdater);
         openSearchSinkCheckbox.addActionListener(searchDestinationUpdater);
@@ -1686,9 +2095,18 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         elasticSearchAuthTypeCombo.addActionListener(sinkUpdater);
 
         testConnectionButton.addActionListener(e -> {
+            if (selectedSearchDestinationKind() == ConfigState.SearchDestination.OPEN_SEARCH_AMAZON) {
+                syncAmazonRegionFromUrl();
+            }
             syncSelectedAuthStateFromUi();
             String url = selectedSearchUrlField().getText().trim();
             if (url.isEmpty()) { onDatabaseStatus("✖ URL required"); return; }
+            if (selectedSearchDestinationKind() == ConfigState.SearchDestination.OPEN_SEARCH_AMAZON
+                    && !ensureAmazonDeploymentTypeResolvedForTest()) {
+                syncSelectedAuthStateFromUi();
+                return;
+            }
+            emitTemporaryCredentialAdvisoryIfNeeded();
             onDatabaseStatus("Testing ...");
             controller().testConnectionAsync(selectedSearchDestinationKind(), url);
         });
@@ -1711,6 +2129,11 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             openSearchAmazonPasswordField.revalidate();
             openSearchAmazonRegionField.revalidate();
             openSearchAmazonProfileField.revalidate();
+            openSearchAmazonCredentialsFileField.revalidate();
+            openSearchAmazonConfigFileField.revalidate();
+            openSearchAmazonAccessKeyIdField.revalidate();
+            openSearchAmazonSecretAccessKeyField.revalidate();
+            openSearchAmazonSessionTokenField.revalidate();
             elasticSearchUserField.revalidate();
             elasticSearchPasswordField.revalidate();
             elasticSearchApiKeyTokenField.revalidate();
@@ -1730,6 +2153,11 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         openSearchAmazonPasswordField.getDocument().addDocumentListener(relayout);
         openSearchAmazonRegionField.getDocument().addDocumentListener(relayout);
         openSearchAmazonProfileField.getDocument().addDocumentListener(relayout);
+        openSearchAmazonCredentialsFileField.getDocument().addDocumentListener(relayout);
+        openSearchAmazonConfigFileField.getDocument().addDocumentListener(relayout);
+        openSearchAmazonAccessKeyIdField.getDocument().addDocumentListener(relayout);
+        openSearchAmazonSecretAccessKeyField.getDocument().addDocumentListener(relayout);
+        openSearchAmazonSessionTokenField.getDocument().addDocumentListener(relayout);
         elasticSearchUserField.getDocument().addDocumentListener(relayout);
         elasticSearchPasswordField.getDocument().addDocumentListener(relayout);
         elasticSearchApiKeyTokenField.getDocument().addDocumentListener(relayout);
@@ -1746,6 +2174,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             if (!suppressAuthSync) {
                 syncSelectedAuthStateFromUi();
             }
+            refreshTemporaryCredentialWarnings();
         });
         openSearchUserField.getDocument().addDocumentListener(authUpdater);
         openSearchPasswordField.getDocument().addDocumentListener(authUpdater);
@@ -1756,6 +2185,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         openSearchCertPassphraseField.getDocument().addDocumentListener(authUpdater);
         openSearchAmazonUserField.getDocument().addDocumentListener(authUpdater);
         openSearchAmazonPasswordField.getDocument().addDocumentListener(authUpdater);
+        openSearchAmazonAccessKeyIdField.getDocument().addDocumentListener(authUpdater);
+        openSearchAmazonSecretAccessKeyField.getDocument().addDocumentListener(authUpdater);
+        openSearchAmazonSessionTokenField.getDocument().addDocumentListener(authUpdater);
         elasticSearchUserField.getDocument().addDocumentListener(authUpdater);
         elasticSearchPasswordField.getDocument().addDocumentListener(authUpdater);
         elasticSearchApiKeyTokenField.getDocument().addDocumentListener(authUpdater);
@@ -1823,78 +2255,248 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                         openSearchJwtTokenField,
                         openSearchCertPathField,
                         openSearchCertKeyPathField,
-                        openSearchCertPassphraseField),
+                        openSearchCertPassphraseField,
+                        openSearchBearerTokenWarning),
                 this::syncSelectedAuthStateFromUi,
                 () -> suppressAuthSync);
         openSearchAuthTypeCombo = result.authTypeCombo();
+        openSearchAuthTypeCombo.addActionListener(e -> refreshTemporaryCredentialWarnings());
         return result.panel();
     }
 
     private JPanel buildOpenSearchAmazonOptionsPanel() {
-        JPanel panel = new JPanel(new MigLayout("insets 0", "[pref][pref][pref]", "[top]"));
+        JPanel panel = new JPanel(new MigLayout(
+                "insets 0, hidemode 3, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[top]"));
         panel.setOpaque(false);
 
-        String authTip = Tooltips.html("Select the Amazon OpenSearch Service authentication type.");
-        String usernameTip = Tooltips.html(
+        String authTip = Tooltips.htmlRaw(
+                "<b>Auth type</b>",
+                "Select how Amazon OpenSearch Service authenticates export requests.",
+                "Hover each dropdown item for guidance.",
+                "IAM Profile is usually best for long or unattended runs; Basic is for FGAC internal users.");
+        String usernameTip = Tooltips.htmlRaw(
+                "<b>Username</b>",
                 "Amazon OpenSearch Service Basic auth username.",
                 "Stored in exported config as a non-secret.");
-        String passwordTip = Tooltips.html(
+        String passwordTip = Tooltips.htmlRaw(
+                "<b>Password</b>",
                 "Amazon OpenSearch Service Basic auth password.",
                 "Stored only within in-process memory.");
-        String regionTip = Tooltips.html(
-                "AWS region for SigV4 credential resolution.",
-                "Required when testing IAM/SigV4 credentials.");
-        String profileTip = Tooltips.html(
-                "Optional AWS shared-config profile.",
-                "Leave blank to use the default AWS SDK credential provider chain.");
+        String regionTip = Tooltips.htmlRaw(
+                "<b>Region</b>",
+                "AWS region used for SigV4 signing.",
+                "Filled automatically when you leave the Amazon OpenSearch URL field if the host embeds a region"
+                        + " (<code>.es.amazonaws.com</code> / <code>.aoss.amazonaws.com</code>).",
+                "Enter a region only when detection fails (custom VPC endpoints).");
+        String profileTip = Tooltips.htmlRaw(
+                "<b>Profile</b>",
+                "AWS shared-config profile name for <b>IAM SigV4 - Profile</b>.",
+                "Each signed request re-resolves credentials from this profile.",
+                "Temporary credentials renew only when the profile is SSO, assume-role, or credential_process and the AWS SDK refresh succeeds.",
+                "A profile that stores a fixed session token does not renew.");
+        String credentialsFileTip = Tooltips.htmlRaw(
+                "<b>Credentials file</b>",
+                "AWS shared credentials file path for <b>IAM SigV4 - Profile</b>.",
+                "Auto-populated with the SDK default path when you select Profile auth"
+                        + " (typically <code>" + SearchDeployment.defaultAwsCredentialsFilePath() + "</code>).",
+                "Change only when using a non-default credentials file.");
+        String configFileTip = Tooltips.htmlRaw(
+                "<b>Config file</b>",
+                "AWS shared config file path for <b>IAM SigV4 - Profile</b>.",
+                "Auto-populated with the SDK default path when you select Profile auth"
+                        + " (typically <code>" + SearchDeployment.defaultAwsConfigFilePath() + "</code>).",
+                "Change only when using a non-default config file.");
+        String accessKeyTip = Tooltips.htmlRaw(
+                "<b>Access Key ID</b>",
+                "AWS access key ID for SigV4 signing.",
+                "Stored only within in-process memory.");
+        String secretKeyTip = Tooltips.htmlRaw(
+                "<b>Secret Access Key</b>",
+                "AWS secret access key for SigV4 signing.",
+                "Stored only within in-process memory.");
+        String sessionTokenTip = withTemporaryCredentialRisk(
+                "<b>Session Token</b>",
+                "Optional AWS session token for temporary credentials (STS/SSO/AssumeRole).",
+                "Leave blank for long-term access keys.",
+                "When present, credentials expire and are not renewed by the exporter.",
+                "That raises mid-run authentication-failure risk on long exports.",
+                "Prefer <b>IAM SigV4 - Profile</b>, or Static keys with this field blank.",
+                "Stored only within in-process memory.");
+        String deploymentTip = Tooltips.htmlRaw(
+                "<b>Deployment type</b>",
+                "Shown only when Hosted vs Serverless cannot be detected from the endpoint.",
+                "Hosted signs with service <code>es</code>; Serverless signs with <code>aoss</code>.");
         Tooltips.apply(openSearchAmazonUserField, usernameTip);
         Tooltips.apply(openSearchAmazonPasswordField, passwordTip);
         Tooltips.apply(openSearchAmazonRegionField, regionTip);
         Tooltips.apply(openSearchAmazonProfileField, profileTip);
+        Tooltips.apply(openSearchAmazonCredentialsFileField, credentialsFileTip);
+        Tooltips.apply(openSearchAmazonConfigFileField, configFileTip);
+        Tooltips.apply(openSearchAmazonAccessKeyIdField, accessKeyTip);
+        Tooltips.apply(openSearchAmazonSecretAccessKeyField, secretKeyTip);
+        Tooltips.apply(openSearchAmazonSessionTokenField, sessionTokenTip);
+        Tooltips.apply(openSearchAmazonDeploymentTypeCombo, deploymentTip);
 
         JPanel contentCards = destinationAuthContentCards("os.amazon.authContent");
-        JPanel iamCard = destinationAuthCard("os.amazon.authCard.iam");
+        JPanel staticIamCard = destinationAuthCard("os.amazon.authCard.iamStatic");
+        JPanel profileIamCard = destinationAuthCard("os.amazon.authCard.iamProfile");
         JPanel basicCard = destinationAuthCard("os.amazon.authCard.basic");
         JPanel noneCard = destinationAuthCard("os.amazon.authCard.none");
 
-        addDestinationAuthFieldRow(iamCard, "Region:", openSearchAmazonRegionField, regionTip);
-        addDestinationAuthFieldRow(iamCard, "Profile:", openSearchAmazonProfileField, profileTip);
+        addDestinationAuthFieldRow(staticIamCard, "Access Key ID:", openSearchAmazonAccessKeyIdField, accessKeyTip);
+        addDestinationAuthFieldRow(staticIamCard, "Secret Access Key:", openSearchAmazonSecretAccessKeyField, secretKeyTip);
+        addDestinationAuthFieldRow(staticIamCard, "Session Token:", openSearchAmazonSessionTokenField, sessionTokenTip);
+        staticIamCard.add(openSearchAmazonSessionTokenWarning, "span 2, growx, wrap");
+        addDestinationAuthFieldRow(profileIamCard, "Profile:", openSearchAmazonProfileField, profileTip);
+        addDestinationAuthFieldRow(profileIamCard, "Credentials file:", openSearchAmazonCredentialsFileField, credentialsFileTip);
+        addDestinationAuthFieldRow(profileIamCard, "Config file:", openSearchAmazonConfigFileField, configFileTip);
+        openSearchAmazonRegionLabel.setName("os.amazon.iam.common");
+        Tooltips.apply(openSearchAmazonRegionLabel, regionTip);
+        openSearchAmazonDeploymentTypePanel.setName("os.amazon.deployment.panel");
+        openSearchAmazonDeploymentTypePanel.setOpaque(false);
+        openSearchAmazonDeploymentTypePanel.add(Tooltips.label("Deployment type:", deploymentTip), "alignx left, top");
+        openSearchAmazonDeploymentTypePanel.add(openSearchAmazonDeploymentTypeCombo, "alignx left, top");
+        openSearchAmazonDeploymentTypePanel.setVisible(false);
         addDestinationAuthFieldRow(basicCard, "Amazon Username:", openSearchAmazonUserField, usernameTip);
         addDestinationAuthFieldRow(basicCard, "Amazon Password:", openSearchAmazonPasswordField, passwordTip);
 
-        contentCards.add(iamCard, "hidemode 3");
+        contentCards.add(staticIamCard, "hidemode 3");
+        contentCards.add(profileIamCard, "hidemode 3");
         contentCards.add(basicCard, "hidemode 3");
         contentCards.add(noneCard, "hidemode 3");
 
         Consumer<String> applyAuthTypeVisibility = selectedType -> {
-            iamCard.setVisible("IAM (sigV4)".equals(selectedType));
+            boolean staticIam = ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC.equals(selectedType);
+            boolean profileIam = ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE.equals(selectedType);
+            staticIamCard.setVisible(staticIam);
+            profileIamCard.setVisible(profileIam);
+            if (staticIam) {
+                attachAmazonRegionRow(staticIamCard);
+            } else if (profileIam) {
+                attachAmazonRegionRow(profileIamCard);
+            } else {
+                detachAmazonRegionRow();
+            }
+            openSearchAmazonRegionLabel.setVisible(staticIam || profileIam);
+            openSearchAmazonRegionField.setVisible(staticIam || profileIam);
             basicCard.setVisible("Basic".equals(selectedType));
             noneCard.setVisible("None".equals(selectedType));
+            if (profileIam) {
+                ensureAmazonProfileDefaultPaths();
+            }
+            updateAmazonDeploymentTypeVisibility(false);
             contentCards.revalidate();
             contentCards.repaint();
+            refreshTemporaryCredentialWarnings();
         };
         openSearchAmazonAuthTypeCombo.addActionListener(e ->
                 applyAuthTypeVisibility.accept(String.valueOf(openSearchAmazonAuthTypeCombo.getSelectedItem())));
         applyAuthTypeVisibility.accept(String.valueOf(openSearchAmazonAuthTypeCombo.getSelectedItem()));
+        openSearchAmazonSessionTokenField.getDocument().addDocumentListener(
+                Doc.onChange(this::refreshTemporaryCredentialWarnings));
+        openSearchAmazonUrlField.addFocusListener(new FocusAdapter() {
+            @Override
+            public void focusLost(FocusEvent e) {
+                syncAmazonRegionFromUrl();
+                updateAmazonDeploymentTypeVisibility(false);
+                refreshAmazonAuthTypesForEndpoint();
+            }
+        });
+        openSearchAmazonDeploymentTypeCombo.addActionListener(e -> {
+            boolean deploymentSelectionVisible = openSearchAmazonDeploymentTypePanel.isVisible();
+            refreshAmazonAuthTypesForEndpoint();
+            // Rebuilding the auth model fires its listener, which otherwise hides this explicit choice.
+            if (deploymentSelectionVisible) {
+                updateAmazonDeploymentTypeVisibility(true);
+            }
+        });
 
         panel.add(Tooltips.label("Auth type:", authTip), "alignx left, top");
-        panel.add(openSearchAmazonAuthTypeCombo, "alignx left, top");
-        panel.add(contentCards, "gapleft 15, alignx left, top");
+        panel.add(openSearchAmazonAuthTypeCombo, "alignx left, top, wrap");
+        panel.add(contentCards, "span 2, alignx left, top, wrap");
+        panel.add(openSearchAmazonDeploymentTypePanel, "span 2, hidemode 3, alignx left, top");
+        refreshAmazonAuthTypesForEndpoint();
         return panel;
     }
 
+    /**
+     * Places the shared Region label/field at the top of the active IAM auth card.
+     *
+     * <p>Caller must invoke on the EDT. The region field is a single Swing component, so it is
+     * reparented when switching between Static and Profile cards. Using the card's two-column
+     * grid keeps the Region text box right-edge-aligned with longer fields below it.</p>
+     *
+     * @param card Static or Profile IAM card that should own the Region row
+     */
+    private void attachAmazonRegionRow(JPanel card) {
+        if (card == null) {
+            return;
+        }
+        if (openSearchAmazonRegionLabel.getParent() == card
+                && openSearchAmazonRegionField.getParent() == card) {
+            return;
+        }
+        detachAmazonRegionRow();
+        card.add(openSearchAmazonRegionLabel, "alignx left, top", 0);
+        card.add(openSearchAmazonRegionField, "alignx left, top", 1);
+        card.revalidate();
+        card.repaint();
+    }
+
+    /** Removes the Region label/field from whatever card currently owns them. */
+    private void detachAmazonRegionRow() {
+        Container labelParent = openSearchAmazonRegionLabel.getParent();
+        if (labelParent != null) {
+            labelParent.remove(openSearchAmazonRegionLabel);
+            labelParent.revalidate();
+            labelParent.repaint();
+        }
+        Container fieldParent = openSearchAmazonRegionField.getParent();
+        if (fieldParent != null) {
+            fieldParent.remove(openSearchAmazonRegionField);
+            fieldParent.revalidate();
+            fieldParent.repaint();
+        }
+    }
+
     private JPanel buildElasticsearchOptionsPanel() {
-        JPanel panel = new JPanel(new MigLayout("insets 0", "[pref][pref][pref]", "[top]"));
+        JPanel panel = new JPanel(new MigLayout(
+                "insets 0, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[top]"));
         panel.setOpaque(false);
 
-        String authTip = Tooltips.html("Select the Elasticsearch authentication type.");
-        String usernameTip = Tooltips.html("Elasticsearch Basic auth username.", "Stored in exported config as a non-secret.");
-        String passwordTip = Tooltips.html("Elasticsearch Basic auth password.", "Stored only within in-process memory.");
-        String apiKeyTokenTip = Tooltips.html("Elasticsearch API key token.", "Stored only within in-process memory.");
-        String bearerTokenTip = Tooltips.html("Elasticsearch bearer token.", "Stored only within in-process memory.");
-        String certPathTip = Tooltips.html("Path to the Elasticsearch client certificate file.");
-        String keyPathTip = Tooltips.html("Path to the Elasticsearch client private key file.");
-        String passphraseTip = Tooltips.html("Elasticsearch client key passphrase.", "Stored only within in-process memory.");
+        String authTip = Tooltips.htmlRaw(
+                "<b>Auth type</b>",
+                "Select how Elasticsearch authenticates export requests.",
+                "Hover each dropdown item for guidance.",
+                "API key is usually best for long or unattended export runs.");
+        String usernameTip = Tooltips.htmlRaw(
+                "<b>Username</b>",
+                "Elasticsearch Basic auth username.",
+                "Stored in exported config as a non-secret.");
+        String passwordTip = Tooltips.htmlRaw(
+                "<b>Password</b>",
+                "Elasticsearch Basic auth password.",
+                "Stored only within in-process memory.");
+        String apiKeyTokenTip = Tooltips.htmlRaw(
+                "<b>API Key</b>",
+                "Elasticsearch API key token for export/indexing.",
+                "Prefer a scoped key that can outlast the export run.",
+                "Stored only within in-process memory.");
+        String bearerTokenTip = withTemporaryCredentialRisk(
+                "<b>Bearer Token</b>",
+                "Elasticsearch bearer/JWT/OIDC access token.",
+                "Many bearer tokens are short-lived. Prefer <b>API key</b> for multi-day or unattended export runs.",
+                "Stored only within in-process memory.");
+        String certPathTip = Tooltips.htmlRaw(
+                "<b>Cert Path</b>",
+                "Path to the Elasticsearch client certificate file used for mutual TLS / PKI auth.");
+        String keyPathTip = Tooltips.htmlRaw(
+                "<b>Key Path</b>",
+                "Path to the Elasticsearch client private key file used with the client certificate.");
+        String passphraseTip = Tooltips.htmlRaw(
+                "<b>Passphrase</b>",
+                "Optional passphrase for the Elasticsearch client private key.",
+                "Stored only within in-process memory.");
         Tooltips.apply(elasticSearchUserField, usernameTip);
         Tooltips.apply(elasticSearchPasswordField, passwordTip);
         Tooltips.apply(elasticSearchApiKeyTokenField, apiKeyTokenTip);
@@ -1912,6 +2514,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
         addDestinationAuthFieldRow(apiKeyCard, "API Key:", elasticSearchApiKeyTokenField, apiKeyTokenTip);
         addDestinationAuthFieldRow(bearerCard, "Bearer Token:", elasticSearchBearerTokenField, bearerTokenTip);
+        bearerCard.add(elasticSearchBearerTokenWarning, "span 2, growx, wrap");
         addDestinationAuthFieldRow(certCard, "Cert Path:", elasticSearchCertPathField, certPathTip);
         addDestinationAuthFieldRow(certCard, "Key Path:", elasticSearchCertKeyPathField, keyPathTip);
         addDestinationAuthFieldRow(certCard, "Passphrase:", elasticSearchCertPassphraseField, passphraseTip);
@@ -1932,14 +2535,24 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             noneCard.setVisible("None".equals(selectedType));
             contentCards.revalidate();
             contentCards.repaint();
+            refreshTemporaryCredentialWarnings();
         };
         elasticSearchAuthTypeCombo.addActionListener(e ->
                 applyAuthTypeVisibility.accept(String.valueOf(elasticSearchAuthTypeCombo.getSelectedItem())));
         applyAuthTypeVisibility.accept(String.valueOf(elasticSearchAuthTypeCombo.getSelectedItem()));
+        elasticSearchBearerTokenField.getDocument().addDocumentListener(
+                Doc.onChange(this::refreshTemporaryCredentialWarnings));
+        elasticSearchUrlField.addFocusListener(new FocusAdapter() {
+            @Override
+            public void focusLost(FocusEvent e) {
+                refreshElasticsearchAuthTypesForEndpoint();
+            }
+        });
 
         panel.add(Tooltips.label("Auth type:", authTip), "alignx left, top");
-        panel.add(elasticSearchAuthTypeCombo, "alignx left, top");
-        panel.add(contentCards, "gapleft 15, alignx left, top");
+        panel.add(elasticSearchAuthTypeCombo, "alignx left, top, wrap");
+        panel.add(contentCards, "span 2, alignx left, top");
+        refreshElasticsearchAuthTypesForEndpoint();
         return panel;
     }
 
@@ -1951,7 +2564,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     }
 
     private static JPanel destinationAuthCard(String name) {
-        JPanel panel = new JPanel(new MigLayout("insets 0, wrap 2", "[pref][pref]", "[]"));
+        JPanel panel = new JPanel(new MigLayout(
+                "insets 0, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[]"));
         panel.setName(name);
         panel.setOpaque(false);
         return panel;
@@ -1971,15 +2585,21 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         tlsModeCombo.setName(comboName);
         tlsModeCombo.setSelectedItem("Verify");
         importButton.setName(importButtonName);
-        String tlsModeTip = Tooltips.html(
-                "Select how TLS server certificates are trusted.",
-                "- Verify: uses the system trust store.",
-                "- Trust pinned certificate: requires an imported X.509 server certificate.",
-                "- Trust all certificates: disables verification. Use with caution.");
-        String importTip = Tooltips.html(
+        String tlsModeTip = Tooltips.htmlRaw(
+                "<b>TLS mode</b>",
+                "Select how " + destination.displayName() + " HTTPS server certificates are trusted.",
+                "",
+                "<b>Verify</b>",
+                "&nbsp;&nbsp;Use the JVM/system trust store. Recommended for production.",
+                "<b>Trust pinned certificate</b>",
+                "&nbsp;&nbsp;Trust only an imported X.509 server certificate for this Burp session.",
+                "<b>Trust all certificates</b>",
+                "&nbsp;&nbsp;Disable verification. Lab/testing only; allows man-in-the-middle interception.");
+        String importTip = Tooltips.htmlRaw(
+                "<b>Import pinned certificate</b>",
                 "Import a pinned X.509 server certificate for " + destination.displayName() + " TLS trust.",
-                "  Common file types: .cer, .crt, .der, .pem.",
-                "  The imported certificate bytes and source path are stored only within in-process memory.");
+                "Common file types: <code>.cer</code>, <code>.crt</code>, <code>.der</code>, <code>.pem</code>.",
+                "Imported certificate bytes and source path stay in session memory only.");
         Tooltips.apply(importButton, importTip);
 
         JPanel pinnedPanel = new JPanel(new MigLayout("insets 0", "[pref]", "[]"));
@@ -1998,11 +2618,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         importButton.addActionListener(e -> importPinnedCertificate(destination));
         applyPinnedVisibility.accept(String.valueOf(tlsModeCombo.getSelectedItem()));
 
-        JPanel panel = new JPanel(new MigLayout("insets 0, hidemode 3", "[pref][pref][pref]", "[]"));
+        JPanel panel = new JPanel(new MigLayout(
+                "insets 0, hidemode 3, wrap 2", ConfigDestinationPanel.FIELD_COLS, "[]"));
         panel.setOpaque(false);
         panel.add(Tooltips.label("TLS mode:", tlsModeTip), "alignx left, top");
-        panel.add(tlsModeCombo, "alignx left, top");
-        panel.add(pinnedPanel, "hidemode 3, gapleft 12, alignx left, top");
+        panel.add(tlsModeCombo, "alignx left, top, wrap");
+        panel.add(pinnedPanel, "span 2, hidemode 3, alignx left, top");
         return panel;
     }
 
@@ -2187,6 +2808,13 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                     ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(),
                     openSearchAmazonUserField.getText(),
                     passwordText(openSearchAmazonPasswordField));
+        } else if (ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC.equals(
+                String.valueOf(openSearchAmazonAuthTypeCombo.getSelectedItem()))) {
+            SecureCredentialStore.saveAwsStaticCredentials(
+                    ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey(),
+                    openSearchAmazonAccessKeyIdField.getText(),
+                    passwordText(openSearchAmazonSecretAccessKeyField),
+                    passwordText(openSearchAmazonSessionTokenField));
         }
         String elasticDestination = ConfigState.SearchDestination.ELASTICSEARCH.configKey();
         switch (String.valueOf(elasticSearchAuthTypeCombo.getSelectedItem())) {
@@ -2273,6 +2901,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         openSearchAmazonPasswordField.setEnabled(amazonSelected);
         openSearchAmazonRegionField.setEnabled(amazonSelected);
         openSearchAmazonProfileField.setEnabled(amazonSelected);
+        openSearchAmazonCredentialsFileField.setEnabled(amazonSelected);
+        openSearchAmazonConfigFileField.setEnabled(amazonSelected);
+        openSearchAmazonAccessKeyIdField.setEnabled(amazonSelected);
+        openSearchAmazonSecretAccessKeyField.setEnabled(amazonSelected);
+        openSearchAmazonSessionTokenField.setEnabled(amazonSelected);
+        openSearchAmazonDeploymentTypeCombo.setEnabled(amazonSelected);
         elasticSearchUrlField.setEnabled(elasticSearchSelected);
         elasticSearchAuthTypeCombo.setEnabled(elasticSearchSelected);
         elasticSearchTlsModeCombo.setEnabled(elasticSearchSelected && isHttpsEndpoint(elasticSearchUrlField));
@@ -2297,6 +2931,197 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     private void applySearchDestinationSelection() {
         refreshEnabledStates();
+    }
+
+    private void applyAmazonDeploymentTypeSelection(String deploymentType) {
+        String normalized = ConfigState.normalizeDeploymentType(deploymentType);
+        switch (normalized) {
+            case ConfigState.DEPLOYMENT_SERVERLESS -> {
+                openSearchAmazonDeploymentTypeCombo.setSelectedItem("Serverless");
+                updateAmazonDeploymentTypeVisibility(true);
+            }
+            case ConfigState.DEPLOYMENT_HOSTED -> {
+                openSearchAmazonDeploymentTypeCombo.setSelectedItem("Hosted");
+                updateAmazonDeploymentTypeVisibility(true);
+            }
+            default -> updateAmazonDeploymentTypeVisibility(false);
+        }
+        refreshAmazonAuthTypesForEndpoint();
+    }
+
+    /**
+     * Restricts Amazon auth-type choices to those valid for the current endpoint / deployment.
+     *
+     * <p>Caller must invoke on the EDT. Serverless endpoints keep only IAM SigV4 options.</p>
+     */
+    private void refreshAmazonAuthTypesForEndpoint() {
+        String resolved = selectedAmazonDeploymentType();
+        if (ConfigState.DEPLOYMENT_AUTO.equals(resolved)) {
+            resolved = SearchDeployment.detectAmazonOpenSearchDeploymentType(openSearchAmazonUrlField.getText());
+        }
+        replaceAuthTypeItems(
+                openSearchAmazonAuthTypeCombo,
+                SearchDeployment.amazonOpenSearchAuthTypesForUrl(openSearchAmazonUrlField.getText(), resolved),
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE);
+    }
+
+    /**
+     * Restricts Elasticsearch auth-type choices to those valid for the current endpoint.
+     *
+     * <p>Caller must invoke on the EDT. Elastic Cloud Serverless keeps API key / bearer only.</p>
+     */
+    private void refreshElasticsearchAuthTypesForEndpoint() {
+        replaceAuthTypeItems(
+                elasticSearchAuthTypeCombo,
+                SearchDeployment.elasticsearchAuthTypesForUrl(elasticSearchUrlField.getText()),
+                "API key");
+    }
+
+    private static void replaceAuthTypeItems(
+            JComboBox<String> combo,
+            java.util.List<String> items,
+            String preferredFallback) {
+        if (combo == null || items == null || items.isEmpty()) {
+            return;
+        }
+        String current = String.valueOf(combo.getSelectedItem());
+        boolean unchanged = combo.getItemCount() == items.size();
+        if (unchanged) {
+            for (int i = 0; i < items.size(); i++) {
+                if (!items.get(i).equals(combo.getItemAt(i))) {
+                    unchanged = false;
+                    break;
+                }
+            }
+        }
+        if (unchanged) {
+            return;
+        }
+        javax.swing.DefaultComboBoxModel<String> model = new javax.swing.DefaultComboBoxModel<>();
+        String longest = items.get(0);
+        for (String item : items) {
+            model.addElement(item);
+            if (item.length() > longest.length()) {
+                longest = item;
+            }
+        }
+        combo.setModel(model);
+        combo.setPrototypeDisplayValue(longest);
+        if (items.contains(current)) {
+            combo.setSelectedItem(current);
+        } else if (items.contains(preferredFallback)) {
+            combo.setSelectedItem(preferredFallback);
+        } else {
+            combo.setSelectedItem(items.get(0));
+        }
+    }
+
+    private String selectedAmazonDeploymentType() {
+        if (!openSearchAmazonDeploymentTypePanel.isVisible()) {
+            return ConfigState.DEPLOYMENT_AUTO;
+        }
+        String selected = String.valueOf(openSearchAmazonDeploymentTypeCombo.getSelectedItem());
+        return "Serverless".equals(selected)
+                ? ConfigState.DEPLOYMENT_SERVERLESS
+                : ConfigState.DEPLOYMENT_HOSTED;
+    }
+
+    private boolean ensureAmazonDeploymentTypeResolvedForTest() {
+        if (!isAmazonIamAuthSelected()) {
+            updateAmazonDeploymentTypeVisibility(false);
+            return true;
+        }
+        String detected = SearchDeployment.detectAmazonOpenSearchDeploymentType(openSearchAmazonUrlField.getText());
+        if (!ConfigState.DEPLOYMENT_AUTO.equals(detected)) {
+            updateAmazonDeploymentTypeVisibility(false);
+            return true;
+        }
+        if (openSearchAmazonDeploymentTypePanel.isVisible()) {
+            return true;
+        }
+        String message = "Deployment type could not be detected from the endpoint. Select Hosted or Serverless to continue.";
+        onDatabaseStatus(message);
+        Logger.logWarnPanelOnly("[Amazon OpenSearch] " + message);
+        updateAmazonDeploymentTypeVisibility(true);
+        flashAmazonDeploymentTypeCombo();
+        return false;
+    }
+
+    /**
+     * Fills the Region field from the Amazon URL when the host embeds a detectable region.
+     *
+     * <p>Caller must invoke on the EDT. Overwrites a blank or previously auto-detected value; leaves
+     * an operator-entered custom region alone when the URL no longer embeds a region.</p>
+     */
+    private void syncAmazonRegionFromUrl() {
+        String detected = SearchDeployment.detectAmazonOpenSearchRegion(openSearchAmazonUrlField.getText());
+        if (detected.isBlank()) {
+            return;
+        }
+        String current = openSearchAmazonRegionField.getText() == null
+                ? ""
+                : openSearchAmazonRegionField.getText().trim();
+        if (current.equals(detected)) {
+            return;
+        }
+        openSearchAmazonRegionField.setText(detected);
+    }
+
+    /**
+     * Populates blank Profile credentials/config path fields with the SDK default locations.
+     *
+     * <p>Caller must invoke on the EDT. Existing non-blank paths are left unchanged.</p>
+     */
+    private void ensureAmazonProfileDefaultPaths() {
+        if (openSearchAmazonCredentialsFileField.getText() == null
+                || openSearchAmazonCredentialsFileField.getText().isBlank()) {
+            openSearchAmazonCredentialsFileField.setText(SearchDeployment.defaultAwsCredentialsFilePath());
+        }
+        if (openSearchAmazonConfigFileField.getText() == null
+                || openSearchAmazonConfigFileField.getText().isBlank()) {
+            openSearchAmazonConfigFileField.setText(SearchDeployment.defaultAwsConfigFilePath());
+        }
+    }
+
+    private boolean isAmazonIamAuthSelected() {
+        String selectedType = String.valueOf(openSearchAmazonAuthTypeCombo.getSelectedItem());
+        return ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC.equals(selectedType)
+                || ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE.equals(selectedType);
+    }
+
+    private void updateAmazonDeploymentTypeVisibility(boolean visible) {
+        if (openSearchAmazonDeploymentTypePanel == null) {
+            return;
+        }
+        openSearchAmazonDeploymentTypePanel.setVisible(visible);
+        if (!visible) {
+            amazonDeploymentTypePromptShown = false;
+            if (amazonDeploymentTypeDefaultBorder != null) {
+                openSearchAmazonDeploymentTypeCombo.setBorder(amazonDeploymentTypeDefaultBorder);
+            }
+        }
+        openSearchAmazonDeploymentTypePanel.revalidate();
+        openSearchAmazonDeploymentTypePanel.repaint();
+    }
+
+    private void flashAmazonDeploymentTypeCombo() {
+        if (amazonDeploymentTypeDefaultBorder == null) {
+            amazonDeploymentTypeDefaultBorder = openSearchAmazonDeploymentTypeCombo.getBorder();
+        }
+        if (amazonDeploymentTypePromptShown) {
+            return;
+        }
+        amazonDeploymentTypePromptShown = true;
+        Border bright = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(220, 38, 38), 2, true),
+                BorderFactory.createEmptyBorder(2, 2, 2, 2));
+        Border subtle = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(180, 70, 70), 1, true),
+                BorderFactory.createEmptyBorder(2, 2, 2, 2));
+        openSearchAmazonDeploymentTypeCombo.setBorder(bright);
+        Timer timer = new Timer(350, e -> openSearchAmazonDeploymentTypeCombo.setBorder(subtle));
+        timer.setRepeats(false);
+        timer.start();
     }
 
     private String selectedSearchDestination() {
@@ -2377,6 +3202,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         TextFieldUndo.install(filePathField);
         TextFieldUndo.install(openSearchUrlField);
         TextFieldUndo.install(openSearchAmazonUrlField);
+        TextFieldUndo.install(openSearchAmazonCredentialsFileField);
+        TextFieldUndo.install(openSearchAmazonConfigFileField);
+        TextFieldUndo.install(openSearchAmazonAccessKeyIdField);
         TextFieldUndo.install(elasticSearchUrlField);
         TextFieldUndo.install(fileTotalCapField);
         TextFieldUndo.install(fileDiskUsagePercentField);
@@ -2620,6 +3448,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         String awsUser = nonBlankOr(openSearchAmazonUserField.getText(), "");
         String awsRegion = nonBlankOr(openSearchAmazonRegionField.getText(), "");
         String awsProfile = nonBlankOr(openSearchAmazonProfileField.getText(), "");
+        String awsCredentialsFile = nonBlankOr(openSearchAmazonCredentialsFileField.getText(), "");
+        String awsConfigFile = nonBlankOr(openSearchAmazonConfigFileField.getText(), "");
         String elasticUser = nonBlankOr(elasticSearchUserField.getText(), "");
         String elasticCertPath = nonBlankOr(elasticSearchCertPathField.getText(), "");
         String elasticCertKeyPath = nonBlankOr(elasticSearchCertKeyPathField.getText(), "");
@@ -2652,6 +3482,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                                 awsUser,
                                 awsRegion,
                                 awsProfile,
+                                awsCredentialsFile,
+                                awsConfigFile,
+                                selectedAmazonDeploymentType(),
                                 selectedTlsMode(openSearchAmazonTlsModeCombo),
                                 amazonPinnedTlsCertificate.sourcePath(),
                                 amazonPinnedTlsCertificate.fingerprintSha256(),
@@ -2662,6 +3495,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                                 elasticUser,
                                 elasticCertPath,
                                 elasticCertKeyPath,
+                                ConfigState.DEPLOYMENT_AUTO,
                                 selectedTlsMode(elasticSearchTlsModeCombo),
                                 elasticPinnedTlsCertificate.sourcePath(),
                                 elasticPinnedTlsCertificate.fingerprintSha256(),
@@ -2861,6 +3695,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         openSearchAmazonPasswordField.setName("os.amazon.password");
         openSearchAmazonRegionField.setName("os.amazon.region");
         openSearchAmazonProfileField.setName("os.amazon.profile");
+        openSearchAmazonCredentialsFileField.setName("os.amazon.credentialsFile");
+        openSearchAmazonConfigFileField.setName("os.amazon.configFile");
+        openSearchAmazonAccessKeyIdField.setName("os.amazon.accessKeyId");
+        openSearchAmazonSecretAccessKeyField.setName("os.amazon.secretAccessKey");
+        openSearchAmazonSessionTokenField.setName("os.amazon.sessionToken");
+        openSearchAmazonDeploymentTypeCombo.setName("os.amazon.deploymentType");
         elasticSearchAuthTypeCombo.setName("os.elasticsearch.authType");
         elasticSearchUserField.setName("os.elasticsearch.username");
         elasticSearchPasswordField.setName("os.elasticsearch.password");
@@ -2948,61 +3788,112 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         Tooltips.apply(burpSuiteRadio, Tooltips.html("Export Burp Suite's project scope."));
         Tooltips.apply(customRadio, Tooltips.html("Export custom scope."));
 
-        Tooltips.apply(fileSinkCheckbox, Tooltips.html("Enable file-based export."));
+        Tooltips.apply(fileSinkCheckbox, Tooltips.htmlRaw(
+                "<b>Files</b>",
+                "Enable on-disk export under the selected root directory.",
+                "Can run alone or together with one Database destination.",
+                "File format and disk-usage limits apply only when Files is selected."
+        ));
         Tooltips.apply(filePathField, Tooltips.htmlRaw(
-                "Root directory for generated files. Examples:",
-                "&nbsp;&nbsp;/path/to/directory",
-                "&nbsp;&nbsp;c:\\path\\to\\directory"
+                "<b>File root directory</b>",
+                "Absolute directory where exporter-managed files are written.",
+                "",
+                "Examples:",
+                "&nbsp;&nbsp;<code>/path/to/directory</code>",
+                "&nbsp;&nbsp;<code>c:\\path\\to\\directory</code>"
         ));
-        Tooltips.apply(fileJsonlCheckbox, Tooltips.html(
-                "JSONL (JSON Lines): write one filtered JSON document per line.",
-                "Each line is a standalone JSON object; there is no OpenSearch bulk action metadata.",
-                "Best for local grep, line-by-line tooling, or simple downstream processing."
+        Tooltips.apply(fileJsonlCheckbox, Tooltips.htmlRaw(
+                "<b>JSONL (JSON Lines)</b>",
+                "Write one filtered JSON document per line.",
+                "Each line is a standalone JSON object with no bulk action metadata.",
+                "Best for local grep, line-by-line tooling, or simple downstream processing.",
+                "Cannot be imported directly into OpenSearch — re-export with <b>NDJSON</b> selected, or convert to bulk NDJSON first."
         ));
-        Tooltips.apply(fileBulkNdjsonCheckbox, Tooltips.html(
-                "NDJSON (Newline-Delimited JSON): write OpenSearch bulk-request lines.",
-                "Each exported document is written as two lines: bulk action metadata, then the JSON document body.",
-                "Best for later re-import with the OpenSearch {@code _bulk} API."
+        Tooltips.apply(fileBulkNdjsonCheckbox, Tooltips.htmlRaw(
+                "<b>NDJSON (Newline-Delimited JSON)</b>",
+                "Write search-database bulk-request lines.",
+                "Each exported document becomes two lines: bulk action metadata, then the JSON document body.",
+                "Only this format can be imported directly into OpenSearch later via <code>_bulk</code>."
         ));
-        Tooltips.apply(fileTotalCapCheckbox, Tooltips.html(
-                "Stop all file export under the selected root when exporter-managed files reach the configured combined cap."
+        Tooltips.apply(fileTotalCapCheckbox, Tooltips.htmlRaw(
+                "<b>Total file cap</b>",
+                "Stop all file export under the selected root when exporter-managed files reach the configured combined GiB cap.",
+                "Database export can continue after this cap is hit when Database remains enabled."
         ));
-        Tooltips.apply(fileTotalCapField, Tooltips.html(
-                "GiB cap across exporter-managed files in the selected root.",
-                "OpenSearch export can continue after this cap is hit."
+        Tooltips.apply(fileTotalCapField, Tooltips.htmlRaw(
+                "<b>Total file cap (GiB)</b>",
+                "Combined GiB limit across exporter-managed files in the selected root.",
+                "Database export can continue after this cap is hit when Database remains enabled."
         ));
-        Tooltips.apply(fileDiskUsagePercentCheckbox, Tooltips.html(
-                "Optional advanced stop condition based on the destination volume's used percent."
+        Tooltips.apply(fileDiskUsagePercentCheckbox, Tooltips.htmlRaw(
+                "<b>Volume used-percent stop</b>",
+                "Optional advanced stop condition based on the destination volume's used percent.",
+                "This does not replace the built-in low-disk free-space reserve."
         ));
-        Tooltips.apply(fileDiskUsagePercentField, Tooltips.html(
+        Tooltips.apply(fileDiskUsagePercentField, Tooltips.htmlRaw(
+                "<b>Volume used-percent threshold</b>",
                 "Stop file export when the destination volume is at or above this used-percent threshold.",
-                "This does not replace the built-in low-disk reserve."
+                "This does not replace the built-in low-disk free-space reserve."
         ));
 
-        Tooltips.apply(databaseSinkCheckbox, Tooltips.html(
-                "Enable export to one database destination.",
-                "Choose one database below, or leave Database unchecked to export to Files only."));
-        Tooltips.apply(openSearchSinkCheckbox, Tooltips.html("OpenSearch destination. Wired in this build."));
-        Tooltips.apply(openSearchAmazonDestinationRadio, Tooltips.html(
-                "Amazon OpenSearch destination.",
-                "Connection testing captures AWS auth setup; export wiring is not implemented yet."));
-        Tooltips.apply(elasticSearchDestinationRadio, Tooltips.html(
-                "Elasticsearch destination.",
-                "Connection testing and export are wired in this build."));
-        Tooltips.apply(openSearchUrlField, Tooltips.htmlRaw("Base URL of the OpenSearch destination. Examples:",
-                "&nbsp;&nbsp;https://opensearch.url:9200",
-                "&nbsp;&nbsp;http://10.0.0.1:9200"));
-        Tooltips.apply(openSearchAmazonUrlField, Tooltips.htmlRaw("Base URL of the Amazon OpenSearch destination. Examples:",
-                "&nbsp;&nbsp;https://opensearch.url:9200",
-                "&nbsp;&nbsp;http://10.0.0.1:9200"));
-        Tooltips.apply(elasticSearchUrlField, Tooltips.htmlRaw("Base URL of the Elasticsearch destination. Examples:",
-                "&nbsp;&nbsp;https://serverless-elasticsearch-project.es.us-east-1.aws.elastic.cloud:443",
-                "&nbsp;&nbsp;https://00000000000000000000000000abc123.us-east4.gcp.elastic-cloud.com:443",
-                "&nbsp;&nbsp;http://self-hosted-elasticsearch.url:9200"));
-        Tooltips.apply(testConnectionButton, Tooltips.html(
+        Tooltips.apply(databaseSinkCheckbox, Tooltips.htmlRaw(
+                "<b>Database</b>",
+                "Enable export to exactly one search database destination.",
+                "Choose Amazon OpenSearch, Elasticsearch, or OpenSearch below.",
+                "Leave Database unchecked to export to Files only."
+        ));
+        Tooltips.apply(openSearchSinkCheckbox, Tooltips.htmlRaw(
+                "<b>OpenSearch</b>",
+                "Upstream OpenSearch destination.",
+                "Test Connection, Start/export, retry/outage handling, and final counts are wired in this build."
+        ));
+        Tooltips.apply(openSearchAmazonDestinationRadio, Tooltips.htmlRaw(
+                "<b>Amazon OpenSearch</b>",
+                "Amazon OpenSearch Service / Serverless destination.",
+                "Supports IAM SigV4 (profile or static), Basic, and None.",
+                "Default auth is <b>IAM SigV4 - Profile</b> for long runs.",
+                "Test Connection, Start/export, retry/outage handling, and final counts are wired in this build.",
+                "Profile re-resolves credentials on every signed request; temporary credentials renew only for SSO/assume-role/credential_process profiles.",
+                "Pasted Static session tokens are not renewed and raise mid-run auth-failure risk."
+        ));
+        Tooltips.apply(elasticSearchDestinationRadio, Tooltips.htmlRaw(
+                "<b>Elasticsearch</b>",
+                "Elasticsearch destination (hosted, serverless, or self-hosted).",
+                "Supports API key, Bearer token, Certificate, Basic, and None.",
+                "Test Connection, Start/export, retry/outage handling, and final counts are wired in this build."
+        ));
+        Tooltips.apply(openSearchUrlField, Tooltips.htmlRaw(
+                "<b>OpenSearch URL</b>",
+                "Base URL of the OpenSearch destination.",
+                "",
+                "Examples:",
+                "&nbsp;&nbsp;<code>https://opensearch.url:9200</code>",
+                "&nbsp;&nbsp;<code>http://10.0.0.1:9200</code>"
+        ));
+        Tooltips.apply(openSearchAmazonUrlField, Tooltips.htmlRaw(
+                "<b>Amazon OpenSearch URL</b>",
+                "Base URL of the Amazon OpenSearch destination.",
+                "Hosted domains usually contain <code>.es.amazonaws.com</code>; serverless collections usually contain <code>.aoss.amazonaws.com</code>.",
+                "Region and deployment type are auto-detected from those hosts when possible.",
+                "",
+                "Examples:",
+                "&nbsp;&nbsp;<code>https://my-hosted-opensearch-project-00000000000000000000abc123.us-east-1.es.amazonaws.com</code>",
+                "&nbsp;&nbsp;<code>https://00000000000000abc123.us-east-1.aoss.amazonaws.com</code>"
+        ));
+        Tooltips.apply(elasticSearchUrlField, Tooltips.htmlRaw(
+                "<b>Elasticsearch URL</b>",
+                "Base URL of the Elasticsearch destination.",
+                "",
+                "Examples:",
+                "&nbsp;&nbsp;<code>https://my-serverless-elasticsearch-project.es.us-east-1.aws.elastic.cloud</code>",
+                "&nbsp;&nbsp;<code>https://00000000000000000000000000abc123.us-east4.gcp.elastic-cloud.com</code>",
+                "&nbsp;&nbsp;<code>http://self-hosted-elasticsearch.url:9200</code>"
+        ));
+        Tooltips.apply(Tooltips.preferTipToRight(testConnectionButton), Tooltips.htmlRaw(
+                "<b>Test Connection</b>",
                 "Test connectivity and authentication against the selected database destination.",
                 "Status output includes connection, authentication, trust, and reported version.",
-                "Secrets are only stored within in-process memory."
+                "Secrets stay in session memory only."
         ));
     }
 

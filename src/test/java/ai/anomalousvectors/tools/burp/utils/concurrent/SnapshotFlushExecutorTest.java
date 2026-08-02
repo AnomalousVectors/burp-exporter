@@ -2,7 +2,9 @@ package ai.anomalousvectors.tools.burp.utils.concurrent;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -35,6 +37,32 @@ class SnapshotFlushExecutorTest {
 
         CompletableFuture.allOf(flushOne, flushTwo).get(10, TimeUnit.SECONDS);
         assertThat(dualSinkTasksCompleted.get()).isEqualTo(4);
+    }
+
+    @Test
+    void flushPool_runsThreeAdaptiveFlushesWithOneControlTaskOfHeadroom() throws Exception {
+        CountDownLatch started = new CountDownLatch(4);
+        CountDownLatch release = new CountDownLatch(1);
+        List<CompletableFuture<Void>> tasks = java.util.stream.IntStream.range(0, 4)
+                .mapToObj(ignored -> CompletableFuture.runAsync(
+                        () -> {
+                            started.countDown();
+                            try {
+                                release.await();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        },
+                        SnapshotFlushExecutor.flushExecutor()))
+                .toList();
+        try {
+            assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            release.countDown();
+        }
+
+        CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new))
+                .get(10, TimeUnit.SECONDS);
     }
 
     @Test

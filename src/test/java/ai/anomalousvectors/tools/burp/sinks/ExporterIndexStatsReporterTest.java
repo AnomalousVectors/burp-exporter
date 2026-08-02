@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -28,7 +29,35 @@ class ExporterIndexStatsReporterTest {
         ExporterIndexStatsReporter.stop();
         RuntimeConfig.updateState(previousState);
         RuntimeConfig.setExportRunning(false);
+        ExportStats.resetForTests();
         FileExportService.resetForTests();
+    }
+
+    @Test
+    void unloadFinalSnapshotIsAttemptedOnlyForAnActiveRun() {
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_EXPORTER),
+                    ConfigKeys.SCOPE_ALL,
+                    List.of(),
+                    new ConfigState.Sinks(true, "build/tmp/unload-final", true, false,
+                            false, "https://opensearch.url:9200", "", "", false),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                    ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                    null));
+            ExportStats.recordSuccess("exporter", 1);
+
+            RuntimeConfig.setExportRunning(false);
+            assertThat(ExporterIndexStatsReporter.shouldAttemptFinalPushOnUnload()).isFalse();
+
+            RuntimeConfig.setExportRunning(true);
+            assertThat(ExporterIndexStatsReporter.shouldAttemptFinalPushOnUnload()).isTrue();
+        } finally {
+            tearDown();
+        }
     }
 
     @Test
@@ -49,6 +78,8 @@ class ExporterIndexStatsReporterTest {
                     null));
             RuntimeConfig.setExportRunning(false);
             ExportStats.recordBodyEnumerationMisgateSuspect();
+            ExportStats.recordPermanentDropReason(
+                    ExportStats.PERMANENT_DROP_REASON_MAX_FIT, 1);
 
             ExporterStatsPushOutcome outcome = ExporterIndexStatsReporter.pushFinalSnapshotNow();
 
@@ -59,6 +90,8 @@ class ExporterIndexStatsReporterTest {
             assertThat(jsonl).contains("stats_snapshot");
             assertThat(jsonl).contains("\"running\":false");
             assertThat(jsonl).contains("docs_body_enumeration_misgate_suspect_total");
+            assertThat(jsonl)
+                    .contains("\"permanent_drop_reason_counts\":{\"max_fit_exceeded\":1}");
         } finally {
             tearDown();
         }
@@ -125,7 +158,7 @@ class ExporterIndexStatsReporterTest {
                     List.of(ConfigKeys.SRC_EXPORTER),
                     ConfigKeys.SCOPE_ALL,
                     List.of(),
-                    new ConfigState.Sinks(false, "", false, false,
+                    new ConfigState.Sinks(true, "build/tmp/stats-reporter", true, false,
                             true, "https://opensearch.url:9200", "", "", false),
                     ConfigState.DEFAULT_SETTINGS_SUB,
                     ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
@@ -135,6 +168,11 @@ class ExporterIndexStatsReporterTest {
                     null));
             ExportStats.recordSuccess("exporter", 7);
             ExportStats.recordSuccess("traffic", 3);
+            ExportStats.recordSearchBodyPrefixTruncation("traffic");
+            ExportStats.reserveSnapshotBuildAhead(4, 256L * 1024L);
+            FileExportStats.recordSuccess("traffic", 3);
+            FileExportStats.recordFailure("traffic", 1);
+            FileExportStats.recordRetryAttempt("traffic", 2);
 
             Map<?, ?> doc = asMap(callStatic(ExporterIndexStatsReporter.class, "buildSnapshotDoc", true));
             Map<?, ?> event = asMap(doc.get("event"));
@@ -142,10 +180,21 @@ class ExporterIndexStatsReporterTest {
             Map<?, ?> indexes = asMap(data.get("indexes"));
             Map<?, ?> exporter = asMap(indexes.get("exporter"));
             Map<?, ?> traffic = asMap(indexes.get("traffic"));
+            Map<?, ?> stats = asMap(data.get("stats"));
+            Map<?, ?> buildAhead = asMap(stats.get("snapshot_build_ahead"));
 
             assertThat(exporter.get("exported")).isEqualTo(8L);
             assertThat(exporter.get("count")).isEqualTo(8L);
             assertThat(traffic.get("exported")).isEqualTo(3L);
+            assertThat(traffic.get("body_truncations")).isEqualTo(1L);
+            assertThat(traffic.get("file_written")).isEqualTo(3L);
+            assertThat(traffic.get("file_failures")).isEqualTo(1L);
+            assertThat(traffic.get("file_retry_attempts")).isEqualTo(2L);
+            assertThat(buildAhead.get("current_reserved_bytes")).isEqualTo(256L * 1024L);
+            assertThat(buildAhead.get("current_reserved_permits")).isEqualTo(4);
+            assertThat(buildAhead.get("peak_reserved_bytes")).isEqualTo(256L * 1024L);
+            assertThat(buildAhead.get("capacity_bytes")).isEqualTo(64L * 1024L * 1024L);
+            assertThat(buildAhead.get("capacity_permits")).isEqualTo(1_024);
             assertThat(ExportStats.getExportedCount("exporter")).isEqualTo(7L);
         } finally {
             tearDown();

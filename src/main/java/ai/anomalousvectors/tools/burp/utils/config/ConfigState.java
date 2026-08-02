@@ -72,11 +72,35 @@ public final class ConfigState {
     public static final String OPEN_SEARCH_TLS_INSECURE = "insecure";
     /** Default persisted OpenSearch auth type selection. */
     public static final String DEFAULT_OPEN_SEARCH_AUTH_TYPE = "Basic";
+    /** Amazon OpenSearch Static IAM credentials auth type. */
+    public static final String OPEN_SEARCH_AMAZON_AUTH_STATIC = "IAM SigV4 - Static credentials";
+    /** Amazon OpenSearch shared-config Profile IAM auth type. */
+    public static final String OPEN_SEARCH_AMAZON_AUTH_PROFILE = "IAM SigV4 - Profile";
+    /**
+     * Default persisted Amazon OpenSearch auth type selection.
+     *
+     * <p>Profile is the long-run recommendation because refreshable AWS SSO/role chains can renew
+     * temporary credentials outside Burp; pasted Static session tokens cannot.</p>
+     */
+    public static final String DEFAULT_OPEN_SEARCH_AMAZON_AUTH_TYPE = OPEN_SEARCH_AMAZON_AUTH_PROFILE;
     /** Default database destination selected in the Config UI. */
     public static final String DEFAULT_SEARCH_DESTINATION = "openSearch";
+    /** Auto-detect the deployment type from the endpoint when possible. */
+    public static final String DEPLOYMENT_AUTO = "auto";
+    /** Hosted/domain deployment type. */
+    public static final String DEPLOYMENT_HOSTED = "hosted";
+    /** Serverless/collection deployment type. */
+    public static final String DEPLOYMENT_SERVERLESS = "serverless";
+    /** Self-hosted deployment type. */
+    public static final String DEPLOYMENT_SELF_HOSTED = "selfHosted";
 
-    /** Scope kind for {@link ScopeEntry}. */
-    public enum Kind { REGEX, STRING }
+    /** Scope matching kind for {@link ScopeEntry}. */
+    public enum Kind {
+        /** Treats the scope value as a regular expression. */
+        REGEX,
+        /** Treats the scope value as a literal string. */
+        STRING
+    }
 
     /** Supported database destinations. */
     public enum SearchDestination {
@@ -109,7 +133,12 @@ public final class ConfigState {
     private static final BigDecimal GB_BYTES_DECIMAL = BigDecimal.valueOf(1024L * 1024L * 1024L);
     private static final BigDecimal LONG_MAX_DECIMAL = BigDecimal.valueOf(Long.MAX_VALUE);
 
-    /** Ordered custom-scope entry. */
+    /**
+     * Ordered custom-scope entry.
+     *
+     * @param value scope expression; {@code null} normalizes to empty
+     * @param kind matching kind; {@code null} normalizes to {@link Kind#REGEX}
+     */
     public record ScopeEntry(String value, Kind kind) {
         public ScopeEntry {
             value = value == null ? "" : value;
@@ -120,10 +149,33 @@ public final class ConfigState {
     /**
      * Sinks selection and values.
      *
-     * <p>File export can target document-only JSONL, bulk-compatible NDJSON, or both. Optional
-     * OpenSearch basic-auth remains non-durable (empty = no auth). {@code openSearchTlsMode}
-     * persists whether OpenSearch uses the system trust store, a session-imported pinned
-     * certificate, or trust-all TLS.</p>
+     * <p>File export can target document-only JSONL, bulk-compatible NDJSON, or both. Database
+     * export can target upstream OpenSearch, Amazon OpenSearch, or Elasticsearch. Destination
+     * auth secrets remain non-durable; TLS mode fields persist whether the destination uses the
+     * system trust store, a session-imported pinned certificate, or trust-all TLS.</p>
+     *
+     * <p>The {@code osEnabled} component retains its historical name for config compatibility but
+     * acts as the database-wide enable flag; prefer {@link #databaseEnabled()} in new code.</p>
+     *
+     * @param filesEnabled whether file export is selected
+     * @param filesPath file-export root; {@code null} normalizes to empty
+     * @param fileJsonlEnabled whether document-only JSONL is selected
+     * @param fileBulkNdjsonEnabled whether bulk-compatible NDJSON is selected
+     * @param fileTotalCapEnabled whether the total file-size cap is enabled
+     * @param fileTotalCapGb positive total cap in GiB; invalid values normalize to the default
+     * @param fileDiskUsagePercentEnabled whether the volume-used threshold is enabled
+     * @param fileDiskUsagePercent volume-used threshold clamped to {@code 1..100}
+     * @param osEnabled historical database-wide enable flag
+     * @param openSearchUrl upstream OpenSearch URL; {@code null} normalizes to empty
+     * @param openSearchUser non-durable upstream OpenSearch username
+     * @param openSearchPassword non-durable upstream OpenSearch password
+     * @param openSearchTlsMode upstream OpenSearch TLS mode
+     * @param openSearchOptions persisted upstream OpenSearch options; {@code null} uses defaults
+     * @param searchDestination selected database destination key
+     * @param openSearchAmazonUrl Amazon OpenSearch URL; {@code null} normalizes to empty
+     * @param openSearchAmazonOptions Amazon options; {@code null} uses defaults
+     * @param elasticSearchUrl Elasticsearch URL; {@code null} normalizes to empty
+     * @param elasticSearchOptions Elasticsearch options; {@code null} uses defaults
      */
     public record Sinks(boolean filesEnabled, String filesPath, boolean fileJsonlEnabled, boolean fileBulkNdjsonEnabled,
                         boolean fileTotalCapEnabled, double fileTotalCapGb,
@@ -158,6 +210,15 @@ public final class ConfigState {
         /** Returns the configured file cap converted to bytes for runtime enforcement. */
         public long fileTotalCapBytes() {
             return gbToBytes(fileTotalCapGb);
+        }
+
+        /**
+         * Returns whether database export is enabled.
+         *
+         * @return historical {@link #osEnabled()} component value
+         */
+        public boolean databaseEnabled() {
+            return osEnabled;
         }
 
         /** Returns the selected database destination. */
@@ -267,7 +328,17 @@ public final class ConfigState {
         }
     }
 
-    /** Persisted non-secret OpenSearch settings that should survive config export/import. */
+    /**
+     * Persisted non-secret OpenSearch settings that survive config export/import.
+     *
+     * @param authType normalized authentication type
+     * @param apiKeyId non-secret API key identifier
+     * @param certPath client-certificate path
+     * @param certKeyPath client private-key path
+     * @param pinnedTlsCertificateSourcePath imported pin source path
+     * @param pinnedTlsCertificateFingerprintSha256 imported pin fingerprint
+     * @param pinnedTlsCertificateEncodedBase64 imported public certificate encoding
+     */
     public record OpenSearchOptions(
             String authType,
             String apiKeyId,
@@ -289,12 +360,32 @@ public final class ConfigState {
         }
     }
 
-    /** Persisted non-secret Amazon OpenSearch Service settings. */
+    /**
+     * Persisted non-secret Amazon OpenSearch Service settings.
+     *
+     * <p>Nullable strings normalize to trimmed empty values. Authentication and deployment values
+     * normalize to supported defaults.</p>
+     *
+     * @param authType authentication type
+     * @param username username used only for Basic authentication
+     * @param region AWS region, or empty for provider/endpoint resolution
+     * @param profile shared-config profile name
+     * @param credentialsFilePath optional shared credentials file path
+     * @param configFilePath optional shared config file path
+     * @param deploymentType hosted/serverless selection or auto-detection
+     * @param tlsMode TLS trust mode
+     * @param pinnedTlsCertificateSourcePath imported pin source path
+     * @param pinnedTlsCertificateFingerprintSha256 imported pin fingerprint
+     * @param pinnedTlsCertificateEncodedBase64 imported public certificate encoding
+     */
     public record OpenSearchAmazonOptions(
             String authType,
             String username,
             String region,
             String profile,
+            String credentialsFilePath,
+            String configFilePath,
+            String deploymentType,
             String tlsMode,
             String pinnedTlsCertificateSourcePath,
             String pinnedTlsCertificateFingerprintSha256,
@@ -304,6 +395,9 @@ public final class ConfigState {
             username = username == null ? "" : username.trim();
             region = region == null ? "" : region.trim();
             profile = profile == null ? "" : profile.trim();
+            credentialsFilePath = credentialsFilePath == null ? "" : credentialsFilePath.trim();
+            configFilePath = configFilePath == null ? "" : configFilePath.trim();
+            deploymentType = normalizeDeploymentType(deploymentType);
             tlsMode = normalizeOpenSearchTlsMode(tlsMode);
             pinnedTlsCertificateSourcePath = pinnedTlsCertificateSourcePath == null ? "" : pinnedTlsCertificateSourcePath;
             pinnedTlsCertificateFingerprintSha256 = pinnedTlsCertificateFingerprintSha256 == null
@@ -313,12 +407,28 @@ public final class ConfigState {
         }
     }
 
-    /** Persisted non-secret Elasticsearch settings. */
+    /**
+     * Persisted non-secret Elasticsearch settings.
+     *
+     * <p>Nullable strings normalize to trimmed empty values. Authentication, deployment, and TLS
+     * values normalize to supported defaults.</p>
+     *
+     * @param authType authentication type
+     * @param username username used only for Basic authentication
+     * @param certPath client-certificate path
+     * @param certKeyPath client private-key path
+     * @param deploymentType hosted/serverless/self-hosted selection or auto-detection
+     * @param tlsMode TLS trust mode
+     * @param pinnedTlsCertificateSourcePath imported pin source path
+     * @param pinnedTlsCertificateFingerprintSha256 imported pin fingerprint
+     * @param pinnedTlsCertificateEncodedBase64 imported public certificate encoding
+     */
     public record ElasticsearchOptions(
             String authType,
             String username,
             String certPath,
             String certKeyPath,
+            String deploymentType,
             String tlsMode,
             String pinnedTlsCertificateSourcePath,
             String pinnedTlsCertificateFingerprintSha256,
@@ -328,6 +438,7 @@ public final class ConfigState {
             username = username == null ? "" : username.trim();
             certPath = certPath == null ? "" : certPath.trim();
             certKeyPath = certKeyPath == null ? "" : certKeyPath.trim();
+            deploymentType = normalizeDeploymentType(deploymentType);
             tlsMode = normalizeOpenSearchTlsMode(tlsMode);
             pinnedTlsCertificateSourcePath = pinnedTlsCertificateSourcePath == null ? "" : pinnedTlsCertificateSourcePath;
             pinnedTlsCertificateFingerprintSha256 = pinnedTlsCertificateFingerprintSha256 == null
@@ -516,14 +627,33 @@ public final class ConfigState {
         return new OpenSearchOptions(DEFAULT_OPEN_SEARCH_AUTH_TYPE, "", "", "", "", "", "");
     }
 
-    /** Default persisted Amazon OpenSearch Service non-secret settings. */
+    /**
+     * Returns default persisted Amazon OpenSearch Service non-secret settings.
+     *
+     * @return normalized profile-authenticated, auto-detected defaults
+     */
     public static OpenSearchAmazonOptions defaultOpenSearchAmazonOptions() {
-        return new OpenSearchAmazonOptions("IAM (sigV4)", "", "", "", OPEN_SEARCH_TLS_VERIFY, "", "", "");
+        return new OpenSearchAmazonOptions(
+                DEFAULT_OPEN_SEARCH_AMAZON_AUTH_TYPE,
+                "",
+                "",
+                "",
+                "",
+                "",
+                DEPLOYMENT_AUTO,
+                OPEN_SEARCH_TLS_VERIFY,
+                "",
+                "",
+                "");
     }
 
-    /** Default persisted Elasticsearch non-secret settings. */
+    /**
+     * Returns default persisted Elasticsearch non-secret settings.
+     *
+     * @return normalized Basic-authenticated, auto-detected defaults
+     */
     public static ElasticsearchOptions defaultElasticsearchOptions() {
-        return new ElasticsearchOptions(DEFAULT_OPEN_SEARCH_AUTH_TYPE, "", "", "",
+        return new ElasticsearchOptions(DEFAULT_OPEN_SEARCH_AUTH_TYPE, "", "", "", DEPLOYMENT_AUTO,
                 OPEN_SEARCH_TLS_VERIFY, "", "", "");
     }
 
@@ -591,13 +721,34 @@ public final class ConfigState {
     /** Returns a normalized Amazon OpenSearch Service auth type. */
     public static String normalizeOpenSearchAmazonAuthType(String authType) {
         if (authType == null || authType.isBlank()) {
-            return "IAM (sigV4)";
+            return DEFAULT_OPEN_SEARCH_AMAZON_AUTH_TYPE;
         }
         return switch (authType.trim().toLowerCase(Locale.ROOT)) {
-            case "iam (sigv4)", "iam", "sigv4", "aws sigv4", "aws_sigv4" -> "IAM (sigV4)";
+            case "iam sigv4 - static credentials", "iam sigv4 static credentials",
+                    "iam (sigv4)", "iam", "sigv4", "aws sigv4", "aws_sigv4" ->
+                    OPEN_SEARCH_AMAZON_AUTH_STATIC;
+            case "iam sigv4 - profile", "iam sigv4 profile", "profile" -> OPEN_SEARCH_AMAZON_AUTH_PROFILE;
             case "basic" -> "Basic";
             case "none" -> "None";
-            default -> "IAM (sigV4)";
+            default -> DEFAULT_OPEN_SEARCH_AMAZON_AUTH_TYPE;
+        };
+    }
+
+    /**
+     * Returns a normalized deployment type.
+     *
+     * @param deploymentType persisted deployment label; null, blank, or unknown selects auto
+     * @return one of the {@code DEPLOYMENT_*} constants
+     */
+    public static String normalizeDeploymentType(String deploymentType) {
+        if (deploymentType == null || deploymentType.isBlank()) {
+            return DEPLOYMENT_AUTO;
+        }
+        return switch (deploymentType.trim().toLowerCase(Locale.ROOT)) {
+            case DEPLOYMENT_HOSTED, "domain" -> DEPLOYMENT_HOSTED;
+            case DEPLOYMENT_SERVERLESS -> DEPLOYMENT_SERVERLESS;
+            case "selfhosted", "self-hosted", "self hosted" -> DEPLOYMENT_SELF_HOSTED;
+            default -> DEPLOYMENT_AUTO;
         };
     }
 

@@ -119,11 +119,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     /**
-     * True if the request is to the configured OpenSearch base URL (same host and port).
+     * True if the request is to the configured search database base URL (same host and port).
      * Used when tool type is EXTENSIONS to exclude this extension's own export traffic.
      */
     private static boolean isRequestToConfiguredOpenSearch(String requestHost, int requestPort) {
-        String baseUrl = RuntimeConfig.openSearchUrl();
+        String baseUrl = RuntimeConfig.searchBaseUrl();
         if (baseUrl == null || baseUrl.isBlank() || requestHost == null || requestHost.isEmpty()) {
             return false;
         }
@@ -693,26 +693,24 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     /**
-     * Runs on a daemon thread. Exports pending requests that have not received a response
-     * within {@link #ORPHAN_TIMEOUT_MS} as request-only documents with
-     * {@code response.status.code = 0} and {@code response.status.description = "Timeout"}.
-     */
-    /**
-     * Package-private entry for orphan-flush regression tests in {@code ai.anomalousvectors.tools.burp.sinks}.
+     * Package-private entry for orphan-flush regression tests in
+     * {@code ai.anomalousvectors.tools.burp.sinks}.
      */
     static void flushOrphanedRequestsForTest() {
         flushOrphanedRequests();
     }
 
     /**
-     * Package-private entry for orphan-flush regression tests in {@code ai.anomalousvectors.tools.burp.sinks}.
+     * Package-private entry for orphan-flush regression tests in
+     * {@code ai.anomalousvectors.tools.burp.sinks}.
      */
     static void clearPendingOrphansForTest() {
         pendingOrphans.clear();
     }
 
     /**
-     * Package-private entry for orphan-flush regression tests in {@code ai.anomalousvectors.tools.burp.sinks}.
+     * Package-private entry for orphan-flush regression tests in
+     * {@code ai.anomalousvectors.tools.burp.sinks}.
      */
     static void registerPendingOrphanForTest(
             int messageId,
@@ -725,12 +723,20 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     /**
-     * Package-private entry for orphan-flush regression tests in {@code ai.anomalousvectors.tools.burp.sinks}.
+     * Package-private entry for orphan-flush regression tests in
+     * {@code ai.anomalousvectors.tools.burp.sinks}.
      */
     static boolean containsPendingOrphanForTest(int messageId) {
         return pendingOrphans.containsKey(messageId);
     }
 
+    /**
+     * Exports timed-out pending requests as request-only documents.
+     *
+     * <p>Runs on the orphan-flush daemon thread. Requests older than
+     * {@link #ORPHAN_TIMEOUT_MS} receive status code {@code 0} and description
+     * {@code Timeout}.</p>
+     */
     private static void flushOrphanedRequests() {
         if (!RuntimeConfig.isExportReady()) {
             return;

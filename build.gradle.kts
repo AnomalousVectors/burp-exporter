@@ -27,6 +27,10 @@ java {
     }
 }
 
+jacoco {
+    toolVersion = libs.versions.jacoco.get()
+}
+
 repositories {
     mavenCentral()
 }
@@ -38,6 +42,8 @@ dependencies {
     compileOnly(libs.spotbugsAnnotations)
 
     // implementation
+    implementation(libs.jackson3Core)
+    implementation(libs.jackson3Databind)
     implementation(libs.jacksonCore)
     implementation(libs.jacksonDatabind)
     implementation(libs.miglayoutSwing)
@@ -48,6 +54,9 @@ dependencies {
     implementation(libs.elasticsearchRestClient)
     implementation(libs.awsSdkAuth)
     implementation(libs.awsSdkRegions)
+    implementation(libs.awsSdkSts)
+    implementation(libs.awsSdkSso)
+    implementation(libs.awsSdkSsoOidc)
     implementation(libs.slf4jApi)
     implementation(libs.jfreechart)
     implementation(libs.brotliDec)
@@ -97,6 +106,7 @@ spotbugs {
 }
 
 tasks.withType<SpotBugsTask>().configureEach {
+    analyseClassFile.set(layout.buildDirectory.file("spotbugs/$name-analyse-class-file.txt"))
     reports.create("html") {
         required.set(true)
     }
@@ -122,7 +132,16 @@ tasks.test {
     systemProperty("java.awt.headless", "true")
     systemProperty("burp.exporter.version", project.version.toString())
     // Forward OpenSearch URL/creds from Gradle -P or env into the test JVM (forked process does not inherit -P)
-    listOf("OPENSEARCH_URL", "OPENSEARCH_USER", "OPENSEARCH_PASSWORD").forEach { key ->
+    listOf(
+        "OPENSEARCH_URL",
+        "OPENSEARCH_USER",
+        "OPENSEARCH_PASSWORD",
+        "OPENSEARCH_CERT_PATH",
+        "OPENSEARCH_CERT_KEY_PATH",
+        "DATA_VOLUME_ROOT",
+        "OPENSEARCH_CONTAINER",
+        "OPENSEARCH_STACK_ENV",
+    ).forEach { key ->
         val value = project.findProperty(key)?.toString()?.takeIf { it.isNotBlank() }
             ?: System.getenv(key)?.takeIf { it.isNotBlank() }
         if (value != null) systemProperty(key, value)
