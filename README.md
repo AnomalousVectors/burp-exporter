@@ -10,8 +10,8 @@ Burp Exporter is part of a larger research framework being developed by Anomalou
 
 - Wiki: [https://github.com/AnomalousVectors/burp-exporter/wiki](../../wiki)
 - Javadocs: [https://AnomalousVectors.github.io/burp-exporter](https://AnomalousVectors.github.io/burp-exporter/)
-- Contributing: `[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md)`
-- Security policy: `[.github/SECURITY.md](.github/SECURITY.md)`
+- Contributing: [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md)
+- Security policy: [.github/SECURITY.md](.github/SECURITY.md)
 
 ## Support
 
