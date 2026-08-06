@@ -123,6 +123,33 @@ class ExporterIndexStatsReporterFinalPushIT {
                 "indexed exporter stats document");
         assertThat(source.path("event").path("data").path("export").path("running").asBoolean()).isFalse();
         JsonNode stats = source.path("event").path("data").path("stats");
+        JsonNode proxyCorrelation =
+                source.path("event").path("data").path("traffic").path("proxy_correlation");
+        assertThat(proxyCorrelation.isObject()).isTrue();
+        for (String field : List.of(
+                "proxy_request_callbacks",
+                "http_proxy_requests",
+                "http_marked_requests",
+                "http_proxy_responses",
+                "http_unmarked_tracked_responses",
+                "http_unmarked_prerun_responses",
+                "history_lookup_attempts",
+                "history_lookup_matched_rows",
+                "eligible_total",
+                "bound_total",
+                "pending_memory_count",
+                "pending_memory_bytes",
+                "pending_durable_count",
+                "pending_durable_bytes",
+                "durable_spooled_total",
+                "lookup_failures",
+                "cleanup_failures",
+                "spool_failures",
+                "explicit_failures")) {
+            assertThat(proxyCorrelation.path(field).isNumber())
+                    .as("numeric proxy correlation field %s", field)
+                    .isTrue();
+        }
         assertThat(stats.path("docs_body_enumeration_misgate_suspect_total").asLong()).isEqualTo(misgate);
         assertThat(stats.path("docs_wire_body_params_replaced_total").asLong()).isEqualTo(wireReplaced);
         assertThat(stats.path("docs_supplemental_rejected_non_form_total").asLong())

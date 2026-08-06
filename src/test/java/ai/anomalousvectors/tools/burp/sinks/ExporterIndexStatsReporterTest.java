@@ -6,11 +6,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 
 import org.junit.jupiter.api.Test;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
@@ -87,6 +91,35 @@ class ExporterIndexStatsReporterTest {
             Path jsonlPath = root.resolve(IndexNaming.indexNameForShortName("exporter") + ".jsonl");
             assertThat(jsonlPath).exists();
             String jsonl = Files.readString(jsonlPath);
+            JsonNode proxyCorrelation = new ObjectMapper()
+                    .readTree(jsonl.lines().findFirst().orElseThrow())
+                    .path("event")
+                    .path("data")
+                    .path("traffic")
+                    .path("proxy_correlation");
+            List<String> proxyCorrelationFields = new ArrayList<>();
+            proxyCorrelation.fieldNames().forEachRemaining(proxyCorrelationFields::add);
+            assertThat(proxyCorrelationFields)
+                    .containsExactlyInAnyOrder(
+                            "proxy_request_callbacks",
+                            "http_proxy_requests",
+                            "http_marked_requests",
+                            "http_proxy_responses",
+                            "http_unmarked_tracked_responses",
+                            "http_unmarked_prerun_responses",
+                            "history_lookup_attempts",
+                            "history_lookup_matched_rows",
+                            "eligible_total",
+                            "bound_total",
+                            "pending_memory_count",
+                            "pending_memory_bytes",
+                            "pending_durable_count",
+                            "pending_durable_bytes",
+                            "durable_spooled_total",
+                            "lookup_failures",
+                            "cleanup_failures",
+                            "spool_failures",
+                            "explicit_failures");
             assertThat(jsonl).contains("stats_snapshot");
             assertThat(jsonl).contains("\"running\":false");
             assertThat(jsonl).contains("docs_body_enumeration_misgate_suspect_total");
@@ -248,6 +281,8 @@ class ExporterIndexStatsReporterTest {
                     .contains("\"exporter\"")
                     .contains("\"traffic\"")
                     .contains("\"spill\"")
+                    .contains("\"proxy_correlation\"")
+                    .contains("\"eligible_total\":0")
                     .contains("\"queue_bytes_estimate\"")
                     .contains("\"active_drain_batches\"")
                     .contains("\"stats\"")

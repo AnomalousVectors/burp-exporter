@@ -42,8 +42,8 @@ public final class ExportReporterLifecycle {
     /**
      * Stops recurring background reporters and clears their in-memory session state.
      *
-     * <p>Safe to call from any thread. Callers should set {@link RuntimeConfig#setExportRunning(boolean)}
-     * to {@code false} before invoking this method so in-flight work exits cooperatively.</p>
+     * <p>Safe to call from any thread. Callers close live Proxy correlation intake before invoking
+     * this method so no response-complete document is stranded during shutdown.</p>
      */
     public static void stopBackgroundReporters() {
         ExporterIndexStatsReporter.stop();
@@ -79,6 +79,13 @@ public final class ExportReporterLifecycle {
      */
     public static void stopAndClearPendingExportWork() {
         ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        if (!token.isValid()) {
+            token = RuntimeConfig.lastInvalidatedExportRunToken();
+        }
+        ProxyLiveMetadataCorrelator.closeAndDrainRun();
+        if (RuntimeConfig.isExportRunning()) {
+            TrafficExportQueue.awaitPendingWorkDrained(RuntimeConfig.EXPORT_STOP_UX_WALL_CLOCK_MS);
+        }
         RuntimeConfig.setExportRunning(false);
         StartupSnapshotCoordinator.cancelRun(token);
         stopBackgroundReporters();
@@ -185,6 +192,7 @@ public final class ExportReporterLifecycle {
         // test is mid-call, surfacing as "Connection pool shut down" or "Socket closed".
         awaitStopReclaim(5_000L);
         stopAndClearSessionState();
+        ProxyLiveMetadataCorrelator.resetForTests();
         ControlStatusBridge.clear();
         ExportControlBridge.clear();
         DiskSpaceGuard.resetForTests();

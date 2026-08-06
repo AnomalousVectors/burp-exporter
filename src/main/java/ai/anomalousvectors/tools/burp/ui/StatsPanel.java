@@ -69,6 +69,7 @@ import org.jfree.data.time.TimeSeries;
 import org.jfree.data.time.TimeSeriesCollection;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
+import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
@@ -145,6 +146,8 @@ public class StatsPanel extends JPanel {
             "Database Run Peaks");
     /** Misc Stats group for live traffic spill (files and/or database traffic export). */
     private static final String MISC_TRAFFIC_SPILL_SECTION = "Traffic Spill";
+    /** Misc Stats group for deterministic live Proxy-to-History correlation. */
+    private static final String MISC_PROXY_CORRELATION_SECTION = "Proxy Correlation";
     private static final long CHART_WINDOW_MAX_MS = 60L * 60L * 1000L;
     private static final int CHART_MAX_POINTS = (int) (CHART_WINDOW_MAX_MS / REFRESH_INTERVAL_MS) + 5;
     private static final int CHART_PANEL_HEIGHT = 360;
@@ -388,6 +391,16 @@ public class StatsPanel extends JPanel {
     private final JLabel spillOldestAgeValue;
     private final JLabel spillFlowValue;
     private final JLabel dropReasonValue;
+    private final JLabel correlationProxyHttpRequestsValue;
+    private final JLabel correlationMarkedResponsesValue;
+    private final JLabel correlationUnmarkedValue;
+    private final JLabel correlationHistoryLookupsValue;
+    private final JLabel correlationPendingMemoryValue;
+    private final JLabel correlationPendingDurableValue;
+    private final JLabel correlationBoundEligibleValue;
+    private final JLabel correlationDurableTotalValue;
+    private final JLabel correlationLookupCleanupFailuresValue;
+    private final JLabel correlationSpoolExplicitFailuresValue;
     private final JLabel throughputValue;
     private final JLabel exportedDocsValue;
     private final JLabel exportedSizeValue;
@@ -574,6 +587,12 @@ public class StatsPanel extends JPanel {
                 new MetricSection(MISC_TRAFFIC_SPILL_SECTION, new String[] {
                         "Queue", "Oldest Age (s)", "Enqueued / Dequeued / Dropped", "Drop Reasons"
                 }),
+                new MetricSection(MISC_PROXY_CORRELATION_SECTION, new String[] {
+                        "Proxy / HTTP Request Callbacks", "HTTP Marked / Responses",
+                        "Unmarked Tracked / Pre-Run", "History Lookups / Matched Rows",
+                        "Pending Memory", "Pending Durable", "Bound / Eligible",
+                        "Durable Spool Total", "Lookup / Cleanup Failures", "Spool / Explicit Failures"
+                }),
                 new MetricSection("Database Retry", new String[] {
                         "Queue Depth", "Oldest Queued Age"
                 }),
@@ -609,6 +628,16 @@ public class StatsPanel extends JPanel {
         spillOldestAgeValue = miscValues.get("Oldest Age (s)");
         spillFlowValue = miscValues.get("Enqueued / Dequeued / Dropped");
         dropReasonValue = miscValues.get("Drop Reasons");
+        correlationProxyHttpRequestsValue = miscValues.get("Proxy / HTTP Request Callbacks");
+        correlationMarkedResponsesValue = miscValues.get("HTTP Marked / Responses");
+        correlationUnmarkedValue = miscValues.get("Unmarked Tracked / Pre-Run");
+        correlationHistoryLookupsValue = miscValues.get("History Lookups / Matched Rows");
+        correlationPendingMemoryValue = miscValues.get("Pending Memory");
+        correlationPendingDurableValue = miscValues.get("Pending Durable");
+        correlationBoundEligibleValue = miscValues.get("Bound / Eligible");
+        correlationDurableTotalValue = miscValues.get("Durable Spool Total");
+        correlationLookupCleanupFailuresValue = miscValues.get("Lookup / Cleanup Failures");
+        correlationSpoolExplicitFailuresValue = miscValues.get("Spool / Explicit Failures");
         throughputValue = miscValues.get("Throughput (10s)");
         exportedDocsValue = miscValues.get("Exported Docs");
         exportedSizeValue = miscValues.get("Database Exported Size");
@@ -795,6 +824,38 @@ public class StatsPanel extends JPanel {
                         + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")
                                 + ExportStats.getTrafficDropReasonCount("spill_requeue_low_disk_drop")) + " / "
                         + formatWhole(ExportStats.getTrafficSpillExpiredPruned()));
+        correlationProxyHttpRequestsValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.proxyRequestCallbacks()) + " / "
+                        + formatWhole(ProxyLiveMetadataCorrelator.httpProxyRequests()));
+        correlationMarkedResponsesValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.httpMarkedRequests()) + " / "
+                        + formatWhole(ProxyLiveMetadataCorrelator.httpProxyResponses()));
+        correlationUnmarkedValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.httpUnmarkedTrackedResponses()) + " / "
+                        + formatWhole(
+                                ProxyLiveMetadataCorrelator.httpUnmarkedUntrackedResponses()));
+        correlationHistoryLookupsValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.historyLookupAttempts()) + " / "
+                        + formatWhole(ProxyLiveMetadataCorrelator.historyLookupMatchedRows()));
+        correlationPendingMemoryValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.pendingMemoryCount()) + " / "
+                        + StatsPanelFormatters.formatBytesHuman(
+                                ProxyLiveMetadataCorrelator.pendingMemoryBytes()));
+        correlationPendingDurableValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.pendingDurableCount()) + " / "
+                        + StatsPanelFormatters.formatBytesHuman(
+                                ProxyLiveMetadataCorrelator.pendingDurableBytes()));
+        correlationBoundEligibleValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.boundTotal()) + " / "
+                        + formatWhole(ProxyLiveMetadataCorrelator.eligibleTotal()));
+        correlationDurableTotalValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.durableSpooledTotal()));
+        correlationLookupCleanupFailuresValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.lookupFailures()) + " / "
+                        + formatWhole(ProxyLiveMetadataCorrelator.cleanupFailures()));
+        correlationSpoolExplicitFailuresValue.setText(
+                formatWhole(ProxyLiveMetadataCorrelator.spoolFailures()) + " / "
+                        + formatWhole(ProxyLiveMetadataCorrelator.explicitFailures()));
         throughputValue.setText(DECIMAL_ONE.format(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
         exportedDocsValue.setText(formatWhole(totalSuccess) + " docs");
         exportedSizeValue.setText(formatHumanReadableBytes(dbExportedBytes));
@@ -1679,6 +1740,7 @@ public class StatsPanel extends JPanel {
             setMiscSectionVisible(section, openSearchVisible);
         }
         setMiscSectionVisible(MISC_TRAFFIC_SPILL_SECTION, trafficRelevant);
+        setMiscSectionVisible(MISC_PROXY_CORRELATION_SECTION, trafficRelevant);
         setMiscSectionVisible("Files", fileVisible);
         miscStatsCard.revalidate();
         miscStatsCard.repaint();

@@ -23,7 +23,10 @@ final class BurpAnnotationFields {
             return;
         }
         if (annotations.hasNotes()) {
-            burp.put("notes", annotations.notes());
+            String notes = ProxyCorrelationToken.redact(annotations.notes());
+            if (!notes.isEmpty()) {
+                burp.put("notes", notes);
+            }
         }
         if (annotations.hasHighlightColor()) {
             HighlightColor color = annotations.highlightColor();

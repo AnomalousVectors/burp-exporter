@@ -14,6 +14,7 @@ public final class ManagedDiskPaths {
 
     private static final String ROOT_DIR_NAME = "burp-exporter";
     private static final String SPILL_SUBDIR = "spill";
+    private static final String PROXY_CORRELATION_SUBDIR = "proxy-correlation";
 
     private ManagedDiskPaths() { }
 
@@ -39,5 +40,17 @@ public final class ManagedDiskPaths {
      */
     public static Path spillDirectory() {
         return managedRootDirectory().resolve(SPILL_SUBDIR);
+    }
+
+    /**
+     * Returns the durable unresolved Proxy-correlation directory under the managed root.
+     *
+     * <p>Entries here have not yet been admitted to the traffic export queue. They remain separate
+     * from overflow spill files so Stop and restart can resume exact Proxy History binding.</p>
+     *
+     * @return canonical unresolved Proxy-correlation directory path
+     */
+    public static Path proxyCorrelationDirectory() {
+        return managedRootDirectory().resolve(PROXY_CORRELATION_SUBDIR);
     }
 }

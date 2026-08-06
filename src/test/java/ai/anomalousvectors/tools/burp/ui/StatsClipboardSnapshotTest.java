@@ -110,6 +110,17 @@ class StatsClipboardSnapshotTest {
         assertThat(text).contains("Database Exported Size:");
         assertThat(text).contains("Files Exported Size:");
         assertThat(text).contains("Traffic Spill Status:");
+        assertThat(text).contains("Proxy Correlation");
+        assertThat(text).contains("Proxy / HTTP Request Callbacks: 0 / 0");
+        assertThat(text).contains("HTTP Marked / Responses: 0 / 0");
+        assertThat(text).contains("Unmarked Tracked / Pre-Run: 0 / 0");
+        assertThat(text).contains("History Lookups / Matched Rows: 0 / 0");
+        assertThat(text).contains("Pending Memory: 0 / 0 B");
+        assertThat(text).contains("Pending Durable: 0 / 0 B");
+        assertThat(text).contains("Bound / Eligible: 0 / 0");
+        assertThat(text).contains("Durable Spool Total: 0");
+        assertThat(text).contains("Lookup / Cleanup Failures: 0 / 0");
+        assertThat(text).contains("Spool / Explicit Failures: 0 / 0");
         assertThat(text).contains("Permanent Drop Reasons: max_fit_exceeded=2");
         assertThat(text).contains("Body Truncations by Index: traffic: 1");
         assertThat(text).contains("Snapshot Build-Ahead: 256.0 KiB / 64.0 MiB (4 / 1,024 permits)");

@@ -60,6 +60,7 @@ import ai.anomalousvectors.tools.burp.sinks.FileExportService;
 import ai.anomalousvectors.tools.burp.sinks.FindingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.OpenSearchSink;
 import ai.anomalousvectors.tools.burp.sinks.ParameterIntegritySessionLog;
+import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.RepeaterTabsIndexReporter;
@@ -836,6 +837,14 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 postStopProgress(callbacks, ExportShutdownStatus.waitingForBatchMessage());
                 ParameterIntegritySessionLog.flushStopDebugValidation();
                 StartupSnapshotCoordinator.cancelRun(stoppedRun);
+                ProxyLiveMetadataCorrelator.closeAndDrainRun();
+                if (!ProxyLiveMetadataCorrelator.awaitPendingPersistence(
+                        RuntimeConfig.remainingExportStopBudgetMs())) {
+                    Logger.logWarnPanelOnly(
+                            "[ProxyCorrelation] Stop persistence did not finish within the "
+                                    + "remaining shutdown budget; unload will make one final "
+                                    + "bounded wait.");
+                }
                 ExportReporterLifecycle.stopBackgroundReporters();
                 if (!isStopForceAbortRequested() && !RuntimeConfig.isExportStopBudgetExpired()) {
                     boolean startupIdle = StartupSnapshotCoordinator.awaitIdle(
@@ -848,6 +857,18 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                                 "[Export] Startup snapshot cancellation exceeded the Stop UX budget.");
                     }
                 }
+                boolean trafficDrained = isStopForceAbortRequested()
+                        || TrafficExportQueue.awaitPendingWorkDrained(
+                                RuntimeConfig.remainingExportStopBudgetMs());
+                if (!trafficDrained) {
+                    Logger.logWarnPanelOnly(
+                            "[Export] Accepted traffic did not drain before the Stop deadline: "
+                                    + "memoryQueue=" + TrafficExportQueue.getCurrentSize()
+                                    + ", spillQueue=" + TrafficExportQueue.getCurrentSpillSize()
+                                    + ", activeBatches=" + TrafficExportQueue.getActiveDrainBatches()
+                                    + "; remaining traffic will be cleared.");
+                }
+                RuntimeConfig.setExportRunning(false);
                 TrafficExportQueue.stopWorker(RuntimeConfig.remainingExportStopBudgetMs());
                 TrafficLiveAttributionSummary.logAndClearForCurrentRun();
                 postStopProgress(callbacks, ExportShutdownStatus.clearingQueuedTrafficMessage(snapshot));
@@ -1022,7 +1043,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * @param uiCallbacks callbacks from {@link ConfigControlPanel} to revert or complete Start UI state
      */
     private void startExportAsync(ConfigControlPanel.StartUiCallbacks uiCallbacks) {
-        if (!RuntimeConfig.isExportRunning()) {
+        if (!RuntimeConfig.isExportRunning() || RuntimeConfig.isExportStopping()) {
             return;
         }
         RuntimeConfig.ExportRunToken runToken = RuntimeConfig.currentExportRunToken();
@@ -1259,6 +1280,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             BodyEnumerationSkippedLog.flushStartupSummary();
             CompressedWireBodyParamsLog.flushStartupSummary();
         }
+        ProxyLiveMetadataCorrelator.openRun();
         RuntimeConfig.setExportStarting(false);
         String runningStatus = buildRunningStatusMessage(runtimeStartIssues, filesSelected, databaseSelected);
         SwingUtilities.invokeLater(() -> {
@@ -1371,6 +1393,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     private void abortStartOnEdt(String reason, ConfigControlPanel.StartUiCallbacks uiCallbacks) {
         RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        ProxyLiveMetadataCorrelator.closeAndDrainRun();
         RuntimeConfig.setExportRunning(false);
         StartupSnapshotCoordinator.cancelRun(token);
         Logger.logErrorPanelOnly("[Export] Start aborted: " + reason);
@@ -1384,6 +1407,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     private void abortStartFromWorker(String reason, ConfigControlPanel.StartUiCallbacks uiCallbacks) {
         RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        ProxyLiveMetadataCorrelator.closeAndDrainRun();
         RuntimeConfig.setExportRunning(false);
         StartupSnapshotCoordinator.cancelRun(token);
         Logger.logErrorPanelOnly("[Export] Start aborted: " + reason);

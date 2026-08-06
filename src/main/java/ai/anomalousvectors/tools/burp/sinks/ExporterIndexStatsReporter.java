@@ -411,6 +411,7 @@ public final class ExporterIndexStatsReporter {
         traffic.put("active_drain_batches", TrafficExportQueue.getActiveDrainBatches());
         traffic.put("queue_drops", ExportStats.getTrafficQueueDrops());
         traffic.put("spill", buildTrafficSpillSection());
+        traffic.put("proxy_correlation", buildProxyCorrelationSection());
         long fallbackHits = ExportStats.getTrafficToolSourceFallbacks();
         if (fallbackHits > 0) {
             traffic.put("tool_source_fallback_hits", fallbackHits);
@@ -428,6 +429,36 @@ public final class ExporterIndexStatsReporter {
             traffic.put("attribution", attribution);
         }
         return traffic;
+    }
+
+    private static Map<String, Object> buildProxyCorrelationSection() {
+        Map<String, Object> correlation = new LinkedHashMap<>();
+        correlation.put("proxy_request_callbacks", ProxyLiveMetadataCorrelator.proxyRequestCallbacks());
+        correlation.put("http_proxy_requests", ProxyLiveMetadataCorrelator.httpProxyRequests());
+        correlation.put("http_marked_requests", ProxyLiveMetadataCorrelator.httpMarkedRequests());
+        correlation.put("http_proxy_responses", ProxyLiveMetadataCorrelator.httpProxyResponses());
+        correlation.put(
+                "http_unmarked_tracked_responses",
+                ProxyLiveMetadataCorrelator.httpUnmarkedTrackedResponses());
+        correlation.put(
+                "http_unmarked_prerun_responses",
+                ProxyLiveMetadataCorrelator.httpUnmarkedUntrackedResponses());
+        correlation.put("history_lookup_attempts", ProxyLiveMetadataCorrelator.historyLookupAttempts());
+        correlation.put(
+                "history_lookup_matched_rows",
+                ProxyLiveMetadataCorrelator.historyLookupMatchedRows());
+        correlation.put("eligible_total", ProxyLiveMetadataCorrelator.eligibleTotal());
+        correlation.put("bound_total", ProxyLiveMetadataCorrelator.boundTotal());
+        correlation.put("pending_memory_count", ProxyLiveMetadataCorrelator.pendingMemoryCount());
+        correlation.put("pending_memory_bytes", ProxyLiveMetadataCorrelator.pendingMemoryBytes());
+        correlation.put("pending_durable_count", ProxyLiveMetadataCorrelator.pendingDurableCount());
+        correlation.put("pending_durable_bytes", ProxyLiveMetadataCorrelator.pendingDurableBytes());
+        correlation.put("durable_spooled_total", ProxyLiveMetadataCorrelator.durableSpooledTotal());
+        correlation.put("lookup_failures", ProxyLiveMetadataCorrelator.lookupFailures());
+        correlation.put("cleanup_failures", ProxyLiveMetadataCorrelator.cleanupFailures());
+        correlation.put("spool_failures", ProxyLiveMetadataCorrelator.spoolFailures());
+        correlation.put("explicit_failures", ProxyLiveMetadataCorrelator.explicitFailures());
+        return correlation;
     }
 
     private static Map<String, Object> buildTrafficSpillSection() {

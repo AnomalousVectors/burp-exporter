@@ -158,6 +158,36 @@ class StatsPanelTest {
     }
 
     @Test
+    void proxyCorrelationCard_displaysCompleteCorrelationContract() {
+        StatsPanel panel = onEdt(StatsPanel::new);
+
+        onEdt(() -> call(panel, "refreshDashboard"));
+
+        assertThat(JLabel.class.cast(get(panel, "correlationProxyHttpRequestsValue")).getText())
+                .isEqualTo("0 / 0");
+        assertThat(JLabel.class.cast(get(panel, "correlationMarkedResponsesValue")).getText())
+                .isEqualTo("0 / 0");
+        assertThat(JLabel.class.cast(get(panel, "correlationUnmarkedValue")).getText())
+                .isEqualTo("0 / 0");
+        assertThat(JLabel.class.cast(get(panel, "correlationHistoryLookupsValue")).getText())
+                .isEqualTo("0 / 0");
+        assertThat(JLabel.class.cast(get(panel, "correlationPendingMemoryValue")).getText())
+                .isEqualTo("0 / 0 B");
+        assertThat(JLabel.class.cast(get(panel, "correlationPendingDurableValue")).getText())
+                .isEqualTo("0 / 0 B");
+        assertThat(JLabel.class.cast(get(panel, "correlationBoundEligibleValue")).getText())
+                .isEqualTo("0 / 0");
+        assertThat(JLabel.class.cast(get(panel, "correlationDurableTotalValue")).getText())
+                .isEqualTo("0");
+        assertThat(JLabel.class.cast(
+                        get(panel, "correlationLookupCleanupFailuresValue")).getText())
+                .isEqualTo("0 / 0");
+        assertThat(JLabel.class.cast(
+                        get(panel, "correlationSpoolExplicitFailuresValue")).getText())
+                .isEqualTo("0 / 0");
+    }
+
+    @Test
     void mergedSinkTables_packFirstColumnToFitIndentedRepeaterTabsSubRowLabel() {
         StatsPanel panel = onEdt(StatsPanel::new);
         JTable openSearchTable = JTable.class.cast(get(panel, "byIndexTable"));
@@ -561,7 +591,8 @@ class StatsPanelTest {
             assertThat(labels)
                     .contains(
                             "Overview", "Database Session", "Database Traffic",
-                            "Traffic Spill", "Database Retry", "Database Capacity", "Files");
+                            "Traffic Spill", "Proxy Correlation",
+                            "Database Retry", "Database Capacity", "Files");
             assertThat(labels).contains(
                     "Export Running", "Shared Batch Size", "Proxy History Chunk Target",
                     "Traffic Queue Size", "Queue Drops");
@@ -583,6 +614,10 @@ class StatsPanelTest {
             assertThat(labels).contains("Peak Snapshot Build-Ahead");
             assertThat(findByName(miscCard, "miscStats.section.Traffic Spill", JLabel.class)).isNotNull();
             assertThat(labels).contains("Queue", "Oldest Age (s)", "Enqueued / Dequeued / Dropped", "Drop Reasons");
+            assertThat(findByName(miscCard, "miscStats.section.Proxy Correlation", JLabel.class)).isNotNull();
+            assertThat(labels).contains(
+                    "Pending Memory", "Pending Durable", "Bound / Eligible",
+                    "Durable Spool Total", "Lookup / Cleanup Failures", "Spool / Explicit Failures");
             assertThat(labels).contains("Queue Depth", "Oldest Queued Age");
             assertThat(labels).doesNotContain("Spill Directory", "Skips by Reason", "Retry Queue Bytes (per index)");
             assertThat(openSearchRow0.getBackground()).isNotEqualTo(openSearchRow1.getBackground());
@@ -657,6 +692,8 @@ class StatsPanelTest {
                     .isFalse();
             // Traffic source is still enabled for files-only runs → Traffic Spill remains relevant.
             assertThat(findByName(miscCard, "miscStats.section.Traffic Spill", JLabel.class).isVisible())
+                    .isTrue();
+            assertThat(findByName(miscCard, "miscStats.section.Proxy Correlation", JLabel.class).isVisible())
                     .isTrue();
             assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Database Retry", JLabel.class).isVisible())

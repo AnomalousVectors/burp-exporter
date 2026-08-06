@@ -13,14 +13,10 @@ Burp Exporter is part of a larger research framework being developed by Anomalou
 - Contributing: [CONTRIBUTING.md](.github/CONTRIBUTING.md)
 - Security policy: [SECURITY.md](.github/SECURITY.md)
 
-
-
 ## Support
 
 - Bugs and feature requests: [Issues](../../issues)
 - Vulnerability Reporting: [Create new advisory](../../security/advisories/new)
-
-
 
 ## License
 

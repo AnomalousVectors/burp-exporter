@@ -48,6 +48,7 @@ import burp.api.montoya.extension.ExtensionUnloadingHandler;
 import burp.api.montoya.http.Http;
 import burp.api.montoya.logging.Logging;
 import burp.api.montoya.project.Project;
+import burp.api.montoya.proxy.Proxy;
 import burp.api.montoya.ui.UserInterface;
 import burp.api.montoya.core.BurpSuiteEdition;
 import burp.api.montoya.websocket.WebSockets;
@@ -84,6 +85,8 @@ class ExporterLifecycleTest {
             verify(fixture.extension).registerUnloadingHandler(any(ExtensionUnloadingHandler.class));
             verify(fixture.userInterface).registerSuiteTab(eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class));
             verify(fixture.http).registerHttpHandler(any());
+            verify(fixture.proxy).registerRequestHandler(any());
+            verify(fixture.proxy).registerResponseHandler(any());
             verify(fixture.webSockets).registerWebSocketCreatedHandler(any());
             verify(fixture.logging).logToOutput(argThat(msg ->
                     msg.contains("initialized successfully") && !msg.startsWith("[")));
@@ -121,6 +124,30 @@ class ExporterLifecycleTest {
     }
 
     @Test
+    void initialize_proxyResponseRegistrationFailure_deregistersPartialProxyRegistration() {
+        try {
+            ApiFixture fixture = new ApiFixture();
+            when(fixture.proxy.registerResponseHandler(any()))
+                    .thenThrow(new IllegalStateException("response registration failed"));
+
+            new Exporter().initialize(fixture.api);
+
+            verify(fixture.httpRegistration).deregister();
+            verify(fixture.proxyRequestRegistration).deregister();
+            verify(fixture.logging, never()).logToOutput(
+                    argThat(message -> message.contains("initialized successfully")));
+            assertThatCode(() -> fixture.unloadHandler.get().extensionUnloaded())
+                    .doesNotThrowAnyException();
+            verify(fixture.httpRegistration, times(1)).deregister();
+            verify(fixture.proxyRequestRegistration, times(1)).deregister();
+        } finally {
+            Tooltips.restoreSharedPopupFactory();
+            ExportReporterLifecycle.resetForTests();
+            Logger.resetState();
+        }
+    }
+
+    @Test
     void unloadingHandler_deregistersResources_and_stopsBackgroundWork() {
         Tooltips.restoreSharedPopupFactory();
         PopupFactory popupFactoryBeforeInitialize = PopupFactory.getSharedInstance();
@@ -148,6 +175,8 @@ class ExporterLifecycleTest {
             assertThat(getStaticList(Logger.class, "LISTENERS")).isEmpty();
 
             verify(fixture.httpRegistration).deregister();
+            verify(fixture.proxyRequestRegistration).deregister();
+            verify(fixture.proxyResponseRegistration).deregister();
             verify(fixture.suiteTabRegistration).deregister();
             verify(fixture.unloadRegistration, atLeastOnce()).deregister();
             verify(fixture.logging).logToOutput(argThat(msg ->
@@ -215,6 +244,7 @@ class ExporterLifecycleTest {
         final Extension extension = mock(Extension.class);
         final UserInterface userInterface = mock(UserInterface.class);
         final Http http = mock(Http.class);
+        final Proxy proxy = mock(Proxy.class);
         final Logging logging = mock(Logging.class);
         final BurpSuite burpSuite = mock(BurpSuite.class);
         final Version version = mock(Version.class);
@@ -222,6 +252,8 @@ class ExporterLifecycleTest {
         final Registration unloadRegistration = mock(Registration.class);
         final Registration suiteTabRegistration = mock(Registration.class);
         final Registration httpRegistration = mock(Registration.class);
+        final Registration proxyRequestRegistration = mock(Registration.class);
+        final Registration proxyResponseRegistration = mock(Registration.class);
         final Registration webSocketRegistration = mock(Registration.class);
         final WebSockets webSockets = mock(WebSockets.class);
         final AtomicReference<ExtensionUnloadingHandler> unloadHandler = new AtomicReference<>();
@@ -230,6 +262,7 @@ class ExporterLifecycleTest {
             when(api.extension()).thenReturn(extension);
             when(api.userInterface()).thenReturn(userInterface);
             when(api.http()).thenReturn(http);
+            when(api.proxy()).thenReturn(proxy);
             when(api.websockets()).thenReturn(webSockets);
             when(api.logging()).thenReturn(logging);
             when(api.burpSuite()).thenReturn(burpSuite);
@@ -244,6 +277,8 @@ class ExporterLifecycleTest {
             when(userInterface.registerSuiteTab(eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class)))
                     .thenReturn(suiteTabRegistration);
             when(http.registerHttpHandler(any())).thenReturn(httpRegistration);
+            when(proxy.registerRequestHandler(any())).thenReturn(proxyRequestRegistration);
+            when(proxy.registerResponseHandler(any())).thenReturn(proxyResponseRegistration);
             when(webSockets.registerWebSocketCreatedHandler(any())).thenReturn(webSocketRegistration);
         }
     }

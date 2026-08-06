@@ -374,6 +374,35 @@ public final class TrafficExportQueue {
     }
 
     /**
+     * Waits for accepted in-memory and spilled traffic work to drain before Stop disables export.
+     *
+     * <p>This method does not request worker shutdown. The export run must remain ready while the
+     * caller waits so the normal drain loop can deliver accepted documents. Interruption is
+     * preserved.</p>
+     *
+     * @param timeoutMs maximum wait in milliseconds
+     * @return {@code true} when all accepted work drained within the budget
+     */
+    public static boolean awaitPendingWorkDrained(long timeoutMs) {
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        while (getCurrentSize() > 0
+                || getCurrentSpillSize() > 0
+                || getActiveDrainBatches() > 0) {
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
+            try {
+                TimeUnit.MILLISECONDS.sleep(25L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Stops the drain worker within one shared wall-clock budget.
      *
      * <p>Most of the budget is graceful; up to the final second is reserved for interrupt and join

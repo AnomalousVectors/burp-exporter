@@ -632,31 +632,14 @@ class TrafficHttpHandlerDocumentTest {
     }
 
     @Test
-    void buildOrphanResponse_matchesCurrentTrafficResponseShape() {
+    void buildOrphanResponse_matchesProxyHistoryEmptyResponseShape() {
         Map<?, ?> responseDoc = map(callStatic(TrafficHttpHandler.class, "buildOrphanResponse"));
+        Map<?, ?> historyEmpty = map(callStatic(RequestResponseDocBuilder.class, "emptyTrafficResponseDoc"));
 
-        assertContainsKeys(responseDoc,
-                "status", "protocol", "headers", "cookies", "mime_type", "body");
-        assertThat(responseDoc.containsKey("header")).isFalse();
-        assertThat(responseDoc.containsKey("markers")).isFalse();
+        assertThat(responseDoc).isEqualTo(historyEmpty);
         Map<?, ?> status = nestedMap(responseDoc, "status");
-        assertContainsKeys(status, "code", "code_class", "description");
-        Map<?, ?> protocol = nestedMap(responseDoc, "protocol");
-        assertContainsKeys(protocol, "http_version");
-        assertMissingKeys(responseDoc, "header_names", "body_length", "body_offset");
-        Map<?, ?> mimeType = nestedMap(responseDoc, "mime_type");
-        assertContainsKeys(mimeType, "burp", "stated", "inferred_body");
-        assertThat(mimeType.get("burp")).isNull();
-        assertThat(mimeType.get("stated")).isNull();
-        assertThat(mimeType.get("inferred_body")).isNull();
-
-        Map<?, ?> body = nestedMap(responseDoc, "body");
-        assertContainsKeys(body, "markers");
-
-        assertThat(body.get("length")).isEqualTo(0);
-        assertThat(body.get("offset")).isEqualTo(0);
-        assertThat(body.get("b64")).isNull();
-        assertThat(body.get("text")).isNull();
+        assertThat(status.get("code")).isEqualTo(0);
+        assertThat(status.get("description")).isEqualTo("No response");
     }
 
     private static Map<?, ?> nestedMap(Map<?, ?> parent, String key) {

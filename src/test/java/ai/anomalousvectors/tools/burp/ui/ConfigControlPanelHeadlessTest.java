@@ -168,20 +168,25 @@ class ConfigControlPanelHeadlessTest {
     }
 
     @Test
-    void stop_click_clearsExportRunningBeforeStopActionRuns() throws Exception {
+    void stop_click_keepsExportReadyUntilStopActionDrainsAcceptedWork() throws Exception {
         resetExportRunning();
         AtomicBoolean exportReadyWhenStopClickLogged = new AtomicBoolean(true);
         Logger.LogListener listener = (level, message) -> {
-            if ("[Control] Stop clicked; running=true -> false".equals(message)) {
+            if (message.startsWith("[Control] Stop clicked; intake closed")) {
                 exportReadyWhenStopClickLogged.set(RuntimeConfig.isExportReady());
             }
         };
         Logger.registerListener(listener);
         try {
             AtomicReference<Boolean> runningWhenStopActionRuns = new AtomicReference<>();
+            AtomicReference<Boolean> runTokenValidWhenStopActionRuns = new AtomicReference<>();
             JPanel root = buildPanel(
                     callbacks -> callbacks.onStartSuccess().run(),
-                    callbacks -> runningWhenStopActionRuns.set(RuntimeConfig.isExportRunning()));
+                    callbacks -> {
+                        runningWhenStopActionRuns.set(RuntimeConfig.isExportRunning());
+                        runTokenValidWhenStopActionRuns.set(
+                                RuntimeConfig.currentExportRunToken().isValid());
+                    });
             runEdt(() -> {
                 root.setSize(600, 400);
                 root.doLayout();
@@ -193,8 +198,9 @@ class ConfigControlPanelHeadlessTest {
             runEdt(startStop::doClick);
             runEdt(() -> { });
 
-            assertThat(runningWhenStopActionRuns).hasValue(false);
-            assertThat(exportReadyWhenStopClickLogged).isFalse();
+            assertThat(runningWhenStopActionRuns).hasValue(true);
+            assertThat(runTokenValidWhenStopActionRuns).hasValue(true);
+            assertThat(exportReadyWhenStopClickLogged).isTrue();
         } finally {
             Logger.unregisterListener(listener);
             Logger.resetState();
@@ -394,7 +400,7 @@ class ConfigControlPanelHeadlessTest {
             AtomicInteger stopCount = new AtomicInteger(0);
             JPanel root = buildPanel(
                     callbacks -> {
-                        if (!RuntimeConfig.isExportRunning()) {
+                        if (!RuntimeConfig.isExportRunning() || RuntimeConfig.isExportStopping()) {
                             return;
                         }
                         startAcceptedCount.incrementAndGet();
@@ -419,7 +425,7 @@ class ConfigControlPanelHeadlessTest {
                 assertThat(indicator.getToolTipText())
                         .isEqualTo("<html>Export is starting (preparing destinations)</html>");
                 startStop.doClick();
-                assertThat(RuntimeConfig.isExportRunning()).isFalse();
+                assertThat(RuntimeConfig.isExportRunning()).isTrue();
                 assertThat(indicator.getToolTipText())
                         .isEqualTo("<html>Export is stopping (finishing in-flight work)</html>");
             });

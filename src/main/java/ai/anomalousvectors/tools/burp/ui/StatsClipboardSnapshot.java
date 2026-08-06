@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
+import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
@@ -319,6 +320,7 @@ public final class StatsClipboardSnapshot {
         }
         if (RuntimeConfig.isAnyTrafficExportEnabled()) {
             sections.put("Traffic Spill", buildOpenSearchSpillSection());
+            sections.put("Proxy Correlation", buildProxyCorrelationSection());
         }
         if (fileVisible) {
             sections.put("Files", buildFilesSection());
@@ -443,6 +445,38 @@ public final class StatsClipboardSnapshot {
                         + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")
                                 + ExportStats.getTrafficDropReasonCount("spill_requeue_low_disk_drop")) + " / "
                         + formatWhole(ExportStats.getTrafficSpillExpiredPruned()));
+        return rows;
+    }
+
+    private static Map<String, String> buildProxyCorrelationSection() {
+        Map<String, String> rows = new LinkedHashMap<>();
+        rows.put("Proxy / HTTP Request Callbacks",
+                formatWhole(ProxyLiveMetadataCorrelator.proxyRequestCallbacks())
+                        + " / " + formatWhole(ProxyLiveMetadataCorrelator.httpProxyRequests()));
+        rows.put("HTTP Marked / Responses",
+                formatWhole(ProxyLiveMetadataCorrelator.httpMarkedRequests())
+                        + " / " + formatWhole(ProxyLiveMetadataCorrelator.httpProxyResponses()));
+        rows.put("Unmarked Tracked / Pre-Run",
+                formatWhole(ProxyLiveMetadataCorrelator.httpUnmarkedTrackedResponses())
+                        + " / " + formatWhole(
+                                ProxyLiveMetadataCorrelator.httpUnmarkedUntrackedResponses()));
+        rows.put("History Lookups / Matched Rows",
+                formatWhole(ProxyLiveMetadataCorrelator.historyLookupAttempts())
+                        + " / " + formatWhole(
+                                ProxyLiveMetadataCorrelator.historyLookupMatchedRows()));
+        rows.put("Pending Memory", formatWhole(ProxyLiveMetadataCorrelator.pendingMemoryCount())
+                + " / " + StatsPanelFormatters.formatBytesHuman(
+                        ProxyLiveMetadataCorrelator.pendingMemoryBytes()));
+        rows.put("Pending Durable", formatWhole(ProxyLiveMetadataCorrelator.pendingDurableCount())
+                + " / " + StatsPanelFormatters.formatBytesHuman(
+                        ProxyLiveMetadataCorrelator.pendingDurableBytes()));
+        rows.put("Bound / Eligible", formatWhole(ProxyLiveMetadataCorrelator.boundTotal())
+                + " / " + formatWhole(ProxyLiveMetadataCorrelator.eligibleTotal()));
+        rows.put("Durable Spool Total", formatWhole(ProxyLiveMetadataCorrelator.durableSpooledTotal()));
+        rows.put("Lookup / Cleanup Failures", formatWhole(ProxyLiveMetadataCorrelator.lookupFailures())
+                + " / " + formatWhole(ProxyLiveMetadataCorrelator.cleanupFailures()));
+        rows.put("Spool / Explicit Failures", formatWhole(ProxyLiveMetadataCorrelator.spoolFailures())
+                + " / " + formatWhole(ProxyLiveMetadataCorrelator.explicitFailures()));
         return rows;
     }
 

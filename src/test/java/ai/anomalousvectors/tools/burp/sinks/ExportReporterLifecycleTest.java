@@ -228,7 +228,7 @@ class ExportReporterLifecycleTest {
     }
 
     @Test
-    void stopAndClearPendingExportWork_purgesQueuedTrafficDocs_withoutDrainingBacklogToFiles() throws Exception {
+    void stopAndClearPendingExportWork_drainsAcceptedTrafficBeforeClearingQueues() throws Exception {
         try {
             Path root = TestPathSupport.createDirectory("repeater-tabs-stop-purge");
             RuntimeConfig.updateState(fileExportState(root));
@@ -242,7 +242,8 @@ class ExportReporterLifecycleTest {
             ExportReporterLifecycle.stopAndClearPendingExportWork();
 
             Path jsonlPath = root.resolve(IndexNaming.indexNameForShortName("traffic") + ".jsonl");
-            assertThat(jsonlPath).doesNotExist();
+            assertThat(jsonlPath).exists();
+            assertThat(Files.readAllLines(jsonlPath)).hasSize(2);
             assertThat(TrafficExportQueue.getCurrentSize()).isZero();
             assertThat(TrafficExportQueue.getCurrentSpillSize()).isZero();
         } finally {

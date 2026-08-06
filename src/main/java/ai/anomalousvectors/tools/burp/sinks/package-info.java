@@ -4,6 +4,7 @@
  * <p>This package houses:</p>
  * <ul>
  *   <li><b>Traffic reporters</b> — {@link ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler},
+ *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ToolWebSocketLiveHandler},

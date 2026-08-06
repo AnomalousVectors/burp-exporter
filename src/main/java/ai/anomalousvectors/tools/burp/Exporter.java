@@ -8,6 +8,7 @@ import ai.anomalousvectors.tools.burp.sinks.ExportReporterLifecycle;
 import ai.anomalousvectors.tools.burp.sinks.ExporterIndexLogForwarder;
 import ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter;
 import ai.anomalousvectors.tools.burp.sinks.ParameterIntegritySessionLog;
+import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.sinks.RepeaterTabsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ToolWebSocketLiveHandler;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
@@ -36,6 +37,8 @@ public class Exporter implements BurpExtension {
     private volatile Registration unloadRegistration;
     private volatile Registration suiteTabRegistration;
     private volatile Registration httpHandlerRegistration;
+    private volatile Registration proxyRequestHandlerRegistration;
+    private volatile Registration proxyResponseHandlerRegistration;
     private volatile Registration requestEditorRegistration;
     private volatile Registration responseEditorRegistration;
     private volatile Registration contextMenuRegistration;
@@ -94,6 +97,11 @@ public class Exporter implements BurpExtension {
             }
 
             httpHandlerRegistration = api.http().registerHttpHandler(new TrafficHttpHandler());
+            // Proxy annotations carry a private token that deterministically joins live documents
+            // to their exact History rows; messageId and History id are separate namespaces.
+            ProxyLiveMetadataCorrelator proxyLiveCorrelator = ProxyLiveMetadataCorrelator.instance();
+            proxyRequestHandlerRegistration = api.proxy().registerRequestHandler(proxyLiveCorrelator);
+            proxyResponseHandlerRegistration = api.proxy().registerResponseHandler(proxyLiveCorrelator);
             webSocketCreatedRegistration =
                     api.websockets().registerWebSocketCreatedHandler(ToolWebSocketLiveHandler.instance());
 
@@ -118,6 +126,15 @@ public class Exporter implements BurpExtension {
 
         safeDeregister(webSocketCreatedRegistration);
         webSocketCreatedRegistration = null;
+        safeDeregister(proxyResponseHandlerRegistration);
+        proxyResponseHandlerRegistration = null;
+        safeDeregister(proxyRequestHandlerRegistration);
+        proxyRequestHandlerRegistration = null;
+        ProxyLiveMetadataCorrelator.closeAndDrainRun();
+        if (!ProxyLiveMetadataCorrelator.awaitPendingPersistence(5_000L)) {
+            Logger.logWarnPanelOnly(
+                    "[ProxyCorrelation] Extension unload persistence exceeded its 5-second budget.");
+        }
         safeDeregister(httpHandlerRegistration);
         httpHandlerRegistration = null;
         safeDeregister(requestEditorRegistration);

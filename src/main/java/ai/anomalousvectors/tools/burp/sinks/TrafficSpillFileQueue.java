@@ -75,14 +75,14 @@ final class TrafficSpillFileQueue {
     /**
      * Creates a queue with default limits under the managed exporter temp root.
      *
-     * <p>The default managed-disk byte cap aligns with {@link DiskSpaceGuard#MAX_MANAGED_BYTES}.
-     * Construction is thread-safe but performs disk initialization immediately.</p>
+     * <p>The default byte cap uses the traffic-spill share of the common exporter-managed disk
+     * ceiling. Construction is thread-safe but performs disk initialization immediately.</p>
      */
     TrafficSpillFileQueue() {
         this(
                 ManagedDiskPaths.spillDirectory(),
                 100_000L,
-                DiskSpaceGuard.MAX_MANAGED_BYTES,
+                DiskSpaceGuard.TRAFFIC_SPILL_MAX_BYTES,
                 resolveProjectId(),
                 DEFAULT_MAX_AGE_MS);
     }
