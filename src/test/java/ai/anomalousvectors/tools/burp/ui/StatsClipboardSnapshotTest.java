@@ -107,6 +107,7 @@ class StatsClipboardSnapshotTest {
         assertThat(text).contains("Mis-gate Suspects: 1");
         assertThat(text).contains("Export Running: No");
         assertThat(text).contains("Soft Outage: No");
+        assertThat(text).contains("Authorization Failures: No");
         assertThat(text).contains("Database Exported Size:");
         assertThat(text).contains("Files Exported Size:");
         assertThat(text).contains("Traffic Spill Status:");
@@ -128,7 +129,7 @@ class StatsClipboardSnapshotTest {
         assertThat(text).contains("Bulk Byte Budget: 5.0 MiB");
         assertThat(text).contains("Snapshot Flush Cap: 3");
         assertThat(text).contains("Count Basis: Session counters; no Stop readback");
-        assertThat(text).contains("Authorization Recovery: No");
+        assertThat(text).doesNotContain("Authorization Recovery:");
         // Legacy standalone labels (substring "Exported Size:" appears inside the new names).
         assertThat(text).doesNotContain("\n  Exported Size:");
         assertThat(text).doesNotContain("File Total Size Exported:");

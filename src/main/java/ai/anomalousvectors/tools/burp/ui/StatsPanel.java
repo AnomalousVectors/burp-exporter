@@ -552,9 +552,10 @@ public class StatsPanel extends JPanel {
                 new MetricSection("Overview", new String[] {
                         "Export Running",
                         "Soft Outage",
+                        "Authorization Failures",
+                        "Traffic Spill Status",
                         "Database Exported Size",
-                        "Files Exported Size",
-                        "Traffic Spill Status"
+                        "Files Exported Size"
                 }),
                 new MetricSection("Process", new String[] {
                         "Heap Used / Max", "Heap Committed",
@@ -564,7 +565,7 @@ public class StatsPanel extends JPanel {
                 }),
                 new MetricSection("Database Session", new String[] {
                         "Throughput (10s)", "Exported Docs", "Exported Failures",
-                        "Count Basis", "Authorization Recovery",
+                        "Count Basis",
                         "Last Success", "Consecutive Failures", "Permanent Drops", "Permanent Drop Reasons",
                         "Body Truncations", "Body Truncations by Index",
                         "Recovered Failures", "Retry Drain Pushes"
@@ -616,7 +617,7 @@ public class StatsPanel extends JPanel {
         final Map<String, JLabel> miscValues = miscState.values();
         exportRunningValue = miscValues.get("Export Running");
         softOutageValue = miscValues.get("Soft Outage");
-        authorizationRecoveryValue = miscValues.get("Authorization Recovery");
+        authorizationRecoveryValue = miscValues.get("Authorization Failures");
         trafficSpillStatusValue = miscValues.get("Traffic Spill Status");
         sharedBatchSizeValue = miscValues.get("Shared Batch Size");
         proxyHistoryChunkTargetValue = miscValues.get("Proxy History Chunk Target");
@@ -787,8 +788,12 @@ public class StatsPanel extends JPanel {
                 trafficQueueDocs, trafficQueueBytes, spillDocs, spillBytes, retryDocs, retryBytes);
 
         exportRunningValue.setText(exportRunning ? "Yes" : "No");
-        exportRunningValue.setForeground(exportRunning ? SERIES_STYLES[0].paint() : SERIES_STYLES[4].paint());
-        exportRunningValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        if (exportRunning) {
+            exportRunningValue.setForeground(SERIES_STYLES[0].paint());
+            exportRunningValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        } else {
+            applyCriticalOverviewStyle(exportRunningValue, true);
+        }
         long dbExportedBytes = ExportStats.getTotalExportedBytes();
         long fileExportedBytes = FileExportStats.getTotalExportedBytes();
         exportedSizeValue.setForeground(TEXT_FG);
@@ -904,19 +909,16 @@ public class StatsPanel extends JPanel {
         bulkInFlightValue.setText(formatWhole(ExportStats.getBulkInFlight()));
         boolean softOutage = IndexingRetryCoordinator.getInstance().isSoftCapacityOutage();
         softOutageValue.setText(StatsPanelFormatters.formatSoftOutage(softOutage));
-        softOutageValue.setForeground(softOutage ? SERIES_STYLES[3].paint() : SERIES_STYLES[0].paint());
-        softOutageValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        applyAttentionGaugeStyle(softOutageValue, softOutage);
         boolean authorizationPaused =
                 IndexingRetryCoordinator.getInstance().isAuthorizationRecoveryPaused();
         authorizationRecoveryValue.setText(StatsPanelFormatters.formatAuthorizationRecovery());
-        authorizationRecoveryValue.setForeground(
-                authorizationPaused ? SERIES_STYLES[3].paint() : SERIES_STYLES[0].paint());
-        authorizationRecoveryValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        applyAttentionGaugeStyle(authorizationRecoveryValue, authorizationPaused);
         ExportAdmissionController.SpillStatus spillStatus =
                 ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.currentSpillStatus();
         trafficSpillStatusValue.setText(StatsPanelFormatters.formatSpillStatus(spillStatus));
-        trafficSpillStatusValue.setForeground(spillStatusColor(spillStatus));
-        trafficSpillStatusValue.setFont(CARD_VALUE_FONT.deriveFont(Font.BOLD));
+        applyCriticalOverviewStyle(
+                trafficSpillStatusValue, spillStatus == ExportAdmissionController.SpillStatus.FULL);
         bulkByteBudgetValue.setText(
                 StatsPanelFormatters.formatBytesHuman(StatsPanelFormatters.displayedBulkByteBudget()));
         snapshotFlushCapValue.setText(formatWhole(StatsPanelFormatters.displayedSnapshotFlushCap()));
@@ -1717,11 +1719,11 @@ public class StatsPanel extends JPanel {
      *
      * <p>Caller must invoke on the EDT because this method mutates Swing component visibility and
      * triggers layout/paint work on {@link #miscStatsCard}. The {@code Overview} group always
-     * remains visible. Within Overview, Soft Outage and Database Exported Size follow database
-     * enablement, Files Exported Size follows files enablement, and Traffic Spill Status follows
-     * live traffic export relevance. The {@code Files} section and OpenSearch-prefixed groups
-     * follow the currently visible lower-panel destinations. Traffic Spill detail follows traffic
-     * export relevance (files and/or database).</p>
+     * remains visible. Within Overview, Soft Outage, Authorization Failures, and Database
+     * Exported Size follow database enablement, Traffic Spill Status follows live traffic export
+     * relevance, and Files Exported Size follows files enablement. The {@code Files} section and
+     * OpenSearch-prefixed groups follow the currently visible lower-panel destinations. Traffic
+     * Spill detail follows traffic export relevance (files and/or database).</p>
      *
      * @param fileVisible whether the Files metrics group should be visible
      * @param openSearchVisible whether the OpenSearch metrics group should be visible
@@ -1729,12 +1731,14 @@ public class StatsPanel extends JPanel {
     private void updateMiscStatsSectionVisibility(boolean fileVisible, boolean openSearchVisible) {
         boolean trafficRelevant = RuntimeConfig.isAnyTrafficExportEnabled();
         setMiscSectionVisible("Overview", true);
-        // Overview: Export Running, Soft Outage, Database size, Files size, Traffic Spill Status.
+        // Overview: Export Running, Soft Outage, Authorization Failures, Traffic Spill Status,
+        // Database size, Files size.
         setMiscRowVisible("Overview", 0, true);
         setMiscRowVisible("Overview", 1, openSearchVisible);
         setMiscRowVisible("Overview", 2, openSearchVisible);
-        setMiscRowVisible("Overview", 3, fileVisible);
-        setMiscRowVisible("Overview", 4, trafficRelevant);
+        setMiscRowVisible("Overview", 3, trafficRelevant);
+        setMiscRowVisible("Overview", 4, openSearchVisible);
+        setMiscRowVisible("Overview", 5, fileVisible);
         setMiscSectionVisible("Process", true);
         for (String section : MISC_DATABASE_SECTIONS) {
             setMiscSectionVisible(section, openSearchVisible);
@@ -1747,16 +1751,35 @@ public class StatsPanel extends JPanel {
     }
 
     /**
-     * Returns Overview Traffic Spill Status foreground color.
+     * Styles Overview critical/failure gauges (Findings red + bold).
      *
-     * <p>{@code Ready} and {@code In use} use the default Misc Stats value color; only
-     * {@code Full} uses Findings red.</p>
+     * <p>Used for Export Running {@code No} and Traffic Spill Status {@code Full}. Idle/non-critical
+     * values use the default Misc Stats value color and plain weight.</p>
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @param label gauge value label
+     * @param critical {@code true} when the gauge represents a red failure state
      */
-    private Color spillStatusColor(ExportAdmissionController.SpillStatus status) {
-        if (status == ExportAdmissionController.SpillStatus.FULL) {
-            return SERIES_STYLES[4].paint();
-        }
-        return TEXT_FG;
+    private void applyCriticalOverviewStyle(JLabel label, boolean critical) {
+        label.setForeground(critical ? SERIES_STYLES[4].paint() : TEXT_FG);
+        label.setFont(critical ? CARD_VALUE_FONT.deriveFont(Font.BOLD) : CARD_VALUE_FONT);
+    }
+
+    /**
+     * Styles Overview attention gauges (Soft Outage, Authorization Failures).
+     *
+     * <p>Active problems use Sitemap yellow and bold. Idle values use the default Misc Stats value
+     * color and plain weight so they do not compete with true alerts.</p>
+     *
+     * <p>Caller must invoke on the EDT.</p>
+     *
+     * @param label gauge value label
+     * @param attention {@code true} when the gauge represents an active problem
+     */
+    private void applyAttentionGaugeStyle(JLabel label, boolean attention) {
+        label.setForeground(attention ? SERIES_STYLES[3].paint() : TEXT_FG);
+        label.setFont(attention ? CARD_VALUE_FONT.deriveFont(Font.BOLD) : CARD_VALUE_FONT);
     }
 
     /**
@@ -2237,12 +2260,14 @@ public class StatsPanel extends JPanel {
                 "Live Database Counts and clipboard values use in-process session counters.",
                 "Stop pushes the final exporter <code>stats_snapshot</code> but does not call",
                 "<code>_refresh</code>/<code>_count</code> or duplicate database counts in Log."));
-        tooltips.put("Authorization Recovery", Tooltips.htmlRaw(
+        tooltips.put("Authorization Failures", Tooltips.htmlRaw(
                 "Whether database sends are paused after repeated HTTP 401/403 responses.",
-                "Queued retry and live-traffic work is retained while automatic probes use",
-                "increasing backoff. Successful probes revalidate selected indexes before resuming.",
+                "<b>Paused …</b> (yellow) means authorization recovery is active: queued retry and",
+                "live-traffic work is retained while automatic probes use increasing backoff.",
+                "Successful probes revalidate selected indexes before resuming.",
                 "If the cluster identity changed or indexes were recreated, reproducible snapshots",
-                "are replayed to the database without duplicating Files output."));
+                "are replayed to the database without duplicating Files output.",
+                "<b>No</b> uses the default value style when authorization is healthy."));
         tooltips.put("Database Exported Size", Tooltips.htmlRaw(
                 "Estimated total bulk bytes successfully indexed to the search database this session."));
         tooltips.put("Files Exported Size", Tooltips.htmlRaw(
@@ -2377,8 +2402,8 @@ public class StatsPanel extends JPanel {
                 "When Traffic Spill is Full, new live traffic is rejected so the earliest backlog is kept."));
         tooltips.put("Traffic Spill Status", Tooltips.htmlRaw(
                 "Live traffic overflow valve status for the current run.",
-                "<b>Ready</b>: spill empty. <b>In use</b>: spill holds backlog.",
-                "<b>Full</b> (red): spill cannot accept more; new live traffic is rejected.",
+                "<b>Ready</b> / <b>In use</b> use the default value style.",
+                "<b>Full</b> (red, bold): spill cannot accept more; new live traffic is rejected.",
                 "Complements Soft Outage (destination pacing) across all search destinations."));
         tooltips.put("Queue Depth", Tooltips.htmlRaw(
                 "Per-index documents waiting in the indexing retry coordinator.",
@@ -2391,8 +2416,8 @@ public class StatsPanel extends JPanel {
                 "<b>Yes</b> (yellow) means gateway/timeout/429-class pressure is pacing export via the",
                 "shared cooldown and retry drain; the destination stays enabled (unlike auth",
                 "failures, which disable the database destination).",
-                "<b>No</b> (green) means no soft outage. Clears after meaningful payload recovery,",
-                "not from exporter log/stats singles alone."));
+                "<b>No</b> uses the default value style when idle. Clears after meaningful payload",
+                "recovery, not from exporter log/stats singles alone."));
         tooltips.put("Database Exported Size", Tooltips.htmlRaw(
                 "Total bytes successfully exported to the search database this run."));
         tooltips.put("Files Exported Size", Tooltips.htmlRaw(

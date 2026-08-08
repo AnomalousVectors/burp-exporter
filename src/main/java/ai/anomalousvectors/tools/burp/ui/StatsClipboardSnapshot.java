@@ -334,16 +334,19 @@ public final class StatsClipboardSnapshot {
         if (openSearchVisible) {
             rows.put("Soft Outage", StatsPanelFormatters.formatSoftOutage(
                     IndexingRetryCoordinator.getInstance().isSoftCapacityOutage()));
+            rows.put("Authorization Failures", StatsPanelFormatters.formatAuthorizationRecovery());
+        }
+        if (RuntimeConfig.isAnyTrafficExportEnabled()) {
+            rows.put("Traffic Spill Status", StatsPanelFormatters.formatSpillStatus(
+                    TrafficExportQueue.currentSpillStatus()));
+        }
+        if (openSearchVisible) {
             rows.put("Database Exported Size",
                     formatHumanReadableBytes(ExportStats.getTotalExportedBytes()));
         }
         if (fileVisible) {
             rows.put("Files Exported Size",
                     formatHumanReadableBytes(FileExportStats.getTotalExportedBytes()));
-        }
-        if (RuntimeConfig.isAnyTrafficExportEnabled()) {
-            rows.put("Traffic Spill Status", StatsPanelFormatters.formatSpillStatus(
-                    TrafficExportQueue.currentSpillStatus()));
         }
         return rows;
     }
@@ -377,7 +380,6 @@ public final class StatsClipboardSnapshot {
         rows.put("Exported Docs", formatWhole(totalSuccess) + " docs");
         rows.put("Exported Failures", formatWhole(totalFailure));
         rows.put("Count Basis", "Session counters; no Stop readback");
-        rows.put("Authorization Recovery", StatsPanelFormatters.formatAuthorizationRecovery());
         rows.put("Last Success", StatsPanelFormatters.formatRelativeTime(ExportStats.getOpenSearchLastSuccessAtMs()));
         rows.put("Consecutive Failures", formatWhole(ExportStats.getOpenSearchConsecutiveFailures()));
         rows.put("Permanent Drops", formatWhole(ExportStats.getTotalPermanentDrops()));

@@ -459,7 +459,7 @@ final class StatsPanelFormatters {
     }
 
     /**
-     * Formats the recoverable database-authorization pause.
+     * Formats the Overview {@code Authorization Failures} gauge.
      *
      * @return {@code No} when inactive, otherwise pause duration, retained backlog, and next probe
      */

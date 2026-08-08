@@ -597,13 +597,13 @@ class StatsPanelTest {
                     "Export Running", "Shared Batch Size", "Proxy History Chunk Target",
                     "Traffic Queue Size", "Queue Drops");
             assertThat(labels).contains("Throughput (10s)");
-            assertThat(labels).contains("Export Running", "Soft Outage",
-                    "Database Exported Size", "Files Exported Size", "Traffic Spill Status");
+            assertThat(labels).contains("Export Running", "Soft Outage", "Authorization Failures",
+                    "Traffic Spill Status", "Database Exported Size", "Files Exported Size");
             assertThat(labels).contains("Exported Docs", "Exported Failures", "Count Basis",
-                    "Authorization Recovery",
                     "Permanent Drops", "Permanent Drop Reasons", "Body Truncations",
                     "Body Truncations by Index",
                     "Recovered Failures", "Retry Drain Pushes");
+            assertThat(labels).doesNotContain("Authorization Recovery");
             assertThat(labels).doesNotContain("Exported Size", "File Total Size Exported");
             assertThat(labels).contains("Last Success");
             assertThat(labels).contains("Bulk In-Flight");
@@ -630,6 +630,7 @@ class StatsPanelTest {
             assertThat(findByName(miscCard, "miscStats.row.Overview.2", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.5", JPanel.class).isVisible()).isTrue();
             assertThat(labels).doesNotContain("Proxy-History Attempted/Success");
 
             assertThat(openSearchRow0.getBackground()).isNotEqualTo(openSearchRow1.getBackground());
@@ -686,6 +687,8 @@ class StatsPanelTest {
             assertThat(findByName(miscCard, "miscStats.row.Overview.1", JPanel.class).isVisible()).isFalse();
             assertThat(findByName(miscCard, "miscStats.row.Overview.2", JPanel.class).isVisible()).isFalse();
             assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isFalse();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.5", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Database Session", JLabel.class).isVisible())
                     .isFalse();
             assertThat(findByName(miscCard, "miscStats.section.Database Traffic", JLabel.class).isVisible())
@@ -695,7 +698,6 @@ class StatsPanelTest {
                     .isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Proxy Correlation", JLabel.class).isVisible())
                     .isTrue();
-            assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Database Retry", JLabel.class).isVisible())
                     .isFalse();
             assertThat(findByName(miscCard, "miscStats.section.Database Capacity", JLabel.class).isVisible())
@@ -724,7 +726,9 @@ class StatsPanelTest {
             assertThat(findByName(miscCard, "miscStats.row.Overview.0", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.row.Overview.1", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.row.Overview.2", JPanel.class).isVisible()).isTrue();
-            assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isFalse();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.5", JPanel.class).isVisible()).isFalse();
             assertThat(findByName(miscCard, "miscStats.section.Database Session", JLabel.class).isVisible())
                     .isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Database Traffic", JLabel.class).isVisible())
