@@ -16,8 +16,8 @@ public final class ProductInfo {
     public static final String EXTENSION_NAME = "Burp Exporter";
     /** Suite tab title shown in Burp. */
     public static final String SUITE_TAB_TITLE = "Exporter";
-    /** Label for the Get Latest releases link on the About tab. */
-    public static final String REPOSITORY_LABEL = "Get Latest:";
+    /** Label for the Latest release link on the About tab. */
+    public static final String REPOSITORY_LABEL = "Latest release:";
     /** Public GitHub Releases URL for the extension. */
     public static final String REPOSITORY_URL = "https://github.com/AnomalousVectors/burp-exporter/releases";
 

@@ -47,7 +47,7 @@ public class AboutPanel extends JPanel {
      */
     private static final int CONTENT_INDENT_PX = 36;
     /** Separator thickness: thin, but tall enough for the red→blue gradient to read. */
-    private static final int BRAND_RULE_HEIGHT_PX = 3;
+    private static final int BRAND_RULE_HEIGHT_PX = 2;
     /** Extra width beyond the longer of brand/tagline so the centered rule reads a touch wider. */
     private static final int BRAND_RULE_EXTRA_WIDTH_PX = 16;
     /** Vertical gap between the tagline and the gradient rule. */
@@ -73,15 +73,26 @@ public class AboutPanel extends JPanel {
         panel.setBackground(UIManager.getColor("Panel.background"));
 
         Font bodyFont = UIManager.getFont("Label.font").deriveFont(Font.PLAIN);
+        Font extensionNameFont = bodyFont.deriveFont(Font.PLAIN, accentFontSize(bodyFont));
         String bodyIndent = "gapleft " + CONTENT_INDENT_PX;
 
         panel.add(buildBrandBlock(bodyFont), "gapbottom " + BRAND_GAP_BOTTOM);
-        panel.add(buildPlainRow(ProductInfo.EXTENSION_NAME, bodyFont), bodyIndent + ", gapbottom 2");
+        panel.add(buildPlainRow(ProductInfo.EXTENSION_NAME, extensionNameFont), bodyIndent + ", gapbottom 2");
         panel.add(buildPlainRow("Version " + version, bodyFont), bodyIndent + ", gapbottom " + SECTION_GAP_BOTTOM);
         panel.add(buildDescriptionRow(bodyFont), bodyIndent + ", growx, gapbottom " + SECTION_GAP_BOTTOM);
         panel.add(buildLinkRow(ProductInfo.REPOSITORY_LABEL, ProductInfo.REPOSITORY_URL, bodyFont),
                 bodyIndent + ", growx");
         return panel;
+    }
+
+    /**
+     * Shared point size for the organization tagline and the extension name row.
+     *
+     * @param bodyFont LAF body label font
+     * @return accent size in points, at least {@code 11}
+     */
+    private static float accentFontSize(Font bodyFont) {
+        return Math.max(11f, bodyFont.getSize2D() * TAGLINE_FONT_SIZE_FACTOR - TAGLINE_FONT_SIZE_DELTA_PT);
     }
 
     private static JPanel buildBrandBlock(Font bodyFont) {
@@ -91,9 +102,8 @@ public class AboutPanel extends JPanel {
 
         AnomalousVectorsBrandLabel brand = new AnomalousVectorsBrandLabel(
                 bodyFont.deriveFont(bodyFont.getSize2D() * BRAND_FONT_SIZE_FACTOR));
-        float taglineSize = Math.max(11f, bodyFont.getSize2D() * TAGLINE_FONT_SIZE_FACTOR - TAGLINE_FONT_SIZE_DELTA_PT);
         JLabel tagline = new JLabel(ProductInfo.ORGANIZATION_TAGLINE);
-        tagline.setFont(bodyFont.deriveFont(Font.ITALIC, taglineSize));
+        tagline.setFont(bodyFont.deriveFont(Font.ITALIC, accentFontSize(bodyFont)));
         tagline.setForeground(UIManager.getColor("Label.foreground"));
 
         int ruleWidth = Math.max(brand.getPreferredSize().width, tagline.getPreferredSize().width)
