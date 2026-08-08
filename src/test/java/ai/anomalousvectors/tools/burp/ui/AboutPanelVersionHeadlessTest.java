@@ -38,20 +38,28 @@ class AboutPanelVersionHeadlessTest {
             List<JLabel> labels = findLabels(p);
 
             assertThat(txt)
-                    .contains(ProductInfo.EXTENSION_NAME + " v1.2.3-test")
-                    .contains("v1.2.3-test")
-                    .contains("This Burp Suite extension continuously exports settings, sitemap, issues, and traffic into index databases")
+                    .contains(ProductInfo.ORGANIZATION_NAME)
+                    .contains(ProductInfo.ORGANIZATION_TAGLINE)
+                    .contains(ProductInfo.EXTENSION_NAME)
+                    .contains("Version 1.2.3-test")
+                    .contains(
+                            "Continuously exports settings, sitemap data, issues, and traffic to indexed databases for agentic penetration testing and research.")
                     .contains(ProductInfo.REPOSITORY_LABEL)
-                    .contains(ProductInfo.REPOSITORY_URL)
-                    .contains(ProductInfo.FRAMEWORK_OPENSEARCH_LABEL)
-                    .contains(ProductInfo.FRAMEWORK_OPENSEARCH_URL);
+                    .contains(ProductInfo.REPOSITORY_URL);
+            assertThat(txt)
+                    .doesNotContain("Always use the ")
+                    .doesNotContain(ProductInfo.EXTENSION_NAME + " v1.2.3-test")
+                    .doesNotContain("OpenSearch:")
+                    .doesNotContain("https://github.com/AnomalousVectors/opensearch")
+                    .doesNotContain("https://github.com/AnomalousVectors/burp-exporter\n");
             assertThat(txt)
                     .doesNotContain("Body export")
                     .doesNotContain("body.b64")
                     .doesNotContain("body.text")
                     .doesNotContain("gzip, x-gzip, deflate, br, zstd, compress, x-compress");
-            assertThat(labels).filteredOn(label -> label.getText() != null && label.getText().startsWith("https://github.com/"))
-                    .hasSize(2)
+            assertThat(labels).filteredOn(label -> "latest".equals(label.getText())).isEmpty();
+            assertThat(labels).filteredOn(label -> ProductInfo.REPOSITORY_URL.equals(label.getText()))
+                    .hasSize(1)
                     .allSatisfy(label -> assertThat(label.getMouseListeners()).isNotEmpty());
         } finally {
             restore();
