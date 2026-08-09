@@ -97,7 +97,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
     private static final String PAUSE_BTN_LABEL = "Pause";
     private static final String UNPAUSE_BTN_LABEL = "Unpause";
     private static final String GAP2               = "gapx 2";
-    private static final String DEFAULT_MIN_LEVEL  = "trace";
+    private static final String DEFAULT_MIN_LEVEL  = ConfigState.DEFAULT_LOG_MIN_LEVEL;
     private static final String[] LEVEL_LABELS = {"TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
     private static final int MAX_MODEL_ENTRIES     = 5000;
 
@@ -491,11 +491,15 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
     }
 
     /**
-     * Applies the pause state to Swing's caret follow policy.
+     * Keeps the log caret from following document inserts.
+     *
+     * <p>{@link DefaultCaret#ALWAYS_UPDATE} (and {@code setCaretPosition} during appends) can steal
+     * keyboard focus from the toolbar while logs stream. Autoscroll instead moves the viewport via
+     * {@link ai.anomalousvectors.tools.burp.ui.log.LogRenderer#autoscrollIfNeeded(boolean)}.</p>
      */
     private void applyAutoscrollPauseState() {
         if (logTextPane.getCaret() instanceof DefaultCaret caret) {
-            caret.setUpdatePolicy(autoscrollPaused ? DefaultCaret.NEVER_UPDATE : DefaultCaret.ALWAYS_UPDATE);
+            caret.setUpdatePolicy(DefaultCaret.NEVER_UPDATE);
         }
     }
 

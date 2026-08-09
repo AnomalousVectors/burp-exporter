@@ -174,7 +174,7 @@ public final class ConfigImportCatalog {
                 : orderedInclusion(settingsSub, ConfigState.DEFAULT_SETTINGS_SUB);
         List<String> trafficOut = matchesDefaults(trafficToolTypes, trafficDefaults)
                 ? null
-                : orderedInclusion(trafficToolTypes, ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES);
+                : orderedInclusion(trafficToolTypes, ConfigState.ALL_TRAFFIC_TOOL_TYPES);
         List<String> findingsOut = matchesDefaults(findingsSeverities, ConfigState.DEFAULT_FINDINGS_SEVERITIES)
                 ? null
                 : orderedInclusion(findingsSeverities, ConfigState.DEFAULT_FINDINGS_SEVERITIES);
@@ -274,7 +274,7 @@ public final class ConfigImportCatalog {
             List<String> raw,
             ConfigImportReport report,
             boolean communityEdition) {
-        Set<String> known = Set.copyOf(ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES);
+        Set<String> known = Set.copyOf(ConfigState.ALL_TRAFFIC_TOOL_TYPES);
         List<String> accepted = new ArrayList<>();
         for (String value : raw) {
             if (value == null || value.isBlank()) {

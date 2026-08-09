@@ -1,23 +1,18 @@
 package ai.anomalousvectors.tools.burp.ui;
 
-import java.awt.Color;
 import java.awt.Component;
 import java.awt.Font;
-import java.awt.FontMetrics;
-import java.awt.Graphics;
-import java.awt.Graphics2D;
-import java.awt.RenderingHints;
-import java.io.Serial;
-import java.io.Serializable;
+import java.awt.Image;
+import java.net.URL;
 import java.util.Objects;
 
 import javax.swing.Icon;
+import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
-import javax.swing.UIManager;
 
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import net.miginfocom.swing.MigLayout;
@@ -32,8 +27,18 @@ import net.miginfocom.swing.MigLayout;
  * single row.</p>
  */
 public final class ConfigSourcesPanel {
+    /** Display size for Sources notice icons (CE + Repeater Tabs). */
+    private static final int NOTICE_ICON_SIZE = 16;
+
     private static final String COMMUNITY_ICON_TOOLTIP = Tooltips.html("Unsupported in Community Edition.");
-    private static final Icon COMMUNITY_NOTICE_ICON = new CommunityEditionInfoIcon();
+
+    /**
+     * Shared notice glyph for Sources info indicators.
+     *
+     * <p>Asset is Material Icons {@code error} (Apache 2.0), recolored to a blue circle with a white
+     * bang and loaded from {@code /ui/notice-info.png}.</p>
+     */
+    private static final Icon NOTICE_INFO_ICON = loadNoticeInfoIcon();
 
     private final JCheckBox settingsCheckbox;
     private final JCheckBox sitemapCheckbox;
@@ -85,19 +90,50 @@ public final class ConfigSourcesPanel {
     }
 
     static JPanel buildCommunityEditionIndicator(String panelName, String iconName) {
+        return buildInfoNoticeIndicator(panelName, iconName, COMMUNITY_ICON_TOOLTIP, false);
+    }
+
+    /**
+     * Builds an always-visible Sources info-notice icon with a caller-supplied HTML tooltip.
+     *
+     * <p>Uses the same blue notice icon as Community Edition indicators. Caller must invoke on the
+     * EDT. The returned panel starts visible.</p>
+     *
+     * @param panelName component name for the indicator panel
+     * @param iconName component name for the icon label
+     * @param tooltipHtml HTML tooltip text (typically from {@link Tooltips#htmlRaw(String...)})
+     * @return visible indicator panel containing the icon
+     */
+    static JPanel buildInfoNoticeIndicator(String panelName, String iconName, String tooltipHtml) {
+        return buildInfoNoticeIndicator(panelName, iconName, tooltipHtml, true);
+    }
+
+    private static JPanel buildInfoNoticeIndicator(
+            String panelName, String iconName, String tooltipHtml, boolean visible) {
         JPanel indicator = new JPanel(new MigLayout("insets 0, aligny center, hidemode 3", "[pref!]"));
         indicator.setOpaque(false);
         indicator.setName(panelName);
-        indicator.setVisible(false);
+        indicator.setVisible(visible);
 
         JLabel iconLabel = new Tooltips.HtmlLabel("");
         iconLabel.setName(iconName);
-        iconLabel.setIcon(COMMUNITY_NOTICE_ICON);
+        iconLabel.setIcon(NOTICE_INFO_ICON);
         iconLabel.setOpaque(false);
-        iconLabel.setToolTipText(COMMUNITY_ICON_TOOLTIP);
+        iconLabel.setToolTipText(tooltipHtml);
 
         indicator.add(iconLabel);
         return indicator;
+    }
+
+    private static Icon loadNoticeInfoIcon() {
+        URL resource = ConfigSourcesPanel.class.getResource("/ui/notice-info.png");
+        if (resource == null) {
+            throw new IllegalStateException("Missing classpath resource /ui/notice-info.png");
+        }
+        ImageIcon source = new ImageIcon(resource);
+        Image scaled = source.getImage()
+                .getScaledInstance(NOTICE_ICON_SIZE, NOTICE_ICON_SIZE, Image.SCALE_SMOOTH);
+        return new ImageIcon(scaled);
     }
 
     /**
@@ -150,53 +186,5 @@ public final class ConfigSourcesPanel {
             row.add(communityNotice, "aligny center, hidemode 3");
         }
         return row;
-    }
-
-    private static final class CommunityEditionInfoIcon implements Icon, Serializable {
-        @Serial private static final long serialVersionUID = 1L;
-        private static final int SIZE = 12;
-
-        @Override
-        public void paintIcon(Component component, Graphics graphics, int x, int y) {
-            Graphics2D g2 = (Graphics2D) graphics.create();
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                Color blue = UIManager.getColor("Component.linkColor");
-                if (blue == null) {
-                    blue = UIManager.getColor("Link.foreground");
-                }
-                if (blue == null) {
-                    blue = new Color(0, 102, 204);
-                }
-                g2.setColor(blue);
-                g2.fillOval(x, y, SIZE, SIZE);
-                g2.setColor(Color.WHITE);
-                Font font = component.getFont();
-                if (font == null) {
-                    font = UIManager.getFont("Label.font");
-                }
-                if (font == null) {
-                    font = new JLabel().getFont();
-                }
-                g2.setFont(font.deriveFont(Font.BOLD, 9f));
-                FontMetrics metrics = g2.getFontMetrics();
-                String text = "!";
-                int textX = x + (SIZE - metrics.stringWidth(text)) / 2;
-                int textY = y + ((SIZE - metrics.getHeight()) / 2) + metrics.getAscent() - 1;
-                g2.drawString(text, textX, textY);
-            } finally {
-                g2.dispose();
-            }
-        }
-
-        @Override
-        public int getIconWidth() {
-            return SIZE;
-        }
-
-        @Override
-        public int getIconHeight() {
-            return SIZE;
-        }
     }
 }

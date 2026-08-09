@@ -17,6 +17,7 @@ import static ai.anomalousvectors.tools.burp.ui.LogPanelTestHarness.setPaused;
 import static ai.anomalousvectors.tools.burp.ui.LogPanelTestHarness.setText;
 import static ai.anomalousvectors.tools.burp.ui.LogPanelTestHarness.setViewportY;
 import static ai.anomalousvectors.tools.burp.ui.LogPanelTestHarness.textPane;
+import static ai.anomalousvectors.tools.burp.ui.LogPanelTestHarness.viewport;
 import static ai.anomalousvectors.tools.burp.ui.LogPanelTestHarness.viewportPosition;
 import static ai.anomalousvectors.tools.burp.ui.LogPanelTestHarness.waitFor;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,20 +25,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LogPanelAutoscrollHeadlessTest {
 
     @Test
-    void autoscroll_movesCaret_whenNotPaused() {
+    void autoscroll_movesViewport_whenNotPaused_withoutMovingCaret() {
         LogPanel p = newPanel();
         resetPanelState(p);
         realize(p);
+        appendSeedLines(p);
         setPaused(p, false);
-
+        setViewportY(p, 0);
         onEdt(() -> textPane(p).setCaretPosition(0));
-        p.onLog("INFO", "moved-to-end");
 
-        waitFor(() -> textPane(p).getDocument().getLength() > 0, 1500);
+        onEdt(() -> p.onLog("INFO", "moved-to-end"));
+
+        waitFor(() -> allText(p).contains("moved-to-end"), 1500);
 
         int caret = textPane(p).getCaretPosition();
         int len = textPane(p).getDocument().getLength();
-        assertThat(caret).isEqualTo(len);
+        assertThat(caret).isLessThan(len);
+        int viewY = viewportPosition(p).y;
+        int maxY = Math.max(0, textPane(p).getPreferredSize().height - viewport(p).getExtentSize().height);
+        assertThat(viewY).isGreaterThan(0);
+        assertThat(viewY).isEqualTo(maxY);
     }
 
     @Test

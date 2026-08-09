@@ -167,7 +167,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private final JCheckBox trafficProxyCheckbox        = new Tooltips.HtmlCheckBox("Proxy", true);
     private final JCheckBox trafficProxyHistoryCheckbox  = new Tooltips.HtmlCheckBox("Proxy History", true);
     private final JCheckBox trafficRepeaterCheckbox    = new Tooltips.HtmlCheckBox("Repeater", true);
-    private final JCheckBox trafficRepeaterTabsCheckbox = new Tooltips.HtmlCheckBox("Repeater Tabs", true);
+    private final JCheckBox trafficRepeaterTabsCheckbox = new Tooltips.HtmlCheckBox("Repeater Tabs", false);
     private final JCheckBox trafficScannerCheckbox      = new Tooltips.HtmlCheckBox("Scanner", true);
     private final JCheckBox trafficSequencerCheckbox     = new Tooltips.HtmlCheckBox("Sequencer", true);
 
@@ -205,6 +205,10 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private final JPanel trafficScannerCommunityIndicator = ConfigSourcesPanel.buildCommunityEditionIndicator(
             "src.traffic.scanner.communityNotice",
             "src.traffic.scanner.communityNotice.icon");
+    private final JPanel trafficRepeaterTabsInfoIndicator = ConfigSourcesPanel.buildInfoNoticeIndicator(
+            "src.traffic.repeater_tabs.infoNotice",
+            "src.traffic.repeater_tabs.infoNotice.icon",
+            repeaterTabsStartupInfoTooltip());
 
     private final JRadioButton allRadio       = new Tooltips.HtmlRadioButton("All");
     private final JRadioButton burpSuiteRadio = new Tooltips.HtmlRadioButton("Burp Suite's", true);
@@ -1289,7 +1293,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             }
             uiCallbacks.onStartSuccess().run();
             onControlStatus(runningStatus);
-            RepeaterTabsIndexReporter.scheduleStartupTabWalk();
+            if (isTrafficToolSelected("repeater_tabs")) {
+                RepeaterTabsIndexReporter.scheduleStartupTabWalk();
+            }
         });
         if (RuntimeConfig.isAnySinkEnabled()) {
             ExporterIndexConfigReporter.pushConfigSnapshot();
@@ -2869,7 +2875,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         p.add(trafficProxyCheckbox);
         p.add(trafficProxyHistoryCheckbox);
         p.add(trafficRepeaterCheckbox);
-        p.add(trafficRepeaterTabsCheckbox);
+        p.add(buildTrafficToolRow(trafficRepeaterTabsCheckbox, trafficRepeaterTabsInfoIndicator));
         p.add(buildTrafficToolRow(trafficScannerCheckbox, trafficScannerCommunityIndicator));
         p.add(trafficSequencerCheckbox);
         return p;
@@ -3302,6 +3308,19 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             indexNameBaseValidationIndicator.getParent().revalidate();
             indexNameBaseValidationIndicator.getParent().repaint();
         }
+    }
+
+    private static String repeaterTabsStartupInfoTooltip() {
+        return Tooltips.htmlRaw(
+                "<b>Repeater Tabs startup</b>",
+                "Burp does not expose Repeater tabs through the Montoya API. On Start, the exporter will walk "
+                        + "existing Repeater tabs with a synchronous Swing UI pass on the EDT (Event Dispatch "
+                        + "Thread). The walk runs twice, then captured tabs are correlated for export.",
+                "",
+                "What to expect:",
+                "&nbsp;&nbsp;- After start, Burp may appear frozen or unresponsive while the walk runs",
+                "&nbsp;&nbsp;- A common duration is about 10-30 seconds; large tab sets can take longer"
+        );
     }
 
     private static String indexBaseNameTooltip() {

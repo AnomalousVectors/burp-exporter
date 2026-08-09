@@ -62,7 +62,8 @@ class RuntimeConfigCommunityEditionTest {
             RuntimeConfig.updateState(null);
 
             assertThat(RuntimeConfig.getState().trafficToolTypes())
-                    .containsExactly("extensions", "intruder", "proxy", "proxy_history", "repeater", "repeater_tabs", "sequencer");
+                    .containsExactly("extensions", "intruder", "proxy", "proxy_history", "repeater", "sequencer");
+            assertThat(RuntimeConfig.isTrafficToolTypeEnabled("repeater_tabs")).isFalse();
             assertThat(RuntimeConfig.isTrafficToolTypeEnabled("burp_ai")).isFalse();
             assertThat(RuntimeConfig.isTrafficToolTypeEnabled("scanner")).isFalse();
             assertThat(RuntimeConfig.isTrafficToolTypeEnabled("proxy")).isTrue();

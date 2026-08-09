@@ -1,6 +1,9 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.callStatic;
+import static ai.anomalousvectors.tools.burp.testutils.Reflect.getStatic;
+
+import java.util.concurrent.atomic.AtomicInteger;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -1535,6 +1538,35 @@ class RepeaterTabsIndexReporterTest {
 
     private static Map<String, Object> burpRepeater(Map<String, Object> doc) {
         return objectMap(objectMap(doc.get("burp")).get("repeater"));
+    }
+
+    @Test
+    void scheduleStartupTabWalk_doesNotOpenCaptureWindow_whenRepeaterTabsDisabled() throws Exception {
+        ConfigState.State previousState = RuntimeConfig.getState();
+        boolean previouslyRunning = RuntimeConfig.isExportRunning();
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    java.util.List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_ALL,
+                    java.util.List.of(),
+                    null,
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    java.util.List.of("proxy"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            RuntimeConfig.setExportRunning(true);
+            RepeaterTabsIndexReporter.clearRunState();
+
+            SwingUtilities.invokeAndWait(RepeaterTabsIndexReporter::scheduleStartupTabWalk);
+
+            AtomicInteger captureWindowGeneration = getStatic(
+                    RepeaterTabsIndexReporter.class, "CAPTURE_WINDOW_GENERATION", AtomicInteger.class);
+            assertThat(captureWindowGeneration.get()).isEqualTo(-1);
+        } finally {
+            RuntimeConfig.setExportRunning(previouslyRunning);
+            RuntimeConfig.updateState(previousState);
+            RepeaterTabsIndexReporter.clearSessionState();
+        }
     }
 
     private static Map<String, Object> objectMap(Object value) {

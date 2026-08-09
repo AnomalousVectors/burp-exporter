@@ -26,13 +26,13 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 class LogPanelPersistenceHeadlessTest {
 
     @Test
-    void defaults_minLevelToTrace_whenPreferenceMissing() {
+    void defaults_minLevelToInfo_whenPreferenceMissing() {
         Preferences prefs = Preferences.userRoot().node("ai.anomalousvectors.tools.burp.ui.LogPanel");
         prefs.remove("minLevel");
 
         LogPanel panel = newPanel();
         JComboBox<?> level = combo(panel, "log.filter.level");
-        assertThat(level.getSelectedItem()).isEqualTo("TRACE");
+        assertThat(level.getSelectedItem()).isEqualTo("INFO");
     }
 
     @Test

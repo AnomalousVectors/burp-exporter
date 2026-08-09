@@ -108,11 +108,11 @@ class ConfigPanelCommunityEditionHeadlessTest {
                 assertThat(trafficProxyCheckbox.isSelected()).isTrue();
                 assertThat(trafficProxyHistoryCheckbox.isSelected()).isTrue();
                 assertThat(trafficRepeaterCheckbox.isSelected()).isTrue();
-                assertThat(trafficRepeaterTabsCheckbox.isSelected()).isTrue();
+                assertThat(trafficRepeaterTabsCheckbox.isSelected()).isFalse();
                 assertThat(trafficScannerCheckbox.isEnabled()).isFalse();
                 assertThat(trafficScannerCheckbox.isSelected()).isFalse();
                 assertThat(trafficSequencerCheckbox.isSelected()).isTrue();
-                assertThat(trafficCheckbox.getState()).isEqualTo(TriStateCheckBox.State.SELECTED);
+                assertThat(trafficCheckbox.getState()).isEqualTo(TriStateCheckBox.State.INDETERMINATE);
                 JLabel findingsLabelRef = java.util.Objects.requireNonNull(findingsLabel);
                 assertThat(findingsLabelRef.getToolTipText()).isEqualTo("<html>Unsupported in Community Edition.</html>");
                 JButton findingsExpandButtonRef = java.util.Objects.requireNonNull(findingsExpandButton);
@@ -161,7 +161,7 @@ class ConfigPanelCommunityEditionHeadlessTest {
                 assertThat(issuesCheckbox.isEnabled()).isTrue();
                 assertThat(issuesExpandButton.isEnabled()).isTrue();
                 assertThat(issuesCheckbox.getToolTipText()).isEqualTo("<html>All findings (aka issues).</html>");
-                assertThat(trafficCheckbox.getState()).isEqualTo(TriStateCheckBox.State.SELECTED);
+                assertThat(trafficCheckbox.getState()).isEqualTo(TriStateCheckBox.State.INDETERMINATE);
                 assertThat(trafficBurpAiCheckbox.isEnabled()).isTrue();
                 assertThat(trafficBurpAiCheckbox.isSelected()).isTrue();
                 assertThat(trafficExtensionsCheckbox.isSelected()).isTrue();
@@ -169,7 +169,7 @@ class ConfigPanelCommunityEditionHeadlessTest {
                 assertThat(trafficProxyCheckbox.isSelected()).isTrue();
                 assertThat(trafficProxyHistoryCheckbox.isSelected()).isTrue();
                 assertThat(trafficRepeaterCheckbox.isSelected()).isTrue();
-                assertThat(trafficRepeaterTabsCheckbox.isSelected()).isTrue();
+                assertThat(trafficRepeaterTabsCheckbox.isSelected()).isFalse();
                 assertThat(trafficScannerCheckbox.isEnabled()).isTrue();
                 assertThat(trafficScannerCheckbox.isSelected()).isTrue();
                 assertThat(trafficSequencerCheckbox.isSelected()).isTrue();

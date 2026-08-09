@@ -23,8 +23,13 @@ public final class ConfigState {
     public static final List<String> DEFAULT_SETTINGS_SUB =
             List.of(ConfigKeys.SRC_SETTINGS_PROJECT, ConfigKeys.SRC_SETTINGS_USER);
 
-    /** Default traffic tool types: all traffic sources enabled by default. */
-    public static final List<String> DEFAULT_TRAFFIC_TOOL_TYPES = List.of(
+    /**
+     * All known traffic tool types in canonical order.
+     *
+     * <p>Used as the import/normalize allowlist. Defaults may omit entries (for example
+     * {@code repeater_tabs}).</p>
+     */
+    public static final List<String> ALL_TRAFFIC_TOOL_TYPES = List.of(
             "burp_ai",
             "extensions",
             "intruder",
@@ -34,6 +39,16 @@ public final class ConfigState {
             "repeater_tabs",
             "scanner",
             "sequencer");
+
+    /**
+     * Default traffic tool types: all known sources except Repeater Tabs.
+     *
+     * <p>Repeater Tabs stays available in the UI and in imported configs, but is off by default
+     * because its Start-time capture can freeze Burp.</p>
+     */
+    public static final List<String> DEFAULT_TRAFFIC_TOOL_TYPES = ALL_TRAFFIC_TOOL_TYPES.stream()
+            .filter(toolType -> !"repeater_tabs".equals(toolType))
+            .toList();
 
     /** Default findings severities: all five. */
     public static final List<String> DEFAULT_FINDINGS_SEVERITIES =
@@ -62,7 +77,7 @@ public final class ConfigState {
     /** Default Stats panel chart style (2 = Smooth). */
     public static final int DEFAULT_STATS_CHART_STYLE = 2;
     /** Default minimum visible level in LogPanel. */
-    public static final String DEFAULT_LOG_MIN_LEVEL = "trace";
+    public static final String DEFAULT_LOG_MIN_LEVEL = "info";
 
     /** Verify OpenSearch TLS certificates against the system trust store. */
     public static final String OPEN_SEARCH_TLS_VERIFY = "verify";
@@ -757,7 +772,7 @@ public final class ConfigState {
         return normalizeOpenSearchAuthType(authType);
     }
 
-    /** Returns one of trace/debug/info/warn/error, defaulting to trace. */
+    /** Returns one of trace/debug/info/warn/error, defaulting to {@link #DEFAULT_LOG_MIN_LEVEL}. */
     public static String normalizeLogMinLevel(String raw) {
         if (raw == null || raw.isBlank()) {
             return DEFAULT_LOG_MIN_LEVEL;
@@ -783,9 +798,9 @@ public final class ConfigState {
         return normalizeLowercaseList(values);
     }
 
-    /** Normalizes traffic tool ids to lowercase. */
+    /** Normalizes traffic tool ids to lowercase against {@link #ALL_TRAFFIC_TOOL_TYPES}. */
     public static List<String> normalizeTrafficToolTypes(List<String> values) {
-        Set<String> knownToolTypes = Set.copyOf(DEFAULT_TRAFFIC_TOOL_TYPES);
+        Set<String> knownToolTypes = Set.copyOf(ALL_TRAFFIC_TOOL_TYPES);
         return normalizeLowercaseList(values).stream()
                 .filter(knownToolTypes::contains)
                 .toList();

@@ -248,8 +248,13 @@ public final class RepeaterTabsIndexReporter {
             return;
         }
         RepeaterTabMetadata metadata = currentRepeaterTabMetadata(uiAnchor);
-        if (RuntimeConfig.isExportRunning()) {
+        boolean exportRunning = RuntimeConfig.isExportRunning();
+        if (exportRunning) {
             RepeaterLiveMetadataTracker.observe(requestResponse, metadata.asSharedMetadata());
+        }
+        // Historic Repeater Tabs capture only while that source is enabled for the run.
+        if (exportRunning && !RuntimeConfig.isTrafficToolTypeEnabled(TOOL_TYPE_KEY)) {
+            return;
         }
         capture(requestResponse, capturePath, metadata);
     }
@@ -1416,6 +1421,11 @@ public final class RepeaterTabsIndexReporter {
                 finish();
                 return;
             }
+            // Stay on the Repeater tool tab for the whole pass; restore once in finish/cancel.
+            if (plan.toolTabs().getSelectedIndex() != plan.repeaterIndex()) {
+                plan.toolTabs().setSelectedIndex(plan.repeaterIndex());
+                selectionChanges++;
+            }
             timer.start();
         }
 
@@ -1427,11 +1437,6 @@ public final class RepeaterTabsIndexReporter {
             if (nextStepIndex >= plan.steps().size()) {
                 finish();
                 return;
-            }
-            boolean restoreOuterToolSelection = plan.toolTabs().getSelectedIndex() != plan.repeaterIndex();
-            if (restoreOuterToolSelection) {
-                plan.toolTabs().setSelectedIndex(plan.repeaterIndex());
-                selectionChanges++;
             }
             try {
                 // Selecting a Burp Repeater tab can synchronously construct and paint a substantial
@@ -1445,12 +1450,6 @@ public final class RepeaterTabsIndexReporter {
                 }
             } finally {
                 currentStartupSelectionMetadata = null;
-                if (restoreOuterToolSelection
-                        && plan.originalToolIndex() >= 0
-                        && plan.originalToolIndex() < plan.toolTabs().getTabCount()
-                        && plan.toolTabs().getSelectedIndex() != plan.originalToolIndex()) {
-                    plan.toolTabs().setSelectedIndex(plan.originalToolIndex());
-                }
             }
             if (nextStepIndex >= plan.steps().size()) {
                 finish();

@@ -1,14 +1,17 @@
 package ai.anomalousvectors.tools.burp.ui.log;
 
+import java.awt.Dimension;
+import java.awt.Point;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Objects;
 
+import javax.swing.JViewport;
+import javax.swing.SwingUtilities;
 import javax.swing.text.AbstractDocument;
 import javax.swing.text.BadLocationException;
 import javax.swing.text.Document;
 import javax.swing.text.Element;
-import java.util.Objects;
-
 import javax.swing.text.JTextComponent;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -23,10 +26,15 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
  * document's line element model rather than cached. This keeps {@link #replaceLast} correct
  * even when other callers (for example {@link #removeLeadingLines}) have shifted the document
  * underneath us during an incremental trim.</p>
+ *
+ * <p><strong>Autoscroll:</strong> scrolls the enclosing {@link JViewport} without moving the caret.
+ * Caret updates ({@code setCaretPosition} / {@code ALWAYS_UPDATE}) can steal focus from Log
+ * toolbar controls while entries stream.</p>
  */
 public final class LogRenderer {
 
     private final Document doc;
+    private final JTextComponent component;
     private final Runnable scrollToEnd;
 
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
@@ -39,10 +47,9 @@ public final class LogRenderer {
      * @param textComponent target component to render into (must have an AbstractDocument)
      */
     public LogRenderer(JTextComponent textComponent) {
-        JTextComponent component = Objects.requireNonNull(textComponent, "textComponent");
+        this.component = Objects.requireNonNull(textComponent, "textComponent");
         this.doc = component.getDocument();
-        Document document = this.doc;
-        this.scrollToEnd = () -> component.setCaretPosition(document.getLength());
+        this.scrollToEnd = this::scrollViewportToEnd;
     }
 
     /**
@@ -142,6 +149,10 @@ public final class LogRenderer {
 
     /**
      * Scrolls to the bottom unless paused.
+     *
+     * <p>Moves only the enclosing viewport. Does not change caret position or request focus.</p>
+     *
+     * @param paused when {@code true}, leaves the viewport unchanged
      */
     public void autoscrollIfNeeded(boolean paused) {
         if (!paused) {
@@ -162,6 +173,24 @@ public final class LogRenderer {
         String timestamp = "[" + TS.format(ts == null ? LocalDateTime.now() : ts) + "]";
         String base = String.format("%s [%s] %s", timestamp, lvl.name(), msg == null ? "" : msg);
         return repeats > 1 ? base + "  (x" + repeats + ")\n" : base + "\n";
+    }
+
+    /**
+     * Scrolls the enclosing viewport to the bottom of the log document without moving the caret.
+     */
+    private void scrollViewportToEnd() {
+        JViewport viewport = (JViewport) SwingUtilities.getAncestorOfClass(JViewport.class, component);
+        if (viewport == null) {
+            return;
+        }
+        component.revalidate();
+        Dimension extent = viewport.getExtentSize();
+        Dimension viewSize = component.getPreferredSize();
+        int maxY = Math.max(0, viewSize.height - extent.height);
+        Point current = viewport.getViewPosition();
+        if (current.x != 0 || current.y != maxY) {
+            viewport.setViewPosition(new Point(0, maxY));
+        }
     }
 
     /**

@@ -358,7 +358,7 @@ class JsonTypedRoundTripTest {
         assertThat(parsed.dataSources()).contains("traffic", ConfigKeys.SRC_EXPORTER);
         assertThat(parsed.trafficToolTypes()).containsExactly(
                 "burp_ai", "extensions", "intruder", "proxy",
-                "proxy_history", "repeater", "repeater_tabs", "scanner", "sequencer");
+                "proxy_history", "repeater", "scanner", "sequencer");
         assertThat(parsed.settingsSub()).containsExactlyInAnyOrder(ConfigKeys.SRC_SETTINGS_PROJECT, ConfigKeys.SRC_SETTINGS_USER);
         assertThat(parsed.findingsSeverities()).containsExactlyInAnyOrder("critical", "high", "medium", "low", "informational");
         assertThat(parsed.exporterSubOptions()).containsExactlyElementsOf(ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS);
