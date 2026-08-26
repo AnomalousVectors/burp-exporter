@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Field;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -11,6 +12,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+
+import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -42,10 +45,23 @@ class RepeaterSearchRecoveryReplayTest {
         ConfigState.State previousState = RuntimeConfig.getState();
         try {
             RuntimeConfig.updateState(recoveryState(root));
-            captureRepeaterSnapshot();
+            RuntimeConfig.setExportRunning(true);
+            RepeaterTabsIndexReporter.openCaptureWindowForCurrentRun();
+            Field startupSelectionField = RepeaterTabsIndexReporter.class.getDeclaredField(
+                    "currentStartupSelectionMetadata");
+            startupSelectionField.setAccessible(true);
+            startupSelectionField.set(
+                    null,
+                    new RepeaterTabsIndexReporter.RepeaterTabMetadata(
+                            "Recovery Tab",
+                            null,
+                            null,
+                            "top-level:0:test#0"));
+            SwingUtilities.invokeAndWait(RepeaterSearchRecoveryReplayTest::captureRepeaterSnapshot);
+            RepeaterTabsIndexReporter.closeCaptureWindowForCurrentRun();
+            startupSelectionField.set(null, null);
             assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isEqualTo(1);
 
-            RuntimeConfig.setExportRunning(true);
             RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
             List<List<PreparedExportDocument>> sentBatches = new ArrayList<>();
 

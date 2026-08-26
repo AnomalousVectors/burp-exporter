@@ -16,6 +16,8 @@ import java.util.Map;
  * @param document filtered document body
  * @param estimatedBulkBytes approximate serialized bulk payload size in bytes for chunk sizing
  * @param bulkNdjsonBytes pre-serialized bulk action+document NDJSON pair for OpenSearch flush
+ * @param trafficRouteKey optional internal traffic-attribution key; never serialized into the
+ *                        exported document source
  */
 public record PreparedExportDocument(
         String operationId,
@@ -23,7 +25,31 @@ public record PreparedExportDocument(
         String indexKey,
         Map<String, Object> document,
         long estimatedBulkBytes,
-        byte[] bulkNdjsonBytes) {
+        byte[] bulkNdjsonBytes,
+        String trafficRouteKey) {
+
+    /**
+     * Creates an operation without an explicit traffic-attribution route.
+     *
+     * <p>Non-traffic exporters and legacy callers use this form. Traffic consumers fall back to
+     * the exported document's reporting tool when {@link #trafficRouteKey()} is {@code null}.</p>
+     *
+     * @param operationId stable search bulk operation identifier
+     * @param indexName full target index name
+     * @param indexKey short logical index key
+     * @param document filtered document body
+     * @param estimatedBulkBytes approximate serialized bulk size
+     * @param bulkNdjsonBytes serialized bulk action and document pair
+     */
+    public PreparedExportDocument(
+            String operationId,
+            String indexName,
+            String indexKey,
+            Map<String, Object> document,
+            long estimatedBulkBytes,
+            byte[] bulkNdjsonBytes) {
+        this(operationId, indexName, indexKey, document, estimatedBulkBytes, bulkNdjsonBytes, null);
+    }
 
     /**
      * Returns the byte size used for bulk chunking and retry drain caps.

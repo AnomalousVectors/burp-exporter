@@ -154,7 +154,9 @@ class TrafficSpillFileQueueTest {
         Path dir = TestPathSupport.createDirectory("traffic-spill-prepared");
         try {
             TrafficSpillFileQueue queue = new TrafficSpillFileQueue(dir, 10, 1024 * 1024);
-            TrafficQueueEntry entry = TrafficQueueEntry.from(Map.of("id", 77, "url", "https://prepared.example"));
+            TrafficQueueEntry entry = TrafficQueueEntry.from(
+                    Map.of("id", 77, "url", "https://prepared.example"),
+                    TrafficRouteBucket.proxyWebSocketHistory());
 
             assertThat(queue.offerDetailed(entry)).isEqualTo(TrafficSpillFileQueue.OfferResult.QUEUED);
 
@@ -163,6 +165,8 @@ class TrafficSpillFileQueueTest {
             assertThat(recovered.prepared().operationId()).isEqualTo(entry.prepared().operationId());
             assertThat(recovered.prepared().bulkNdjsonBytes()).isEqualTo(entry.prepared().bulkNdjsonBytes());
             assertThat(recovered.prepared().estimatedBulkBytes()).isEqualTo(entry.prepared().estimatedBulkBytes());
+            assertThat(recovered.prepared().trafficRouteKey())
+                    .isEqualTo(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_HISTORY);
             assertThat(recovered.document()).isEqualTo(entry.document());
         } finally {
             deleteRecursively(dir);

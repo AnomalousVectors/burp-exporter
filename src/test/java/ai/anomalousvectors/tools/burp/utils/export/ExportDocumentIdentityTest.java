@@ -47,6 +47,22 @@ class ExportDocumentIdentityTest {
     }
 
     @Test
+    void prepareWithTrafficRoute_keepsRouteOutsideExportedSourceAndPreservesDerivedCopy() {
+        String routeKey = "proxy_websocket_history";
+        PreparedExportDocument prepared = ExportDocumentIdentity.prepareWithTrafficRoute(
+                "attack-traffic", "traffic", sampleDoc("payload"), routeKey);
+
+        assertThat(prepared.trafficRouteKey()).isEqualTo(routeKey);
+        assertThat(prepared.document().toString()).doesNotContain(routeKey);
+        assertThat(new String(prepared.bulkNdjsonBytes(), java.nio.charset.StandardCharsets.UTF_8))
+                .doesNotContain(routeKey);
+
+        PreparedExportDocument derived = ExportDocumentIdentity.reprepareDerived(
+                prepared, prepared.document());
+        assertThat(derived.trafficRouteKey()).isEqualTo(routeKey);
+    }
+
+    @Test
     void prepare_sameBodyTwice_producesIndependentPreparedDocuments() {
         Map<String, Object> doc = sampleDoc("same");
         PreparedExportDocument first = ExportDocumentIdentity.prepare("attack-traffic", "traffic", doc);

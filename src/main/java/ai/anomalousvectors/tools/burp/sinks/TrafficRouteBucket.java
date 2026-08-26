@@ -18,8 +18,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  *   <li>a {@link Kind#TOOL_TYPE} bucket (for example {@code REPEATER_TABS}, {@code PROXY}),
  *       which aligns with the Burp tool/source that emitted HTTP exchanges; or</li>
  *   <li>a {@link Kind#SOURCE} bucket (for example {@code proxy_history_snapshot},
- *       {@code proxy_websocket}), which aligns with the reporter or source that produced the
- *       document rather than the requesting Burp tool.</li>
+ *       {@code proxy_websocket_live}), which aligns with the reporter or source that produced
+ *       the document rather than the requesting Burp tool.</li>
  * </ul>
  *
  * <p>Keeping the decision in one place ensures database bulk accounting, file-sink accounting,
@@ -62,8 +62,10 @@ public final class TrafficRouteBucket {
 
     /** Source key for snapshot-pushed Proxy History items. */
     public static final String SOURCE_PROXY_HISTORY_SNAPSHOT = "proxy_history_snapshot";
-    /** Source key for Proxy WebSocket items. */
-    public static final String SOURCE_PROXY_WEBSOCKET = "proxy_websocket";
+    /** Source key for live-polled Proxy WebSocket items. */
+    public static final String SOURCE_PROXY_WEBSOCKET_LIVE = "proxy_websocket_live";
+    /** Source key for snapshot-pushed Proxy WebSocket History items. */
+    public static final String SOURCE_PROXY_WEBSOCKET_HISTORY = "proxy_websocket_history";
     /** Fallback tool-type key when a document does not declare a tool. */
     public static final String TOOL_TYPE_UNKNOWN = "UNKNOWN";
     /** Logical index key used by the traffic sink in {@link ExportStats} and {@link FileExportStats}. */
@@ -97,6 +99,34 @@ public final class TrafficRouteBucket {
             raw = burp.get("reporting_tool");
         }
         return fromToolLabel(raw == null ? null : String.valueOf(raw));
+    }
+
+    /**
+     * Resolves the route retained with a prepared traffic operation.
+     *
+     * <p>An explicit internal route takes precedence over the exported reporting-tool label.
+     * Legacy and non-traffic prepared operations fall back to {@link #fromDocument(Map)}.</p>
+     *
+     * @param prepared prepared operation; {@code null} resolves to {@link #TOOL_TYPE_UNKNOWN}
+     * @return resolved route; never {@code null}
+     */
+    public static Route fromPrepared(PreparedExportDocument prepared) {
+        if (prepared == null) {
+            return new Route(Kind.TOOL_TYPE, TOOL_TYPE_UNKNOWN);
+        }
+        String routeKey = prepared.trafficRouteKey();
+        return routeKey == null || routeKey.isBlank()
+                ? fromDocument(prepared.document())
+                : fromRouteKey(routeKey);
+    }
+
+    private static Route fromRouteKey(String routeKey) {
+        return switch (routeKey) {
+            case SOURCE_PROXY_HISTORY_SNAPSHOT,
+                    SOURCE_PROXY_WEBSOCKET_LIVE,
+                    SOURCE_PROXY_WEBSOCKET_HISTORY -> new Route(Kind.SOURCE, routeKey);
+            default -> new Route(Kind.TOOL_TYPE, routeKey);
+        };
     }
 
     /**
@@ -138,7 +168,7 @@ public final class TrafficRouteBucket {
             return new Route(Kind.SOURCE, SOURCE_PROXY_HISTORY_SNAPSHOT);
         }
         if ("PROXY_WEBSOCKET".equals(normalized)) {
-            return new Route(Kind.SOURCE, SOURCE_PROXY_WEBSOCKET);
+            return proxyWebSocketLive();
         }
         return new Route(Kind.TOOL_TYPE, normalized);
     }
@@ -148,17 +178,22 @@ public final class TrafficRouteBucket {
         return new Route(Kind.SOURCE, SOURCE_PROXY_HISTORY_SNAPSHOT);
     }
 
-    /** Convenience route for Proxy WebSocket messages. */
-    public static Route proxyWebSocket() {
-        return new Route(Kind.SOURCE, SOURCE_PROXY_WEBSOCKET);
+    /** Convenience route for live Proxy WebSocket messages. */
+    public static Route proxyWebSocketLive() {
+        return new Route(Kind.SOURCE, SOURCE_PROXY_WEBSOCKET_LIVE);
+    }
+
+    /** Convenience route for historic Proxy WebSocket snapshot messages. */
+    public static Route proxyWebSocketHistory() {
+        return new Route(Kind.SOURCE, SOURCE_PROXY_WEBSOCKET_HISTORY);
     }
 
     /**
      * Returns whether a queued traffic document route is still enabled by the live traffic gate.
      *
      * <p>Source buckets map back to the user-facing traffic selections that produce them:
-     * Proxy History snapshot documents require {@code proxy_history}; proxy WebSocket documents
-     * require live {@code proxy}.</p>
+     * Proxy History and historic WebSocket snapshot documents require {@code proxy_history}; live
+     * Proxy WebSocket documents require {@code proxy}.</p>
      */
     public static boolean isRouteEnabled(Route route, RuntimeConfig.TrafficExportGate gate) {
         if (route == null || gate == null || !gate.anyTrafficExportEnabled()) {
@@ -167,7 +202,8 @@ public final class TrafficRouteBucket {
         if (route.kind() == Kind.SOURCE) {
             return switch (route.key()) {
                 case SOURCE_PROXY_HISTORY_SNAPSHOT -> gate.includesToolType("proxy_history");
-                case SOURCE_PROXY_WEBSOCKET -> gate.includesToolType("proxy");
+                case SOURCE_PROXY_WEBSOCKET_HISTORY -> gate.includesToolType("proxy_history");
+                case SOURCE_PROXY_WEBSOCKET_LIVE -> gate.includesToolType("proxy");
                 default -> false;
             };
         }
@@ -352,7 +388,8 @@ public final class TrafficRouteBucket {
         }
         return switch (route.key()) {
             case SOURCE_PROXY_HISTORY_SNAPSHOT -> "ProxyHistory";
-            case SOURCE_PROXY_WEBSOCKET -> "ProxyWebSocket";
+            case SOURCE_PROXY_WEBSOCKET_HISTORY -> "ProxyWebSocketHistory";
+            case SOURCE_PROXY_WEBSOCKET_LIVE -> "ProxyWebSocket";
             default -> "Traffic";
         };
     }
@@ -424,15 +461,16 @@ public final class TrafficRouteBucket {
     /**
      * Resolves the displayed success count for a "Traffic by source" row in OpenSearch stats.
      *
-     * <p>Most rows report the live captured tool-type count. The {@code PROXY_HISTORY} row
-     * additionally folds in {@link #SOURCE_PROXY_HISTORY_SNAPSHOT} and {@link #SOURCE_PROXY_WEBSOCKET}
-     * so snapshot pushes and proxy WebSocket exports surface under a single Proxy-family row.</p>
+     * <p>Most rows report the live captured tool-type count. Historic snapshot buckets fold into
+     * {@code PROXY_HISTORY}; live Proxy WebSocket traffic folds into {@code PROXY}.</p>
      */
     public static long resolveOpenSearchSourceSuccess(String sourceKey) {
         long total = ExportStats.getTrafficToolTypeSuccessCount(sourceKey);
         if ("PROXY_HISTORY".equals(sourceKey)) {
             total += ExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_HISTORY_SNAPSHOT);
-            total += ExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_WEBSOCKET);
+            total += ExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_WEBSOCKET_HISTORY);
+        } else if ("PROXY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_WEBSOCKET_LIVE);
         }
         return total;
     }
@@ -442,7 +480,9 @@ public final class TrafficRouteBucket {
         long total = ExportStats.getTrafficToolTypeFailureCount(sourceKey);
         if ("PROXY_HISTORY".equals(sourceKey)) {
             total += ExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_HISTORY_SNAPSHOT);
-            total += ExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_WEBSOCKET);
+            total += ExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_WEBSOCKET_HISTORY);
+        } else if ("PROXY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_WEBSOCKET_LIVE);
         }
         return total;
     }
@@ -457,7 +497,9 @@ public final class TrafficRouteBucket {
         long total = ExportStats.getTrafficToolTypeRecoveryCount(sourceKey);
         if ("PROXY_HISTORY".equals(sourceKey)) {
             total += ExportStats.getTrafficSourceRecoveryCount(SOURCE_PROXY_HISTORY_SNAPSHOT);
-            total += ExportStats.getTrafficSourceRecoveryCount(SOURCE_PROXY_WEBSOCKET);
+            total += ExportStats.getTrafficSourceRecoveryCount(SOURCE_PROXY_WEBSOCKET_HISTORY);
+        } else if ("PROXY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourceRecoveryCount(SOURCE_PROXY_WEBSOCKET_LIVE);
         }
         return total;
     }
@@ -472,7 +514,9 @@ public final class TrafficRouteBucket {
         long total = ExportStats.getTrafficToolTypeRetryQueueDrops(sourceKey);
         if ("PROXY_HISTORY".equals(sourceKey)) {
             total += ExportStats.getTrafficSourceRetryQueueDrops(SOURCE_PROXY_HISTORY_SNAPSHOT);
-            total += ExportStats.getTrafficSourceRetryQueueDrops(SOURCE_PROXY_WEBSOCKET);
+            total += ExportStats.getTrafficSourceRetryQueueDrops(SOURCE_PROXY_WEBSOCKET_HISTORY);
+        } else if ("PROXY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourceRetryQueueDrops(SOURCE_PROXY_WEBSOCKET_LIVE);
         }
         return total;
     }
@@ -487,7 +531,9 @@ public final class TrafficRouteBucket {
         long total = ExportStats.getTrafficToolTypePermanentDrops(sourceKey);
         if ("PROXY_HISTORY".equals(sourceKey)) {
             total += ExportStats.getTrafficSourcePermanentDrops(SOURCE_PROXY_HISTORY_SNAPSHOT);
-            total += ExportStats.getTrafficSourcePermanentDrops(SOURCE_PROXY_WEBSOCKET);
+            total += ExportStats.getTrafficSourcePermanentDrops(SOURCE_PROXY_WEBSOCKET_HISTORY);
+        } else if ("PROXY".equals(sourceKey)) {
+            total += ExportStats.getTrafficSourcePermanentDrops(SOURCE_PROXY_WEBSOCKET_LIVE);
         }
         return total;
     }
@@ -496,8 +542,8 @@ public final class TrafficRouteBucket {
      * Returns whether {@code route} contributes to the Stats Traffic sub-row labeled
      * {@code displaySourceKey}.
      *
-     * <p>Proxy History snapshot and Proxy WebSocket source buckets fold into the
-     * {@code PROXY_HISTORY} display row, matching {@link #resolveOpenSearchSourceSuccess(String)}.</p>
+     * <p>Historic snapshot buckets fold into {@code PROXY_HISTORY}; live Proxy WebSocket traffic
+     * folds into {@code PROXY}, matching {@link #resolveOpenSearchSourceSuccess(String)}.</p>
      *
      * @param displaySourceKey Stats sub-row key (for example {@code PROXY_HISTORY})
      * @param route traffic route from a queued or dropped document
@@ -510,9 +556,14 @@ public final class TrafficRouteBucket {
         if ("PROXY_HISTORY".equals(displaySourceKey)) {
             if (route.kind() == Kind.SOURCE) {
                 return SOURCE_PROXY_HISTORY_SNAPSHOT.equals(route.key())
-                        || SOURCE_PROXY_WEBSOCKET.equals(route.key());
+                        || SOURCE_PROXY_WEBSOCKET_HISTORY.equals(route.key());
             }
             return "PROXY_HISTORY".equals(route.key());
+        }
+        if ("PROXY".equals(displaySourceKey)
+                && route.kind() == Kind.SOURCE
+                && SOURCE_PROXY_WEBSOCKET_LIVE.equals(route.key())) {
+            return true;
         }
         return route.kind() == Kind.TOOL_TYPE && displaySourceKey.equals(route.key());
     }
@@ -534,7 +585,7 @@ public final class TrafficRouteBucket {
             if (prepared == null) {
                 continue;
             }
-            if (contributesToDisplaySource(displaySourceKey, fromDocument(prepared.document()))) {
+            if (contributesToDisplaySource(displaySourceKey, fromPrepared(prepared))) {
                 count++;
             }
         }
@@ -546,7 +597,9 @@ public final class TrafficRouteBucket {
         long total = FileExportStats.getTrafficToolTypeSuccessCount(sourceKey);
         if ("PROXY_HISTORY".equals(sourceKey)) {
             total += FileExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_HISTORY_SNAPSHOT);
-            total += FileExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_WEBSOCKET);
+            total += FileExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_WEBSOCKET_HISTORY);
+        } else if ("PROXY".equals(sourceKey)) {
+            total += FileExportStats.getTrafficSourceSuccessCount(SOURCE_PROXY_WEBSOCKET_LIVE);
         }
         return total;
     }
@@ -556,7 +609,9 @@ public final class TrafficRouteBucket {
         long total = FileExportStats.getTrafficToolTypeFailureCount(sourceKey);
         if ("PROXY_HISTORY".equals(sourceKey)) {
             total += FileExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_HISTORY_SNAPSHOT);
-            total += FileExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_WEBSOCKET);
+            total += FileExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_WEBSOCKET_HISTORY);
+        } else if ("PROXY".equals(sourceKey)) {
+            total += FileExportStats.getTrafficSourceFailureCount(SOURCE_PROXY_WEBSOCKET_LIVE);
         }
         return total;
     }

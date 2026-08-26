@@ -29,7 +29,11 @@ public final class ExportStats {
     private static final List<String> INDEX_KEYS = Collections.unmodifiableList(
             Arrays.asList("traffic", "exporter", "settings", "sitemap", "findings"));
     private static final List<String> TRAFFIC_SOURCE_KEYS = Collections.unmodifiableList(
-            Arrays.asList("proxy_live_http", "proxy_history_snapshot", "proxy_websocket"));
+            Arrays.asList(
+                    "proxy_live_http",
+                    "proxy_history_snapshot",
+                    "proxy_websocket_live",
+                    "proxy_websocket_history"));
     private static final List<String> TRAFFIC_TOOL_TYPE_KEYS = Collections.unmodifiableList(
             Arrays.asList(
                     "BURP_AI",
@@ -335,7 +339,7 @@ public final class ExportStats {
     /**
      * Records permanent drops for a specific traffic source bucket.
      *
-     * @param sourceKey source key (for example {@code "proxy_websocket"})
+     * @param sourceKey source key (for example {@code "proxy_websocket_live"})
      * @param count number of documents dropped; ignored if {@code <= 0}
      */
     public static void recordTrafficSourcePermanentDrop(String sourceKey, long count) {

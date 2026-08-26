@@ -23,8 +23,9 @@ import net.miginfocom.swing.MigLayout;
  * Builds the "Destinations" section panel used by ConfigPanel.
  *
  * <p>Components are owned by {@link ConfigPanel} and injected to keep a single source of state.
- * Layout is a vertical stack: Files details under Files, then Database radios (OpenSearch first)
- * with collapsed per-destination details, then one shared Test Connection control and status.</p>
+ * Layout is a vertical stack: Files details under Files, then Database radios (Amazon OpenSearch,
+ * Elasticsearch, OpenSearch) with collapsed per-destination details, then one shared Test
+ * Connection control and status.</p>
  */
 public final class ConfigDestinationPanel {
 
@@ -199,8 +200,8 @@ public final class ConfigDestinationPanel {
      * Builds the Destination section containing Files and search-destination controls.
      *
      * <p>Caller must invoke on the EDT. Files and Database nest their details vertically. Database
-     * radios are ordered OpenSearch, Amazon OpenSearch, then Elasticsearch; inactive radios collapse
-     * URL/auth/TLS. Test Connection and status sit once under the Database block.</p>
+     * radios are ordered Amazon OpenSearch, Elasticsearch, then OpenSearch; inactive radios
+     * collapse URL/auth/TLS. Test Connection and status sit once under the Database block.</p>
      *
      * @return assembled panel with destination controls and the shared status area
      */
@@ -214,7 +215,7 @@ public final class ConfigDestinationPanel {
                         "<b>Destinations</b>",
                         "Choose where Burp Exporter writes selected sources.",
                         "Enable <b>Files</b>, one <b>Database</b> destination, or both.",
-                        "Database choices are OpenSearch (recommended), Amazon OpenSearch, or Elasticsearch."));
+                        "Database choices are Amazon OpenSearch, Elasticsearch, or OpenSearch (recommended)."));
         header.setFont(header.getFont().deriveFont(Font.BOLD, 18f));
         panel.add(header, "gapbottom 6, wrap");
 
@@ -258,14 +259,14 @@ public final class ConfigDestinationPanel {
                 elasticSearchOptionsPanel,
                 elasticSearchTlsPanel);
 
-        panel.add(openSearchSinkCheckbox, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
-        panel.add(openSearchDetails, GAPLEFT + detailIndent + ", " + ALIGN_LEFT_TOP);
-
         panel.add(openSearchAmazonDestinationRadio, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
         panel.add(amazonDetails, GAPLEFT + detailIndent + ", " + ALIGN_LEFT_TOP);
 
         panel.add(elasticSearchDestinationRadio, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
         panel.add(elasticDetails, GAPLEFT + detailIndent + ", " + ALIGN_LEFT_TOP);
+
+        panel.add(openSearchSinkCheckbox, GAPLEFT + nestedIndent + ", " + ALIGN_LEFT_TOP);
+        panel.add(openSearchDetails, GAPLEFT + detailIndent + ", " + ALIGN_LEFT_TOP);
 
         JPanel testConnectionSlot = buildTestConnectionSlot("os.destination.testSlot");
         testConnectionSlot.add(testConnectionButton, ALIGN_LEFT_TOP);

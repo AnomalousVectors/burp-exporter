@@ -871,7 +871,7 @@ public final class ChunkedBulkSender {
                 attemptedRef.incrementAndGet();
                 runningBytes += docBytes;
                 attemptedBytesRef.addAndGet(docBytes);
-                attemptedTrafficRoutes.add(TrafficRouteBucket.fromDocument(prepared.document()));
+                attemptedTrafficRoutes.add(TrafficRouteBucket.fromPrepared(prepared));
                 // Files always receive the original prepared document (full bodies).
                 acceptedDocumentsForFileEmit.add(prepared);
                 return true;
@@ -904,7 +904,7 @@ public final class ChunkedBulkSender {
                 RuntimeConfig.TrafficExportGate gate = RuntimeConfig.trafficExportGate();
                 if (gate.anyTrafficExportEnabled()
                         && TrafficRouteBucket.isRouteEnabled(
-                                TrafficRouteBucket.fromDocument(entry.document()), gate)) {
+                                TrafficRouteBucket.fromPrepared(entry.prepared()), gate)) {
                     return entry;
                 }
             }

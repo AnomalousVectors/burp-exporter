@@ -193,7 +193,7 @@ class RepeaterTabsIndexReporterTest {
                 SwingUtilities.invokeAndWait(() ->
                         RepeaterTabsIndexReporter.captureFromEditorContext(
                                 context, requestResponse, "request_editor", null));
-                assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+                assertThat(TrafficExportQueue.getCurrentSize()).isZero();
 
                 RepeaterTabsIndexReporter.pushSnapshotNow();
                 assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
@@ -216,8 +216,10 @@ class RepeaterTabsIndexReporterTest {
     }
 
     @Test
-    void captureFromEditorContext_dedupesRepeatedRepeaterBindings() {
+    void captureFromEditorContext_ignoresCompleteBindingsWhileExporterStopped() {
+        boolean previousRunning = RuntimeConfig.isExportRunning();
         try {
+            RuntimeConfig.setExportRunning(false);
             EditorCreationContext context = mock(EditorCreationContext.class);
             ToolSource toolSource = mock(ToolSource.class);
             when(context.toolSource()).thenReturn(toolSource);
@@ -228,17 +230,36 @@ class RepeaterTabsIndexReporterTest {
                     "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
 
             RepeaterTabsIndexReporter.captureFromEditorContext(context, requestResponse, "request_editor", null);
-            RepeaterTabsIndexReporter.captureFromEditorContext(context, requestResponse, "response_editor", null);
 
-            assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isEqualTo(1);
+            assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isZero();
         } finally {
+            RuntimeConfig.setExportRunning(previousRunning);
             RepeaterTabsIndexReporter.clearSessionState();
         }
     }
 
     @Test
-    void captureFromEditorContext_ignoresPartialBindings_withoutResponse() {
+    void captureFromEditorContext_ignoresPartialBindings_withoutResponse() throws Exception {
+        ConfigState.State previousState = RuntimeConfig.getState();
+        boolean previousRunning = RuntimeConfig.isExportRunning();
+        Field startupSelectionField = RepeaterTabsIndexReporter.class.getDeclaredField("currentStartupSelectionMetadata");
+        startupSelectionField.setAccessible(true);
         try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    java.util.List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_ALL,
+                    java.util.List.of(),
+                    new ConfigState.Sinks(false, null, false, null, null, null, false),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    java.util.List.of("repeater_tabs"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                    ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                    null));
+            RuntimeConfig.setExportRunning(true);
+            RepeaterTabsIndexReporter.openCaptureWindowForCurrentRun();
+            startupSelectionField.set(null, repeaterTabMetadata("Partial", null, "startup-slot-partial"));
+
             EditorCreationContext context = mock(EditorCreationContext.class);
             ToolSource toolSource = mock(ToolSource.class);
             when(context.toolSource()).thenReturn(toolSource);
@@ -252,6 +273,10 @@ class RepeaterTabsIndexReporterTest {
 
             assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isZero();
         } finally {
+            RepeaterTabsIndexReporter.closeCaptureWindowForCurrentRun();
+            startupSelectionField.set(null, null);
+            RuntimeConfig.updateState(previousState);
+            RuntimeConfig.setExportRunning(previousRunning);
             RepeaterTabsIndexReporter.clearSessionState();
         }
     }
@@ -289,6 +314,53 @@ class RepeaterTabsIndexReporterTest {
 
             assertThat(RepeaterTabsIndexReporter.markStartupSlotForCurrentRun("Group Alpha|3", "fp-2")).isTrue();
         } finally {
+            RepeaterTabsIndexReporter.clearSessionState();
+        }
+    }
+
+    @Test
+    void clearRunState_discardsCapturedRepeaterSnapshots() throws Exception {
+        ConfigState.State previousState = RuntimeConfig.getState();
+        boolean previousRunning = RuntimeConfig.isExportRunning();
+        Field startupSelectionField = RepeaterTabsIndexReporter.class.getDeclaredField("currentStartupSelectionMetadata");
+        startupSelectionField.setAccessible(true);
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(
+                    java.util.List.of(ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_ALL,
+                    java.util.List.of(),
+                    new ConfigState.Sinks(false, null, false, null, null, null, false),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    java.util.List.of("repeater_tabs"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                    ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                    null));
+            RuntimeConfig.setExportRunning(true);
+            RepeaterTabsIndexReporter.openCaptureWindowForCurrentRun();
+            startupSelectionField.set(null, repeaterTabMetadata("Run Tab", null, "startup-slot-run"));
+
+            EditorCreationContext context = mock(EditorCreationContext.class);
+            ToolSource toolSource = mock(ToolSource.class);
+            when(context.toolSource()).thenReturn(toolSource);
+            when(toolSource.toolType()).thenReturn(ToolType.REPEATER);
+            SwingUtilities.invokeAndWait(() ->
+                    RepeaterTabsIndexReporter.captureFromEditorContext(
+                            context,
+                            repeaterRequestResponseWithResponse(
+                                    "GET /run HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                                    "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"),
+                            "request_editor",
+                            null));
+            assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isEqualTo(1);
+
+            RepeaterTabsIndexReporter.clearRunState();
+
+            assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isZero();
+        } finally {
+            startupSelectionField.set(null, null);
+            RuntimeConfig.updateState(previousState);
+            RuntimeConfig.setExportRunning(previousRunning);
             RepeaterTabsIndexReporter.clearSessionState();
         }
     }
@@ -506,11 +578,13 @@ class RepeaterTabsIndexReporterTest {
     }
 
     @Test
-    void captureFromEditorContext_dedupesDifferentFingerprints_forSameStartupSlot() throws Exception {
+    void captureFromEditorContext_keepsLatestCompleteBinding_forSameStartupSlot() throws Exception {
         ConfigState.State previousState = RuntimeConfig.getState();
         boolean previousRunning = RuntimeConfig.isExportRunning();
         Field startupSelectionField = RepeaterTabsIndexReporter.class.getDeclaredField("currentStartupSelectionMetadata");
         startupSelectionField.setAccessible(true);
+        Field capturedField = RepeaterTabsIndexReporter.class.getDeclaredField("CAPTURED");
+        capturedField.setAccessible(true);
         try {
             RuntimeConfig.updateState(new ConfigState.State(
                     java.util.List.of(ConfigKeys.SRC_TRAFFIC),
@@ -548,6 +622,12 @@ class RepeaterTabsIndexReporterTest {
             });
 
             assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isEqualTo(1);
+            Object capturedItem = ((Map<?, ?>) capturedField.get(null)).values().iterator().next();
+            Field fingerprintField = capturedItem.getClass().getDeclaredField("fingerprint");
+            fingerprintField.setAccessible(true);
+            assertThat(fingerprintField.get(capturedItem))
+                    .isEqualTo(callStatic(RepeaterTabsIndexReporter.class, "fingerprintFor", reboundBinding))
+                    .isNotEqualTo(callStatic(RepeaterTabsIndexReporter.class, "fingerprintFor", firstBinding));
         } finally {
             RepeaterTabsIndexReporter.closeCaptureWindowForCurrentRun();
             startupSelectionField.set(null, null);
@@ -669,7 +749,7 @@ class RepeaterTabsIndexReporterTest {
     }
 
     @Test
-    void captureFromEditorContext_keepsStartupBindings_withReadableTabMetadata_evenWithoutSlotIdentity() throws Exception {
+    void captureFromEditorContext_ignoresStartupBindings_withReadableMetadataButNoApprovedSlot() throws Exception {
         ConfigState.State previousState = RuntimeConfig.getState();
         boolean previousRunning = RuntimeConfig.isExportRunning();
         Field startupSelectionField = RepeaterTabsIndexReporter.class.getDeclaredField("currentStartupSelectionMetadata");
@@ -704,7 +784,7 @@ class RepeaterTabsIndexReporterTest {
                             "request_editor",
                             null));
 
-            assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isEqualTo(1);
+            assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isZero();
         } finally {
             RepeaterTabsIndexReporter.closeCaptureWindowForCurrentRun();
             startupSelectionField.set(null, null);

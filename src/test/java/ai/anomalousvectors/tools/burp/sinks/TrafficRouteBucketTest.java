@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
@@ -51,7 +52,7 @@ class TrafficRouteBucketTest {
     void fromToolType_routesProxyWebSocketToSource() {
         TrafficRouteBucket.Route route = TrafficRouteBucket.fromToolType("PROXY_WEBSOCKET");
         assertThat(route.kind()).isEqualTo(TrafficRouteBucket.Kind.SOURCE);
-        assertThat(route.key()).isEqualTo(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET);
+        assertThat(route.key()).isEqualTo(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE);
     }
 
     @Test
@@ -73,7 +74,7 @@ class TrafficRouteBucketTest {
         Map<String, Object> doc = new LinkedHashMap<>();
         doc.put("burp", Map.of("reporting_tool", "Proxy WebSocket"));
         assertThat(TrafficRouteBucket.fromDocument(doc).key())
-                .isEqualTo(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET);
+                .isEqualTo(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE);
 
         Map<String, Object> docWithoutReporter = new HashMap<>();
         assertThat(TrafficRouteBucket.fromDocument(docWithoutReporter).key())
@@ -99,11 +100,19 @@ class TrafficRouteBucketTest {
     }
 
     @Test
-    void recordOpenSearchPermanentAndRetryQueueDrops_routeSeparatelyAndFoldUnderProxyHistory() {
+    void routeGate_coversAllProxyAndProxyHistorySelectionCombinations() {
+        assertWebSocketRouteGate(List.of("proxy"), true, false);
+        assertWebSocketRouteGate(List.of("proxy_history"), false, true);
+        assertWebSocketRouteGate(List.of("proxy", "proxy_history"), true, true);
+        assertWebSocketRouteGate(List.of("repeater"), false, false);
+    }
+
+    @Test
+    void recordOpenSearchPermanentAndRetryQueueDrops_routeToTheirDisplaySources() {
         resetStats();
         TrafficRouteBucket.recordOpenSearchPermanentDrop(TrafficRouteBucket.proxyHistorySnapshot(), 2);
         TrafficRouteBucket.recordOpenSearchPermanentDrop(TrafficRouteBucket.fromToolType("REPEATER_TABS"), 1);
-        TrafficRouteBucket.recordOpenSearchRetryQueueDrop(TrafficRouteBucket.proxyWebSocket(), 3);
+        TrafficRouteBucket.recordOpenSearchRetryQueueDrop(TrafficRouteBucket.proxyWebSocketLive(), 3);
         TrafficRouteBucket.recordOpenSearchRetryQueueDrop(TrafficRouteBucket.fromToolType("INTRUDER"), 4);
 
         assertThat(ExportStats.getTrafficSourcePermanentDrops(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT))
@@ -112,10 +121,11 @@ class TrafficRouteBucketTest {
         assertThat(TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops("PROXY_HISTORY")).isEqualTo(2);
         assertThat(TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops("REPEATER_TABS")).isEqualTo(1);
 
-        assertThat(ExportStats.getTrafficSourceRetryQueueDrops(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+        assertThat(ExportStats.getTrafficSourceRetryQueueDrops(
+                        TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
                 .isEqualTo(3);
         assertThat(ExportStats.getTrafficToolTypeRetryQueueDrops("INTRUDER")).isEqualTo(4);
-        assertThat(TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops("PROXY_HISTORY")).isEqualTo(3);
+        assertThat(TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops("PROXY")).isEqualTo(3);
         assertThat(TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops("INTRUDER")).isEqualTo(4);
     }
 
@@ -129,13 +139,20 @@ class TrafficRouteBucketTest {
                 "tool-burp-traffic",
                 "traffic",
                 Map.of("burp", Map.of("reporting_tool", "Proxy WebSocket")));
+        PreparedExportDocument proxyWsHistory = ExportDocumentIdentity.prepareWithTrafficRoute(
+                "tool-burp-traffic",
+                "traffic",
+                Map.of("burp", Map.of("reporting_tool", "Proxy WebSocket")),
+                TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_HISTORY);
         PreparedExportDocument repeater = ExportDocumentIdentity.prepare(
                 "tool-burp-traffic",
                 "traffic",
                 Map.of("burp", Map.of("reporting_tool", "Repeater")));
 
         assertThat(TrafficRouteBucket.countQueuedForDisplaySource(
-                "PROXY_HISTORY", List.of(proxyHistory, proxyWs, repeater))).isEqualTo(2);
+                "PROXY_HISTORY", List.of(proxyHistory, proxyWs, proxyWsHistory, repeater))).isEqualTo(2);
+        assertThat(TrafficRouteBucket.countQueuedForDisplaySource(
+                "PROXY", List.of(proxyHistory, proxyWs, proxyWsHistory, repeater))).isEqualTo(1);
         assertThat(TrafficRouteBucket.countQueuedForDisplaySource(
                 "REPEATER", List.of(proxyHistory, proxyWs, repeater))).isEqualTo(1);
         assertThat(TrafficRouteBucket.countQueuedForDisplaySource("INTRUDER", List.of(repeater))).isZero();
@@ -155,10 +172,11 @@ class TrafficRouteBucketTest {
     @Test
     void recordOpenSearchFailure_routesSourceAndToolTypeSeparately() {
         resetStats();
-        TrafficRouteBucket.recordOpenSearchFailure(TrafficRouteBucket.proxyWebSocket(), 4);
+        TrafficRouteBucket.recordOpenSearchFailure(TrafficRouteBucket.proxyWebSocketLive(), 4);
         TrafficRouteBucket.recordOpenSearchFailure(TrafficRouteBucket.fromToolType("INTRUDER"), 1);
 
-        assertThat(ExportStats.getTrafficSourceFailureCount(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+        assertThat(ExportStats.getTrafficSourceFailureCount(
+                        TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
                 .isEqualTo(4);
         assertThat(ExportStats.getTrafficToolTypeFailureCount("INTRUDER")).isEqualTo(1);
     }
@@ -175,37 +193,43 @@ class TrafficRouteBucketTest {
     }
 
     @Test
-    void resolveOpenSearchSourceSuccess_foldsSnapshotAndWebSocketUnderProxyHistoryRow() {
+    void resolveOpenSearchSourceSuccess_separatesHistoricAndLiveWebSockets() {
         resetStats();
         TrafficRouteBucket.recordOpenSearchSuccess(
                 TrafficRouteBucket.fromToolType("PROXY_HISTORY"), 2); // proxy_history_snapshot
-        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.proxyWebSocket(), 3);
+        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.proxyWebSocketHistory(), 3);
+        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.proxyWebSocketLive(), 4);
         // A plain PROXY_HISTORY tool-type value should never land in the tool-type map because
         // the route bucket always resolves PROXY_HISTORY -> SOURCE, but confirm the display path
         // is stable when the tool-type map is empty.
         assertThat(TrafficRouteBucket.resolveOpenSearchSourceSuccess("PROXY_HISTORY")).isEqualTo(5);
+        assertThat(TrafficRouteBucket.resolveOpenSearchSourceSuccess("PROXY")).isEqualTo(4);
         assertThat(TrafficRouteBucket.resolveOpenSearchSourceFailure("PROXY_HISTORY")).isZero();
     }
 
     @Test
-    void resolveFileSourceSuccess_foldsSnapshotAndWebSocketUnderProxyHistoryRow() {
+    void resolveFileSourceSuccess_separatesHistoricAndLiveWebSockets() {
         resetStats();
         TrafficRouteBucket.recordFileSuccess(TrafficRouteBucket.proxyHistorySnapshot(), 4);
-        TrafficRouteBucket.recordFileSuccess(TrafficRouteBucket.proxyWebSocket(), 1);
+        TrafficRouteBucket.recordFileSuccess(TrafficRouteBucket.proxyWebSocketHistory(), 1);
+        TrafficRouteBucket.recordFileSuccess(TrafficRouteBucket.proxyWebSocketLive(), 2);
         assertThat(TrafficRouteBucket.resolveFileSourceSuccess("PROXY_HISTORY")).isEqualTo(5);
+        assertThat(TrafficRouteBucket.resolveFileSourceSuccess("PROXY")).isEqualTo(2);
     }
 
     @Test
     void recordBulkOutcome_fullSuccess_updatesTrafficAndRouteSuccessCounters() {
         resetStats();
-        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocket();
+        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocketLive();
         TrafficRouteBucket.recordBulkOutcome(route, 4, 4, true, "Proxy WebSocket bulk push");
 
         assertThat(ExportStats.getSuccessCount("traffic")).isEqualTo(4);
         assertThat(ExportStats.getFailureCount("traffic")).isZero();
-        assertThat(ExportStats.getTrafficSourceSuccessCount(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+        assertThat(ExportStats.getTrafficSourceSuccessCount(
+                        TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
                 .isEqualTo(4);
-        assertThat(ExportStats.getTrafficSourceFailureCount(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+        assertThat(ExportStats.getTrafficSourceFailureCount(
+                        TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
                 .isZero();
     }
 
@@ -242,14 +266,16 @@ class TrafficRouteBucketTest {
     @Test
     void recordBulkOutcome_openSearchInactive_isNoop() {
         resetStats();
-        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocket();
+        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocketLive();
         TrafficRouteBucket.recordBulkOutcome(route, 4, 2, false, "label");
 
         assertThat(ExportStats.getSuccessCount("traffic")).isZero();
         assertThat(ExportStats.getFailureCount("traffic")).isZero();
-        assertThat(ExportStats.getTrafficSourceSuccessCount(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+        assertThat(ExportStats.getTrafficSourceSuccessCount(
+                        TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
                 .isZero();
-        assertThat(ExportStats.getTrafficSourceFailureCount(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+        assertThat(ExportStats.getTrafficSourceFailureCount(
+                        TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
                 .isZero();
     }
 
@@ -275,12 +301,13 @@ class TrafficRouteBucketTest {
     @Test
     void recordBulkOutcome_clampsNegativeAttemptedToZero() {
         resetStats();
-        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocket();
+        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocketLive();
         TrafficRouteBucket.recordBulkOutcome(route, -3, 5, true, "label");
 
         assertThat(ExportStats.getSuccessCount("traffic")).isZero();
         assertThat(ExportStats.getFailureCount("traffic")).isZero();
-        assertThat(ExportStats.getTrafficSourceSuccessCount(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET))
+        assertThat(ExportStats.getTrafficSourceSuccessCount(
+                        TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
                 .isZero();
     }
 
@@ -303,5 +330,34 @@ class TrafficRouteBucketTest {
         assertThat(ExportStats.getTrafficToolTypeFailureCount("REPEATER")).isZero();
         assertThat(FileExportStats.getTrafficToolTypeSuccessCount("REPEATER")).isZero();
         assertThat(FileExportStats.getTrafficToolTypeFailureCount("REPEATER")).isZero();
+    }
+
+    private static void assertWebSocketRouteGate(
+            List<String> selectedTools, boolean liveExpected, boolean historyExpected) {
+        RuntimeConfig.updateState(new ConfigState.State(
+                List.of("traffic"),
+                "all",
+                List.of(),
+                new ConfigState.Sinks(
+                        false,
+                        null,
+                        true,
+                        "https://opensearch.url:9200",
+                        null,
+                        null,
+                        false),
+                ConfigState.DEFAULT_SETTINGS_SUB,
+                selectedTools,
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                null));
+        RuntimeConfig.setExportRunning(true);
+        RuntimeConfig.TrafficExportGate gate = RuntimeConfig.trafficExportGate();
+
+        assertThat(TrafficRouteBucket.isRouteEnabled(
+                        TrafficRouteBucket.proxyWebSocketLive(), gate))
+                .isEqualTo(liveExpected);
+        assertThat(TrafficRouteBucket.isRouteEnabled(
+                        TrafficRouteBucket.proxyWebSocketHistory(), gate))
+                .isEqualTo(historyExpected);
     }
 }

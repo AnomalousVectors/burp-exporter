@@ -1344,11 +1344,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             }
         }
         if (isTrafficToolSelected("proxy")) {
-            if (!isTrafficToolSelected("proxy_history")) {
-                ProxyWebSocketIndexReporter.startLivePollAfterCurrentHistorySeed(false);
-            } else {
-                ProxyWebSocketIndexReporter.startLivePoll();
-            }
+            ProxyWebSocketIndexReporter.startLivePoll();
         }
         if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;

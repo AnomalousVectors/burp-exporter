@@ -31,7 +31,11 @@ public final class FileExportStats {
     private static final List<String> INDEX_KEYS = Collections.unmodifiableList(
             Arrays.asList("traffic", "exporter", "settings", "sitemap", "findings"));
     private static final List<String> TRAFFIC_SOURCE_KEYS = Collections.unmodifiableList(
-            Arrays.asList("proxy_live_http", "proxy_history_snapshot", "proxy_websocket"));
+            Arrays.asList(
+                    "proxy_live_http",
+                    "proxy_history_snapshot",
+                    "proxy_websocket_live",
+                    "proxy_websocket_history"));
     private static final List<String> TRAFFIC_TOOL_TYPE_KEYS = Collections.unmodifiableList(
             Arrays.asList(
                     "BURP_AI",

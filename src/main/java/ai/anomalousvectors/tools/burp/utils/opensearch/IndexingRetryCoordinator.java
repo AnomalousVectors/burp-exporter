@@ -1793,7 +1793,7 @@ public final class IndexingRetryCoordinator {
         int attributed = 0;
         for (int i = 0; i < batch.size(); i++) {
             if (!failed[i]) {
-                TrafficRouteBucket.Route route = TrafficRouteBucket.fromDocument(batch.get(i).document());
+                TrafficRouteBucket.Route route = TrafficRouteBucket.fromPrepared(batch.get(i));
                 TrafficRouteBucket.recordOpenSearchRecovery(route, 1);
                 // Also bump route Exported so Proxy History / tool-type sub-rows match parent Traffic.
                 TrafficRouteBucket.recordOpenSearchSuccess(route, 1);
@@ -1823,7 +1823,8 @@ public final class IndexingRetryCoordinator {
         if (route.kind() == TrafficRouteBucket.Kind.SOURCE) {
             return switch (route.key()) {
                 case TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT -> "Proxy History";
-                case TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET -> "Proxy WebSocket";
+                case TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_HISTORY -> "Proxy WebSocket History";
+                case TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE -> "Proxy WebSocket";
                 default -> route.key();
             };
         }
@@ -2124,7 +2125,7 @@ public final class IndexingRetryCoordinator {
                 continue;
             }
             TrafficRouteBucket.recordOpenSearchRetryQueueDrop(
-                    TrafficRouteBucket.fromDocument(doc.document()), 1);
+                    TrafficRouteBucket.fromPrepared(doc), 1);
         }
     }
 
@@ -2143,7 +2144,7 @@ public final class IndexingRetryCoordinator {
                 continue;
             }
             TrafficRouteBucket.recordOpenSearchPermanentDrop(
-                    TrafficRouteBucket.fromDocument(doc.document()), 1);
+                    TrafficRouteBucket.fromPrepared(doc), 1);
         }
     }
 

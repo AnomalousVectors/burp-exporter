@@ -1099,7 +1099,7 @@ class StatsPanelTest {
         ExportStats.recordTrafficSourceRetryQueueDrop("proxy_history_snapshot", 2);
         ExportStats.recordTrafficToolTypeRetryQueueDrop("REPEATER", 3);
         ExportStats.recordPermanentDrop("traffic", 4);
-        ExportStats.recordTrafficSourcePermanentDrop("proxy_websocket", 1);
+        ExportStats.recordTrafficSourcePermanentDrop("proxy_websocket_history", 1);
         ExportStats.recordTrafficToolTypePermanentDrop("INTRUDER", 3);
         onEdt(() -> call(panel, "refreshDashboard"));
 
@@ -1114,31 +1114,30 @@ class StatsPanelTest {
     }
 
     @Test
-    void mergedTable_countsProxyWebSocketsUnderProxyHistorySubRowAndTrafficIndex() {
+    void mergedTable_countsLiveProxyWebSocketsUnderProxySubRowAndTrafficIndex() {
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
         String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
 
         onEdt(() -> call(panel, "refreshDashboard"));
 
-        long proxyHistoryBefore = sourceTableLong(indexModel, indent + "Proxy History", 1);
+        long proxyBefore = sourceTableLong(indexModel, indent + "Proxy", 1);
         long trafficIndexBefore = sourceTableLong(indexModel, "Traffic", 1);
-        long proxyHistoryFailuresBefore = sourceTableLong(indexModel, indent + "Proxy History", 2);
+        long proxyFailuresBefore = sourceTableLong(indexModel, indent + "Proxy", 2);
         long trafficIndexFailuresBefore = sourceTableLong(indexModel, "Traffic", 2);
 
         ExportStats.recordSuccess("traffic", 7);
-        ExportStats.recordTrafficSourceSuccess("proxy_websocket", 7);
+        ExportStats.recordTrafficSourceSuccess("proxy_websocket_live", 7);
         ExportStats.recordFailure("traffic", 2);
-        ExportStats.recordTrafficSourceFailure("proxy_websocket", 2);
+        ExportStats.recordTrafficSourceFailure("proxy_websocket_live", 2);
 
         onEdt(() -> call(panel, "refreshDashboard"));
 
-        // Proxy WebSocket success/failure counts roll up into the Proxy History sub-row in
-        // the merged table (TrafficRouteBucket.resolveOpenSearchSourceSuccess folds them in)
-        // and into the Traffic index row.
-        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 1) - proxyHistoryBefore).isEqualTo(7);
+        // Live Proxy WebSocket counts roll up into Proxy while the Traffic row retains the
+        // destination-wide total.
+        assertThat(sourceTableLong(indexModel, indent + "Proxy", 1) - proxyBefore).isEqualTo(7);
         assertThat(sourceTableLong(indexModel, "Traffic", 1) - trafficIndexBefore).isEqualTo(7);
-        assertThat(sourceTableLong(indexModel, indent + "Proxy History", 2) - proxyHistoryFailuresBefore).isEqualTo(2);
+        assertThat(sourceTableLong(indexModel, indent + "Proxy", 2) - proxyFailuresBefore).isEqualTo(2);
         assertThat(sourceTableLong(indexModel, "Traffic", 2) - trafficIndexFailuresBefore).isEqualTo(2);
     }
 
@@ -1159,11 +1158,11 @@ class StatsPanelTest {
         ExportStats.recordTrafficToolTypeSuccess("PROXY", 5);
         ExportStats.recordTrafficToolTypeSuccess("REPEATER", 3);
         ExportStats.recordTrafficSourceSuccess("proxy_history_snapshot", 4);
-        ExportStats.recordTrafficSourceSuccess("proxy_websocket", 5);
+        ExportStats.recordTrafficSourceSuccess("proxy_websocket_live", 5);
 
         ExportStats.recordFailure("traffic", 4);
         ExportStats.recordTrafficSourceFailure("proxy_history_snapshot", 1);
-        ExportStats.recordTrafficSourceFailure("proxy_websocket", 3);
+        ExportStats.recordTrafficSourceFailure("proxy_websocket_live", 3);
 
         onEdt(() -> call(panel, "refreshDashboard"));
 

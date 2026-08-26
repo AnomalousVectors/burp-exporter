@@ -27,18 +27,37 @@ public final class TrafficQueueEntry {
         return new TrafficQueueEntry(prepared);
     }
 
+    /**
+     * Prepares a traffic document using the route derived from its reporting-tool field.
+     *
+     * @param document traffic document; {@code null} returns {@code null}
+     * @return prepared queue entry, or {@code null} for a null document
+     */
     public static TrafficQueueEntry from(Map<String, Object> document) {
+        return from(document, TrafficRouteBucket.fromDocument(document));
+    }
+
+    static TrafficQueueEntry from(
+            Map<String, Object> document, TrafficRouteBucket.Route route) {
         if (document == null) {
             return null;
         }
-        return new TrafficQueueEntry(ExportDocumentIdentity.prepare(
-                TrafficRouteBucket.trafficIndexName(), TrafficRouteBucket.INDEX_KEY, document));
+        TrafficRouteBucket.Route resolved = route == null
+                ? TrafficRouteBucket.fromDocument(document)
+                : route;
+        return new TrafficQueueEntry(ExportDocumentIdentity.prepareWithTrafficRoute(
+                TrafficRouteBucket.trafficIndexName(),
+                TrafficRouteBucket.INDEX_KEY,
+                document,
+                resolved.key()));
     }
 
+    /** Returns the immutable prepared operation carried by this entry. */
     public PreparedExportDocument prepared() {
         return prepared;
     }
 
+    /** Returns the filtered traffic document carried by the prepared operation. */
     public Map<String, Object> document() {
         return prepared.document();
     }

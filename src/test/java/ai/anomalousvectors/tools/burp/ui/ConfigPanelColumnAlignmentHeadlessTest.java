@@ -55,7 +55,7 @@ class ConfigPanelColumnAlignmentHeadlessTest {
     }
 
     @Test
-    void destination_radios_are_opensearch_first_and_details_align_inputs() throws Exception {
+    void destination_radios_follow_approved_order_and_details_align_inputs() throws Exception {
         ConfigPanel panel = new ConfigPanel();
         JCheckBox filesEnable = findByName(panel, "files.enable", JCheckBox.class);
         runEdt(() -> {
@@ -78,11 +78,11 @@ class ConfigPanelColumnAlignmentHeadlessTest {
 
         assertThat(openSearchAmazon.getParent()).isSameAs(elasticSearch.getParent());
         assertThat(openSearch.getParent()).isSameAs(openSearchAmazon.getParent());
-        // OpenSearch (recommended) first, then Amazon, then Elasticsearch.
-        assertThat(openSearch.getParent().getComponentZOrder(openSearch))
-                .isLessThan(openSearch.getParent().getComponentZOrder(openSearchAmazon));
+        // Amazon OpenSearch first, then Elasticsearch, then OpenSearch.
         assertThat(openSearchAmazon.getParent().getComponentZOrder(openSearchAmazon))
                 .isLessThan(openSearchAmazon.getParent().getComponentZOrder(elasticSearch));
+        assertThat(elasticSearch.getParent().getComponentZOrder(elasticSearch))
+                .isLessThan(elasticSearch.getParent().getComponentZOrder(openSearch));
 
         assertThat(testConnection.getParent().getName()).isEqualTo("os.destination.testSlot");
         assertThat(openSearchUrl.isVisible()).isTrue();

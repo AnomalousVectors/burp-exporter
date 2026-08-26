@@ -364,12 +364,12 @@ final class TrafficSpillFileQueue {
     }
 
     /**
-     * Removes spilled documents that match {@code predicate}.
+     * Removes spilled entries that match {@code predicate}.
      *
      * <p>This is used only for live config deselection, not the hot export path. Malformed or
      * unreadable spill files are removed because they cannot be routed safely.</p>
      */
-    int removeIf(Predicate<Map<String, Object>> predicate) {
+    int removeIf(Predicate<TrafficQueueEntry> predicate) {
         if (predicate == null) {
             return 0;
         }
@@ -380,8 +380,8 @@ final class TrafficSpillFileQueue {
             while (iterator.hasNext()) {
                 Path file = iterator.next();
                 long fileBytes = sizeOf(file);
-                Map<String, Object> document = readDocumentForPurge(file);
-                if (document == null || predicate.test(document)) {
+                TrafficQueueEntry entry = readEntryForPurge(file);
+                if (entry == null || predicate.test(entry)) {
                     deleteSpillFile(file);
                     iterator.remove();
                     totalBytes = Math.max(0, totalBytes - fileBytes);
@@ -444,9 +444,9 @@ final class TrafficSpillFileQueue {
         Files.createDirectories(directory);
     }
 
-    private Map<String, Object> readDocumentForPurge(Path file) {
+    private TrafficQueueEntry readEntryForPurge(Path file) {
         try {
-            return extractDocument(Files.readAllBytes(file));
+            return extractEntry(Files.readAllBytes(file));
         } catch (IOException e) {
             Logger.logError("[TrafficSpill] Purge read failed: " + e.getMessage());
             return null;
@@ -544,6 +544,9 @@ final class TrafficSpillFileQueue {
         preparedFields.put("index_key", prepared.indexKey());
         preparedFields.put("estimated_bulk_bytes", prepared.estimatedBulkBytes());
         preparedFields.put("bulk_ndjson_bytes", prepared.bulkNdjsonBytes());
+        if (prepared.trafficRouteKey() != null && !prepared.trafficRouteKey().isBlank()) {
+            preparedFields.put("traffic_route_key", prepared.trafficRouteKey());
+        }
         envelope.put("prepared", preparedFields);
         return envelope;
     }
@@ -556,6 +559,7 @@ final class TrafficSpillFileQueue {
             String indexName = textValue(preparedNode.get("index_name"));
             String indexKey = textValue(preparedNode.get("index_key"));
             String operationId = textValue(preparedNode.get("operation_id"));
+            String trafficRouteKey = textValue(preparedNode.get("traffic_route_key"));
             JsonNode bytesNode = preparedNode.get("bulk_ndjson_bytes");
             if (indexName != null && indexKey != null && bytesNode != null) {
                 byte[] bulkBytes = bytesNode.binaryValue();
@@ -565,11 +569,18 @@ final class TrafficSpillFileQueue {
                         // Legacy prepared spills had action metadata without an id. Re-prepare once
                         // so all future retry/re-spill cycles carry one stable operation identity.
                         return TrafficQueueEntry.fromPrepared(
-                                ExportDocumentIdentity.prepare(indexName, indexKey, document));
+                                ExportDocumentIdentity.prepareWithTrafficRoute(
+                                        indexName, indexKey, document, trafficRouteKey));
                     }
                     long estimatedBytes = preparedNode.path("estimated_bulk_bytes").asLong(bulkBytes.length);
                     return TrafficQueueEntry.fromPrepared(new PreparedExportDocument(
-                            operationId, indexName, indexKey, document, estimatedBytes, bulkBytes));
+                            operationId,
+                            indexName,
+                            indexKey,
+                            document,
+                            estimatedBytes,
+                            bulkBytes,
+                            trafficRouteKey));
                 }
             }
         }

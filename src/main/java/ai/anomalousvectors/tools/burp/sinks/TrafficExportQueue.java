@@ -246,10 +246,18 @@ public final class TrafficExportQueue {
      * @return {@code true} when the document was queued or spilled; {@code false} when it was dropped
      */
     public static boolean offerAccepted(Map<String, Object> document) {
+        return offerAccepted(document, TrafficRouteBucket.fromDocument(document));
+    }
+
+    static boolean offerAccepted(
+            Map<String, Object> document, TrafficRouteBucket.Route route) {
         if (document == null) {
             return false;
         }
-        if (!isDocumentCurrentlyEnabled(document)) {
+        TrafficRouteBucket.Route resolvedRoute = route == null
+                ? TrafficRouteBucket.fromDocument(document)
+                : route;
+        if (!isRouteCurrentlyEnabled(resolvedRoute)) {
             return false;
         }
         if (!spillQueue.canAcceptBytes(1L)
@@ -261,7 +269,7 @@ public final class TrafficExportQueue {
             OVERFLOW_LOGS.record("spill_full_reject_new", 1, TrafficExportQueue::overflowContext);
             return false;
         }
-        TrafficQueueEntry entry = TrafficQueueEntry.from(document);
+        TrafficQueueEntry entry = TrafficQueueEntry.from(document, resolvedRoute);
         if (entry == null) {
             return false;
         }
@@ -334,14 +342,14 @@ public final class TrafficExportQueue {
         AtomicInteger purged = new AtomicInteger();
         queue.removeIf(entry -> {
             boolean remove = !TrafficRouteBucket.isRouteEnabled(
-                    TrafficRouteBucket.fromDocument(entry.document()), gate);
+                    TrafficRouteBucket.fromPrepared(entry.prepared()), gate);
             if (remove) {
                 purged.incrementAndGet();
             }
             return remove;
         });
-        purged.addAndGet(spillQueue.removeIf(
-                doc -> !TrafficRouteBucket.isRouteEnabled(TrafficRouteBucket.fromDocument(doc), gate)));
+        purged.addAndGet(spillQueue.removeIf(entry -> !TrafficRouteBucket.isRouteEnabled(
+                TrafficRouteBucket.fromPrepared(entry.prepared()), gate)));
         return purged.get();
     }
 
@@ -627,7 +635,7 @@ public final class TrafficExportQueue {
             if (entry == null) {
                 return;
             }
-            if (!isDocumentCurrentlyEnabled(entry.document())) {
+            if (!isEntryCurrentlyEnabled(entry)) {
                 continue;
             }
             if (!queue.offerWithinBudget(entry)) {
@@ -674,7 +682,7 @@ public final class TrafficExportQueue {
             if (entry == null) {
                 break;
             }
-            if (!isDocumentCurrentlyEnabled(entry.document())) {
+            if (!isEntryCurrentlyEnabled(entry)) {
                 continue;
             }
             PreparedExportDocument prepared = entry.prepared();
@@ -694,10 +702,19 @@ public final class TrafficExportQueue {
     }
 
     static boolean isDocumentCurrentlyEnabled(Map<String, Object> document) {
+        return isRouteCurrentlyEnabled(TrafficRouteBucket.fromDocument(document));
+    }
+
+    private static boolean isEntryCurrentlyEnabled(TrafficQueueEntry entry) {
+        return entry != null && isRouteCurrentlyEnabled(
+                TrafficRouteBucket.fromPrepared(entry.prepared()));
+    }
+
+    private static boolean isRouteCurrentlyEnabled(TrafficRouteBucket.Route route) {
         RuntimeConfig.TrafficExportGate gate = RuntimeConfig.trafficExportGate();
         return RuntimeConfig.isExportRunning()
                 && gate.anyTrafficExportEnabled()
-                && TrafficRouteBucket.isRouteEnabled(TrafficRouteBucket.fromDocument(document), gate);
+                && TrafficRouteBucket.isRouteEnabled(route, gate);
     }
 
     /**

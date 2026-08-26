@@ -447,7 +447,7 @@ public final class FileExportService {
         if (!"traffic".equals(document.indexKey()) || document.document() == null) {
             return;
         }
-        TrafficRouteBucket.recordFileSuccess(TrafficRouteBucket.fromDocument(document.document()), 1);
+        TrafficRouteBucket.recordFileSuccess(TrafficRouteBucket.fromPrepared(document), 1);
     }
 
     /**
@@ -463,7 +463,7 @@ public final class FileExportService {
         if (!"traffic".equals(document.indexKey()) || document.document() == null) {
             return;
         }
-        TrafficRouteBucket.recordFileFailure(TrafficRouteBucket.fromDocument(document.document()), 1);
+        TrafficRouteBucket.recordFileFailure(TrafficRouteBucket.fromPrepared(document), 1);
     }
 
     /**

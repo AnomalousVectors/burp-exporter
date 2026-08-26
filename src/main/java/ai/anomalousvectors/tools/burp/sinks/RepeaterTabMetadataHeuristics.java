@@ -635,7 +635,7 @@ final class RepeaterTabMetadataHeuristics {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
-    private static boolean isMessageViewTabPane(JTabbedPane pane) {
+    static boolean isMessageViewTabPane(JTabbedPane pane) {
         int titledTabs = 0;
         int knownViewTabs = 0;
         for (int i = 0; i < pane.getTabCount(); i++) {

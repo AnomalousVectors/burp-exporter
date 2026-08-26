@@ -32,7 +32,32 @@ public final class ExportDocumentIdentity {
      */
     public static PreparedExportDocument prepare(String indexName, String indexKey, Map<String, Object> document) {
         return preparePreservingOperationId(
-                UUID.randomUUID().toString(), indexName, indexKey, document);
+                UUID.randomUUID().toString(), indexName, indexKey, document, null);
+    }
+
+    /**
+     * Filters and prepares a traffic document with an internal attribution route.
+     *
+     * <p>The route key stays outside the serialized document source and bulk NDJSON. It is carried
+     * only with the prepared operation so queue, spill, retry, and sink statistics retain the
+     * producer's live-versus-history distinction.</p>
+     *
+     * @param indexName full target index name
+     * @param indexKey short logical index key
+     * @param document document source; {@code null} is filtered to an empty map
+     * @param trafficRouteKey internal traffic attribution key; blank values are treated as absent
+     * @return newly identified and serialized prepared operation
+     * @throws IllegalArgumentException if a blank index key cannot be derived from
+     *                                  {@code indexName}
+     * @throws UncheckedIOException if the filtered source cannot be serialized
+     */
+    public static PreparedExportDocument prepareWithTrafficRoute(
+            String indexName,
+            String indexKey,
+            Map<String, Object> document,
+            String trafficRouteKey) {
+        return preparePreservingOperationId(
+                UUID.randomUUID().toString(), indexName, indexKey, document, trafficRouteKey);
     }
 
     /**
@@ -56,9 +81,18 @@ public final class ExportDocumentIdentity {
             String indexName,
             String indexKey,
             Map<String, Object> document) {
+        return preparePreservingOperationId(operationId, indexName, indexKey, document, null);
+    }
+
+    private static PreparedExportDocument preparePreservingOperationId(
+            String operationId,
+            String indexName,
+            String indexKey,
+            Map<String, Object> document,
+            String trafficRouteKey) {
         String normalizedIndexKey = normalizeIndexKey(indexName, indexKey);
         Map<String, Object> filtered = ExportFieldFilter.filterDocument(document, normalizedIndexKey);
-        return serialize(operationId, indexName, normalizedIndexKey, filtered);
+        return serialize(operationId, indexName, normalizedIndexKey, filtered, trafficRouteKey);
     }
 
     /**
@@ -86,7 +120,8 @@ public final class ExportDocumentIdentity {
                 original.operationId(),
                 original.indexName(),
                 normalizedIndexKey,
-                derivedDocument == null ? Map.of() : derivedDocument);
+                derivedDocument == null ? Map.of() : derivedDocument,
+                original.trafficRouteKey());
     }
 
     private static String normalizeIndexKey(String indexName, String indexKey) {
@@ -99,7 +134,8 @@ public final class ExportDocumentIdentity {
             String operationId,
             String indexName,
             String normalizedIndexKey,
-            Map<String, Object> document) {
+            Map<String, Object> document,
+            String trafficRouteKey) {
         if (operationId == null || operationId.isBlank()) {
             throw new IllegalArgumentException("operationId must not be blank");
         }
@@ -115,6 +151,7 @@ public final class ExportDocumentIdentity {
                 normalizedIndexKey,
                 document,
                 bulkNdjsonBytes.length,
-                bulkNdjsonBytes);
+                bulkNdjsonBytes,
+                trafficRouteKey == null || trafficRouteKey.isBlank() ? null : trafficRouteKey);
     }
 }

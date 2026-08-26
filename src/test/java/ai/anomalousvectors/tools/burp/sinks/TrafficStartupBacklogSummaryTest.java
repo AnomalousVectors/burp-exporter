@@ -141,7 +141,7 @@ class TrafficStartupBacklogSummaryTest {
             TrafficStartupBacklogSummary.complete(
                     TrafficStartupBacklogSummary.Component.PROXY_WEBSOCKET,
                     2,
-                    SnapshotSummary.forRoute(TrafficRouteBucket.proxyWebSocket()),
+                    SnapshotSummary.forRoute(TrafficRouteBucket.proxyWebSocketHistory()),
                     secondRun);
             SwingUtilities.invokeAndWait(() -> {});
 

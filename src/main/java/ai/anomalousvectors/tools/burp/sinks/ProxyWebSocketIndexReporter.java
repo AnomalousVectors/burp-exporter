@@ -6,6 +6,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,9 +34,9 @@ import burp.api.montoya.proxy.ProxyWebSocketMessage;
  *   <li><b>Proxy History</b> ({@code proxy_history}): one-shot full {@code webSocketHistory()} export
  *       on Start, then stop.</li>
  *   <li><b>Proxy</b> ({@code proxy}): recurring diff poll (default 10s) of {@code webSocketHistory()}
- *       for frames after the last poll cursor; new frames are offered to
- *       {@link TrafficExportQueue}. The poll stops when export stops or {@code proxy} is deselected
- *       ({@link #refreshLivePollScheduleForCurrentState()}).</li>
+ *       for frames after the run's asynchronously captured baseline; new frames are offered to
+ *       {@link TrafficExportQueue}. The poll stops when export stops or {@code proxy} is
+ *       deselected ({@link #refreshLivePollScheduleForCurrentState()}).</li>
  * </ul>
  *
  * <p>Non-proxy live WebSocket traffic uses {@link ToolWebSocketLiveHandler}.</p>
@@ -43,13 +44,18 @@ import burp.api.montoya.proxy.ProxyWebSocketMessage;
 public final class ProxyWebSocketIndexReporter {
 
     private static final int LIVE_POLL_INTERVAL_SECONDS = 10;
-    private static final LazyScheduler HISTORIC_SCHEDULER =
-            new LazyScheduler("burp-exporter-proxy-websocket-historic");
+    private static final LazyScheduler BASELINE_SCHEDULER =
+            new LazyScheduler("burp-exporter-proxy-websocket-baseline");
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-proxy-websocket-reporter");
     private static final AtomicBoolean runInProgress = new AtomicBoolean();
     private static volatile int liveHistoryCursor;
     private static volatile String liveHistoryTailKey;
+    private static final Object LIVE_BASELINE_LOCK = new Object();
+    private static volatile ExportRunToken liveBaselineRunToken;
+    private static volatile boolean liveBaselineRequested;
+    private static volatile boolean liveBaselineFinished;
+    private static volatile long liveBaselineGeneration;
     private static final Object STARTUP_BACKLOG_LOCK = new Object();
     private static volatile StartupBacklogState startupBacklog;
     private static volatile ExportRunToken historicSnapshotRunToken;
@@ -60,23 +66,33 @@ public final class ProxyWebSocketIndexReporter {
     private ProxyWebSocketIndexReporter() {}
 
     /**
-     * Starts the recurring diff poll for live proxy WebSocket frames.
+     * Starts live proxy WebSocket capture after establishing the current history boundary.
      *
      * <p>No-op unless export is ready, traffic export is enabled, and {@code proxy} is selected.
-     * Does not run when only {@code proxy_history} is selected. When historic capture is also
-     * selected, records the live-poll request but defers scheduler startup until the run-scoped
-     * historic seed finishes. Safe to call from any thread and returns without waiting.</p>
+     * Does not run when only {@code proxy_history} is selected. With live-only capture, the
+     * existing history boundary is captured off the caller thread and skipped. When historic
+     * capture is also selected, the live poll starts from the completed snapshot boundary. Safe
+     * to call from any thread and returns without waiting.</p>
      */
     public static void startLivePoll() {
         livePollRequested = true;
-        ensureHistoricSnapshotStateForRun(RuntimeConfig.currentExportRunToken());
+        ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        ensureHistoricSnapshotStateForRun(token);
+        ensureLiveBaselineStateForRun(token);
         if (trafficSelectionAllowsHistoricWebSockets() && !historicSnapshotFinished) {
             return;
         }
         if (!shouldRunLivePoll()) {
             return;
         }
-        ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        if (!trafficSelectionAllowsHistoricWebSockets() && !liveBaselineFinished) {
+            requestLiveBaseline(token);
+            return;
+        }
+        startRecurringLivePoll(token);
+    }
+
+    private static void startRecurringLivePoll(ExportRunToken token) {
         SCHEDULER.startRecurring(
                 () -> {
                     if (RuntimeConfig.isExportRunActive(token)) {
@@ -92,30 +108,22 @@ public final class ProxyWebSocketIndexReporter {
      * Reconciles the live diff poll with the current runtime traffic selection.
      *
      * <p>Safe to call from any thread. Stops the scheduler when export is stopped, traffic export is
-     * disabled, or {@code proxy} is deselected. When {@code proxy_history} is selected during a run,
-     * queues its sliced historic seed once and keeps live polling stopped until that seed
+     * disabled, or {@code proxy} is deselected. A newly enabled live source first captures and
+     * skips the current history boundary. When {@code proxy_history} is selected during a run,
+     * queues its sliced historic snapshot once and keeps live polling stopped until that snapshot
      * completes.</p>
      */
     public static void refreshLivePollScheduleForCurrentState() {
         if (!shouldRunLivePoll()) {
             stopLivePollScheduler();
+            resetLiveBaselineForCurrentRun();
             return;
         }
         livePollRequested = true;
         ensureHistoricSnapshotStateForRun(RuntimeConfig.currentExportRunToken());
         if (trafficSelectionAllowsHistoricWebSockets() && !historicSnapshotFinished) {
+            resetLiveBaselineForCurrentRun();
             pushHistoricSnapshotNow();
-            return;
-        }
-        if (!SCHEDULER.isStarted()) {
-            startLivePoll();
-        }
-    }
-
-    /** Starts live polling when export state allows it (compat entry point for UI startup). */
-    public static void startLivePollAfterCurrentHistorySeed(boolean ignoredIncludeWhenHistoricSelected) {
-        if (!shouldRunLivePoll()) {
-            stopLivePollScheduler();
             return;
         }
         startLivePoll();
@@ -126,9 +134,9 @@ public final class ProxyWebSocketIndexReporter {
         SCHEDULER.stop();
     }
 
-    /** Stops schedulers and clears per-run poll cursor state. */
+    /** Stops baseline and poll schedulers and clears per-run cursor state. */
     public static void stop() {
-        HISTORIC_SCHEDULER.stop();
+        BASELINE_SCHEDULER.stop();
         stopLivePollScheduler();
         liveHistoryCursor = 0;
         liveHistoryTailKey = null;
@@ -139,6 +147,12 @@ public final class ProxyWebSocketIndexReporter {
             historicSnapshotRequested = false;
             historicSnapshotFinished = false;
             startupBacklog = null;
+        }
+        synchronized (LIVE_BASELINE_LOCK) {
+            liveBaselineRunToken = null;
+            liveBaselineRequested = false;
+            liveBaselineFinished = false;
+            liveBaselineGeneration++;
         }
     }
 
@@ -207,6 +221,80 @@ public final class ProxyWebSocketIndexReporter {
         startupBacklog = null;
     }
 
+    private static void ensureLiveBaselineStateForRun(ExportRunToken token) {
+        synchronized (LIVE_BASELINE_LOCK) {
+            if (Objects.equals(liveBaselineRunToken, token)) {
+                return;
+            }
+            liveBaselineRunToken = token;
+            liveBaselineRequested = false;
+            liveBaselineFinished = false;
+            liveBaselineGeneration++;
+        }
+    }
+
+    private static void resetLiveBaselineForCurrentRun() {
+        synchronized (LIVE_BASELINE_LOCK) {
+            liveBaselineRunToken = RuntimeConfig.currentExportRunToken();
+            liveBaselineRequested = false;
+            liveBaselineFinished = false;
+            liveBaselineGeneration++;
+        }
+    }
+
+    private static void requestLiveBaseline(ExportRunToken token) {
+        MontoyaApi api = MontoyaApiProvider.get();
+        if (api == null) {
+            return;
+        }
+        long generation;
+        synchronized (LIVE_BASELINE_LOCK) {
+            if (!Objects.equals(liveBaselineRunToken, token)
+                    || liveBaselineRequested
+                    || liveBaselineFinished) {
+                return;
+            }
+            liveBaselineRequested = true;
+            generation = liveBaselineGeneration;
+        }
+        try {
+            BASELINE_SCHEDULER.getOrStart()
+                    .execute(() -> seedLiveBaseline(api, token, generation));
+        } catch (RejectedExecutionException e) {
+            synchronized (LIVE_BASELINE_LOCK) {
+                if (Objects.equals(liveBaselineRunToken, token)
+                        && liveBaselineGeneration == generation) {
+                    liveBaselineRequested = false;
+                }
+            }
+        }
+    }
+
+    private static void seedLiveBaseline(
+            MontoyaApi api, ExportRunToken token, long generation) {
+        List<ProxyWebSocketMessage> history = safeWebSocketHistory(api);
+        synchronized (LIVE_BASELINE_LOCK) {
+            if (!Objects.equals(liveBaselineRunToken, token)
+                    || liveBaselineGeneration != generation
+                    || !RuntimeConfig.isExportRunActive(token)
+                    || !shouldRunLivePoll()
+                    || trafficSelectionAllowsHistoricWebSockets()) {
+                if (Objects.equals(liveBaselineRunToken, token)
+                        && liveBaselineGeneration == generation) {
+                    liveBaselineRequested = false;
+                }
+                return;
+            }
+            liveHistoryCursor = history.size();
+            liveHistoryTailKey = lastHistoryKey(history);
+            liveBaselineFinished = true;
+        }
+        Logger.logInfoPanelOnly("[LiveTraffic] ProxyWebSocket: skipped "
+                + history.size()
+                + " pre-existing history frame(s); live capture starts at the current tail.");
+        startRecurringLivePoll(token);
+    }
+
     /**
      * Runs one token-scoped proxy WebSocket startup slice.
      *
@@ -227,7 +315,7 @@ public final class ProxyWebSocketIndexReporter {
                 List<ProxyWebSocketMessage> history = safeWebSocketHistory(api);
                 List<ProxyWebSocketMessage> captured =
                         Collections.unmodifiableList(new ArrayList<>(history));
-                TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocket();
+                TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocketHistory();
                 state = new StartupBacklogState(
                         captured,
                         route,
@@ -308,8 +396,11 @@ public final class ProxyWebSocketIndexReporter {
                     Map<String, Object> doc = buildDocument(api, msg);
                     return doc == null
                             ? null
-                            : ExportDocumentIdentity.prepare(
-                                    indexName, TrafficRouteBucket.INDEX_KEY, doc);
+                            : ExportDocumentIdentity.prepareWithTrafficRoute(
+                                    indexName,
+                                    TrafficRouteBucket.INDEX_KEY,
+                                    doc,
+                                    state.route.key());
                 },
                 (chunk, outcome, nextChunkTarget) -> TrafficRouteBucket.recordBulkOutcome(
                         state.route,
@@ -328,7 +419,7 @@ public final class ProxyWebSocketIndexReporter {
         if (!RuntimeConfig.isExportRunActive(state.token)) {
             return;
         }
-        liveHistoryCursor = Math.max(liveHistoryCursor, state.history.size());
+        liveHistoryCursor = state.history.size();
         liveHistoryTailKey = lastHistoryKey(state.history);
         long durationMs = (System.nanoTime() - state.startNs) / 1_000_000L;
         ExportStats.recordSnapshotLastRun(
@@ -447,8 +538,11 @@ public final class ProxyWebSocketIndexReporter {
                     TrafficStartupBacklogSummary.complete(
                             TrafficStartupBacklogSummary.Component.PROXY_WEBSOCKET,
                             0,
-                            SnapshotSummary.forRoute(TrafficRouteBucket.proxyWebSocket()),
+                            SnapshotSummary.forRoute(TrafficRouteBucket.proxyWebSocketHistory()),
                             RuntimeConfig.currentExportRunToken());
+                } else {
+                    liveHistoryCursor = 0;
+                    liveHistoryTailKey = null;
                 }
                 return;
             }
@@ -464,7 +558,7 @@ public final class ProxyWebSocketIndexReporter {
 
     private static void pushHistoricSnapshotItems(MontoyaApi api, List<ProxyWebSocketMessage> history) {
         long startNs = System.nanoTime();
-        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocket();
+        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocketHistory();
         SnapshotSummary.Baseline baseline = SnapshotSummary.forRoute(route);
         Logger.logInfoPanelOnly("[StartupExport] ProxyWebSocket: exporting history backlog: "
                 + history.size() + " frame(s).");
@@ -496,7 +590,8 @@ public final class ProxyWebSocketIndexReporter {
                     if (doc == null) {
                         return null;
                     }
-                    return ExportDocumentIdentity.prepare(indexName, indexKey, doc);
+                    return ExportDocumentIdentity.prepareWithTrafficRoute(
+                            indexName, indexKey, doc, route.key());
                 },
                 (chunk, outcome, nextChunkTarget) -> TrafficRouteBucket.recordBulkOutcome(
                         route,
@@ -504,7 +599,7 @@ public final class ProxyWebSocketIndexReporter {
                         openSearchActive,
                         "Proxy WebSocket bulk push"));
 
-        liveHistoryCursor = Math.max(liveHistoryCursor, history.size());
+        liveHistoryCursor = history.size();
         liveHistoryTailKey = lastHistoryKey(history);
         long durationMs = (System.nanoTime() - startNs) / 1_000_000L;
         ExportStats.recordSnapshotLastRun(
@@ -544,16 +639,22 @@ public final class ProxyWebSocketIndexReporter {
 
     private static void pushLivePollItems(MontoyaApi api, List<ProxyWebSocketMessage> history) {
         String currentTailKey = lastHistoryKey(history);
-        int startIndex;
         if (history.size() == liveHistoryCursor && Objects.equals(currentTailKey, liveHistoryTailKey)) {
             return;
         }
-        if (liveHistoryCursor < 0 || liveHistoryCursor > history.size() || history.size() == liveHistoryCursor) {
-            startIndex = 0;
-        } else {
-            startIndex = liveHistoryCursor;
+        int startIndex = indexAfterKnownBoundary(history);
+        if (startIndex < 0) {
+            liveHistoryCursor = history.size();
+            liveHistoryTailKey = currentTailKey;
+            Logger.logWarnPanelOnly("[LiveTraffic] ProxyWebSocket: the prior live-history boundary "
+                    + "is no longer retained; skipped "
+                    + history.size()
+                    + " frame(s) to prevent historical replay.");
+            return;
         }
         int nextCursor = startIndex;
+        String nextTailKey = liveHistoryTailKey;
+        TrafficRouteBucket.Route route = TrafficRouteBucket.proxyWebSocketLive();
         for (int i = startIndex; i < history.size(); i++) {
             if (!shouldRunLivePoll()) {
                 break;
@@ -562,16 +663,30 @@ public final class ProxyWebSocketIndexReporter {
             Map<String, Object> doc = buildDocument(api, msg);
             if (doc == null) {
                 nextCursor = i + 1;
+                nextTailKey = messageKey(msg);
                 continue;
             }
-            if (TrafficExportQueue.offerAccepted(doc)) {
+            if (TrafficExportQueue.offerAccepted(doc, route)) {
                 nextCursor = i + 1;
+                nextTailKey = messageKey(msg);
             } else {
                 break;
             }
         }
         liveHistoryCursor = nextCursor;
-        liveHistoryTailKey = currentTailKey;
+        liveHistoryTailKey = nextTailKey;
+    }
+
+    private static int indexAfterKnownBoundary(List<ProxyWebSocketMessage> history) {
+        if (liveHistoryTailKey == null) {
+            return liveHistoryCursor == 0 ? 0 : -1;
+        }
+        for (int i = history.size() - 1; i >= 0; i--) {
+            if (liveHistoryTailKey.equals(messageKey(history.get(i)))) {
+                return i + 1;
+            }
+        }
+        return -1;
     }
 
     private static String lastHistoryKey(List<ProxyWebSocketMessage> history) {

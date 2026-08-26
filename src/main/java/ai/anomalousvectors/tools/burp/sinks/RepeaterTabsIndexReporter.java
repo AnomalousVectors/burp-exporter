@@ -58,9 +58,10 @@ import burp.api.montoya.ui.editor.extension.HttpResponseEditorProvider;
  *
  * <p>Montoya does not currently expose a first-class Repeater tabs API, so this reporter uses
  * extension editor hooks plus a manual context-menu fallback to observe request/response pairs
- * currently bound into Repeater tabs. Captured items are de-duplicated by request/response content
- * hash, cached in memory for the extension session, and exported to the traffic index with
- * {@code tool=Repeater Tabs} when that traffic option is enabled.</p>
+ * currently bound into Repeater tabs. Captured items use a top-level tab-slot identity when the
+ * Repeater tree exposes one and otherwise fall back to a request/response content hash. They are
+ * retained only for the active export run and exported to the traffic index with {@code tool=Repeater
+ * Tabs} when that traffic option is enabled.</p>
  */
 public final class RepeaterTabsIndexReporter {
 
@@ -107,7 +108,7 @@ public final class RepeaterTabsIndexReporter {
         return new RepeaterTabsContextMenuItemsProvider();
     }
 
-    /** Queues all cached Repeater-tab items for the current export run when enabled. */
+    /** Queues all captured Repeater-tab items for the current export run when enabled. */
     public static void pushSnapshotNow() {
         if (!RuntimeConfig.isExportRunning()
                 || !RuntimeConfig.isAnyTrafficExportEnabled()
@@ -212,10 +213,11 @@ public final class RepeaterTabsIndexReporter {
                 List<PreparedExportDocument> documents);
     }
 
-    /** Clears per-run capture state so the next Start can export cached history again. */
+    /** Clears captured Repeater snapshots and all other state owned by the current export run. */
     public static void clearRunState() {
         RUN_GENERATION.incrementAndGet();
         CAPTURE_WINDOW_GENERATION.set(-1);
+        CAPTURED.clear();
         STARTUP_TRACE_LOGGED.clear();
         STARTUP_METADATA_SUMMARY.clear();
         STARTUP_SLOT_TO_FINGERPRINT.clear();
@@ -229,7 +231,6 @@ public final class RepeaterTabsIndexReporter {
 
     /** Clears all cached Repeater-tab session state. */
     public static void clearSessionState() {
-        CAPTURED.clear();
         clearRunState();
     }
 
@@ -247,13 +248,14 @@ public final class RepeaterTabsIndexReporter {
         if (!isRepeaterToolSource(creationContext == null ? null : creationContext.toolSource())) {
             return;
         }
-        RepeaterTabMetadata metadata = currentRepeaterTabMetadata(uiAnchor);
         boolean exportRunning = RuntimeConfig.isExportRunning();
-        if (exportRunning) {
-            RepeaterLiveMetadataTracker.observe(requestResponse, metadata.asSharedMetadata());
+        if (!exportRunning) {
+            return;
         }
+        RepeaterTabMetadata metadata = currentRepeaterTabMetadata(uiAnchor);
+        RepeaterLiveMetadataTracker.observe(requestResponse, metadata.asSharedMetadata());
         // Historic Repeater Tabs capture only while that source is enabled for the run.
-        if (exportRunning && !RuntimeConfig.isTrafficToolTypeEnabled(TOOL_TYPE_KEY)) {
+        if (!RuntimeConfig.isTrafficToolTypeEnabled(TOOL_TYPE_KEY)) {
             return;
         }
         capture(requestResponse, capturePath, metadata);
@@ -299,6 +301,13 @@ public final class RepeaterTabsIndexReporter {
         // fingerprint, which should not produce a second export document.
         String storedFingerprint = safeLogValue(fingerprint);
         return STARTUP_SLOT_TO_FINGERPRINT.putIfAbsent(slotKey, storedFingerprint);
+    }
+
+    private static String replaceStartupSlotFingerprint(String slotKey, String fingerprint) {
+        if (slotKey == null) {
+            return null;
+        }
+        return STARTUP_SLOT_TO_FINGERPRINT.put(slotKey, safeLogValue(fingerprint));
     }
 
     /** Opens the startup-only Repeater-tab capture window for the current run generation. */
@@ -356,8 +365,9 @@ public final class RepeaterTabsIndexReporter {
      * Performs one synchronous Repeater startup tab walk over the provided Swing roots.
      *
      * <p>Caller must invoke on the EDT. This helper temporarily selects Burp's Repeater tool tab,
-     * recursively visits nested tab panes under that subtree, and restores the original selections
-     * before returning.</p>
+     * visits only the shallowest eligible request-tab pane in each subtree branch, and restores the
+     * original selections before returning. Descendant request/response editor panes are never
+     * cycled.</p>
      *
      * @param roots top-level Swing roots to search
      * @return summary of whether Repeater was found and how many selections changed
@@ -400,7 +410,7 @@ public final class RepeaterTabsIndexReporter {
             HttpRequestResponse requestResponse,
             String capturePath,
             RepeaterTabMetadata repeaterTabMetadata) {
-        if (requestResponse == null || !shouldCaptureForCurrentRun()) {
+        if (requestResponse == null || !shouldCaptureForCurrentRun(capturePath)) {
             return false;
         }
         if (requestResponse.response() == null) {
@@ -410,11 +420,14 @@ public final class RepeaterTabsIndexReporter {
         boolean startupCaptureWindowOpen = isStartupCaptureWindowOpen();
         RepeaterTabsCapturePolicy.CaptureDecision captureDecision =
                 RepeaterTabsCapturePolicy.decide(fingerprint, repeaterTabMetadata, startupCaptureWindowOpen);
-        String previousStartupSlotFingerprint =
-                startupCaptureWindowOpen
-                        ? rememberStartupSlotFingerprint(captureDecision.startupSlotKey(), fingerprint)
-                        : null;
-        if (captureDecision.startupSlotKey() != null && previousStartupSlotFingerprint != null) {
+        String previousStartupSlotFingerprint = startupCaptureWindowOpen
+                ? replaceStartupSlotFingerprint(captureDecision.startupSlotKey(), fingerprint)
+                : null;
+        boolean repeatedStartupFingerprint = previousStartupSlotFingerprint != null
+                && previousStartupSlotFingerprint.equals(fingerprint);
+        boolean replacedStartupBinding = previousStartupSlotFingerprint != null
+                && !previousStartupSlotFingerprint.equals(fingerprint);
+        if (captureDecision.startupSlotKey() != null && repeatedStartupFingerprint) {
             STARTUP_METADATA_SUMMARY.recordDuplicateSlotSuppression(
                     capturePath,
                     captureDecision.startupSlotKey());
@@ -480,6 +493,15 @@ public final class RepeaterTabsIndexReporter {
         CAPTURED.compute(captureKey, (ignored, existing) -> {
             if (existing != null) {
                 previousMetadata[0] = existing.asMetadata();
+                if (replacedStartupBinding) {
+                    return new CapturedRepeaterItem(
+                            existing.captureKey,
+                            fingerprint,
+                            persistentCopy(requestResponse),
+                            existing.firstSeenAtMs,
+                            repeaterTabMetadata.tabName(),
+                            repeaterTabMetadata.groupName());
+                }
                 if (existing.hasEquivalentOrBetterMetadataThan(repeaterTabMetadata)) {
                     existingCaptureReused[0] = true;
                     return existing;
@@ -521,11 +543,20 @@ public final class RepeaterTabsIndexReporter {
                     + " fingerprint=" + safeLogValue(fingerprint)
                     + " existing={" + RepeaterTabsCapturePolicy.describeMetadata(previousMetadata[0]) + "}"
                     + " incoming={" + RepeaterTabsCapturePolicy.describeMetadata(repeaterTabMetadata) + "}");
+        } else if (replacedStartupBinding) {
+            Logger.logTrace("[RepeaterTabs] Replaced a stale startup slot candidate with the latest complete editor binding "
+                    + "startupSession=" + currentStartupSessionId()
+                    + " capturePath=" + safeLogValue(capturePath)
+                    + " captureKey=" + safeLogValue(captureKey)
+                    + " previousFingerprint=" + safeLogValue(previousStartupSlotFingerprint)
+                    + " fingerprint=" + safeLogValue(fingerprint)
+                    + " metadata={" + RepeaterTabsCapturePolicy.describeMetadata(repeaterTabMetadata) + "}");
         }
         if (newCapture[0] && !isStartupCaptureWindowOpen()) {
             Logger.logDebug("[RepeaterTabs] Captured Repeater tab via " + capturePath + ".");
         }
-        if (newCapture[0] || metadataUpgraded[0]) {
+        if (!startupCaptureWindowOpen
+                && (newCapture[0] || metadataUpgraded[0] || replacedStartupBinding)) {
             queueForCurrentRun(CAPTURED.get(captureKey));
         }
         return true;
@@ -535,19 +566,22 @@ public final class RepeaterTabsIndexReporter {
         if (!SwingUtilities.isEventDispatchThread()) {
             return RepeaterTabMetadata.empty(null);
         }
+        if (isStartupCaptureWindowOpen()) {
+            RepeaterTabMetadata startupMetadata = currentStartupSelectionMetadata;
+            return startupMetadata == null
+                    ? RepeaterTabMetadata.empty(uiAnchor == null ? null : uiAnchor.getClass().getName())
+                    : startupMetadata;
+        }
         RepeaterTabMetadata anchored = inferRepeaterTabMetadataFromAnchor(uiAnchor);
         if (anchored != null) {
             return anchored;
-        }
-        if (isStartupCaptureWindowOpen() && currentStartupSelectionMetadata != null) {
-            return currentStartupSelectionMetadata;
         }
         ToolTabLocation repeaterLocation = findToolTabLocation(List.of(Frame.getFrames()), REPEATER_TOOL_TITLE);
         if (repeaterLocation == null) {
             return RepeaterTabMetadata.empty(null);
         }
         Component repeaterRoot = repeaterLocation.tabbedPane().getComponentAt(repeaterLocation.index());
-        return inferRepeaterTabMetadata(repeaterRoot);
+        return currentTopLevelRepeaterTabMetadata(repeaterRoot);
     }
 
     /**
@@ -582,6 +616,10 @@ public final class RepeaterTabsIndexReporter {
     }
 
     private static RepeaterTabMetadata inferRepeaterTabMetadataFromAnchor(Component uiAnchor) {
+        RepeaterTabMetadata topLevelMetadata = topLevelRepeaterTabMetadataFromAnchor(uiAnchor);
+        if (topLevelMetadata != null) {
+            return topLevelMetadata;
+        }
         List<SelectedTabSnapshot> selectedTabs =
                 RepeaterTabMetadataHeuristics.collectSelectedTabSnapshotsFromAnchor(uiAnchor);
         if (selectedTabs.isEmpty()) {
@@ -590,6 +628,52 @@ public final class RepeaterTabsIndexReporter {
         return inferRepeaterTabMetadata(
                 selectedTabs,
                 uiAnchor == null ? null : uiAnchor.getClass().getName());
+    }
+
+    private static RepeaterTabMetadata topLevelRepeaterTabMetadataFromAnchor(Component uiAnchor) {
+        if (uiAnchor == null) {
+            return null;
+        }
+        ToolTabLocation repeaterLocation = findAncestorToolTabLocation(uiAnchor, REPEATER_TOOL_TITLE);
+        if (repeaterLocation == null) {
+            return null;
+        }
+        Component repeaterRoot = repeaterLocation.tabbedPane().getComponentAt(repeaterLocation.index());
+        List<JTabbedPane> topLevelPanes = collectTopLevelRepeaterTabPanes(repeaterRoot);
+        for (int paneOrdinal = 0; paneOrdinal < topLevelPanes.size(); paneOrdinal++) {
+            JTabbedPane pane = topLevelPanes.get(paneOrdinal);
+            int selectedIndex = indexContainingDescendant(pane, uiAnchor);
+            if (selectedIndex >= 0) {
+                return topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal);
+            }
+        }
+        return null;
+    }
+
+    private static RepeaterTabMetadata currentTopLevelRepeaterTabMetadata(Component repeaterRoot) {
+        List<JTabbedPane> topLevelPanes = collectTopLevelRepeaterTabPanes(repeaterRoot);
+        for (int paneOrdinal = 0; paneOrdinal < topLevelPanes.size(); paneOrdinal++) {
+            JTabbedPane pane = topLevelPanes.get(paneOrdinal);
+            int selectedIndex = pane.getSelectedIndex();
+            if (selectedIndex >= 0) {
+                return topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal);
+            }
+        }
+        return RepeaterTabMetadata.empty(repeaterRoot == null ? null : repeaterRoot.getClass().getName());
+    }
+
+    private static RepeaterTabMetadata topLevelRepeaterTabMetadata(
+            JTabbedPane pane,
+            int selectedIndex,
+            int paneOrdinal) {
+        SelectedTabSnapshot snapshot = RepeaterTabMetadataHeuristics.selectedTabSnapshot(pane, selectedIndex);
+        InferenceResult inferred = RepeaterTabMetadataHeuristics.infer(List.of(snapshot));
+        String paneClass = pane == null ? null : pane.getClass().getName();
+        return new RepeaterTabMetadata(
+                inferred.tabName(),
+                inferred.groupName(),
+                paneClass,
+                RepeaterTabsCapturePolicy.topLevelSlotIdentity(paneOrdinal, paneClass, selectedIndex));
     }
 
     static String inferRepeaterTabName(Component root) {
@@ -814,16 +898,29 @@ public final class RepeaterTabsIndexReporter {
         }
     }
 
-    /**
-     * Cycles every nested tab selection under {@code root} and restores the prior state afterward.
-     *
-     * <p>Caller must invoke on the EDT. Restoration runs in reverse visitation order so nested tabs
-     * return to the same visible state the user had before the walk.</p>
-     */
+    /** Cycles top-level Repeater request tabs and restores their prior selections afterward. */
     private static SelectionCycleResult cycleAllTabSelections(Component root) {
         IdentityHashMap<JTabbedPane, Integer> originalSelections = new IdentityHashMap<>();
-        List<JTabbedPane> visitedOrder = new ArrayList<>();
-        int selectionChanges = cycleSelectionsRecursive(root, originalSelections, visitedOrder, List.of());
+        List<JTabbedPane> visitedOrder = collectTopLevelRepeaterTabPanes(root);
+        int selectionChanges = 0;
+        for (int paneOrdinal = 0; paneOrdinal < visitedOrder.size(); paneOrdinal++) {
+            JTabbedPane pane = visitedOrder.get(paneOrdinal);
+            int originalIndex = pane.getSelectedIndex();
+            originalSelections.put(pane, originalIndex);
+            for (int selectedIndex : selectionOrder(pane)) {
+                RepeaterTabMetadata previousMetadata = currentStartupSelectionMetadata;
+                currentStartupSelectionMetadata =
+                        topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal);
+                try {
+                    if (pane.getSelectedIndex() != selectedIndex) {
+                        pane.setSelectedIndex(selectedIndex);
+                        selectionChanges++;
+                    }
+                } finally {
+                    currentStartupSelectionMetadata = previousMetadata;
+                }
+            }
+        }
         for (int i = visitedOrder.size() - 1; i >= 0; i--) {
             JTabbedPane pane = visitedOrder.get(i);
             Integer originalIndex = originalSelections.get(pane);
@@ -839,9 +936,18 @@ public final class RepeaterTabsIndexReporter {
         int repeaterIndex = repeaterLocation.index();
         Component repeaterRoot = toolTabs.getComponentAt(repeaterIndex);
         IdentityHashMap<JTabbedPane, Integer> originalSelections = new IdentityHashMap<>();
-        List<JTabbedPane> visitedOrder = new ArrayList<>();
+        List<JTabbedPane> visitedOrder = collectTopLevelRepeaterTabPanes(repeaterRoot);
         List<StartupTabSelectionStep> steps = new ArrayList<>();
-        collectStartupTabWalkSteps(repeaterRoot, originalSelections, visitedOrder, List.of(), steps);
+        for (int paneOrdinal = 0; paneOrdinal < visitedOrder.size(); paneOrdinal++) {
+            JTabbedPane pane = visitedOrder.get(paneOrdinal);
+            originalSelections.put(pane, pane.getSelectedIndex());
+            for (int selectedIndex : selectionOrder(pane)) {
+                steps.add(new StartupTabSelectionStep(
+                        pane,
+                        selectedIndex,
+                        topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal)));
+            }
+        }
         return new StartupTabWalkPlan(
                 toolTabs,
                 toolTabs.getSelectedIndex(),
@@ -852,39 +958,17 @@ public final class RepeaterTabsIndexReporter {
                 CAPTURED.size());
     }
 
-    private static void collectStartupTabWalkSteps(
-            Component root,
-            IdentityHashMap<JTabbedPane, Integer> originalSelections,
-            List<JTabbedPane> visitedOrder,
-            List<SelectedTabSnapshot> selectedPath,
-            List<StartupTabSelectionStep> steps) {
+    private static List<JTabbedPane> collectTopLevelRepeaterTabPanes(Component root) {
+        List<JTabbedPane> panes = new ArrayList<>();
+        collectTopLevelRepeaterTabPanes(root, panes);
+        return panes;
+    }
+
+    private static void collectTopLevelRepeaterTabPanes(Component root, List<JTabbedPane> panes) {
         if (root instanceof JTabbedPane pane) {
-            if (RepeaterTabMetadataHeuristics.shouldCycleTabPane(pane)) {
-                if (originalSelections.containsKey(pane)) {
-                    return;
-                }
-                originalSelections.put(pane, pane.getSelectedIndex());
-                visitedOrder.add(pane);
-                for (int i = 0; i < pane.getTabCount(); i++) {
-                    List<SelectedTabSnapshot> nextPath = RepeaterTabMetadataHeuristics.appendSelectedPath(
-                            selectedPath,
-                            RepeaterTabMetadataHeuristics.selectedTabSnapshot(pane, i));
-                    steps.add(new StartupTabSelectionStep(
-                            pane,
-                            i,
-                            inferRepeaterTabMetadata(nextPath, root.getClass().getName())));
-                    collectStartupTabWalkSteps(
-                            pane.getComponentAt(i),
-                            originalSelections,
-                            visitedOrder,
-                            nextPath,
-                            steps);
-                }
-                return;
-            }
-            Component selected = pane.getSelectedComponent();
-            if (selected != null) {
-                collectStartupTabWalkSteps(selected, originalSelections, visitedOrder, selectedPath, steps);
+            if (pane.getTabCount() > 0
+                    && !RepeaterTabMetadataHeuristics.isMessageViewTabPane(pane)) {
+                panes.add(pane);
             }
             return;
         }
@@ -892,59 +976,54 @@ public final class RepeaterTabsIndexReporter {
             return;
         }
         for (Component child : container.getComponents()) {
-            collectStartupTabWalkSteps(child, originalSelections, visitedOrder, selectedPath, steps);
+            collectTopLevelRepeaterTabPanes(child, panes);
         }
     }
 
-    private static int cycleSelectionsRecursive(
-            Component root,
-            IdentityHashMap<JTabbedPane, Integer> originalSelections,
-            List<JTabbedPane> visitedOrder,
-            List<SelectedTabSnapshot> selectedPath) {
-        if (root instanceof JTabbedPane pane) {
-            if (RepeaterTabMetadataHeuristics.shouldCycleTabPane(pane)) {
-                if (originalSelections.containsKey(pane)) {
-                    return 0;
-                }
-                originalSelections.put(pane, pane.getSelectedIndex());
-                visitedOrder.add(pane);
-
-                int selectionChanges = 0;
-                for (int i = 0; i < pane.getTabCount(); i++) {
-                    List<SelectedTabSnapshot> nextPath = RepeaterTabMetadataHeuristics.appendSelectedPath(
-                            selectedPath,
-                            RepeaterTabMetadataHeuristics.selectedTabSnapshot(pane, i));
-                    RepeaterTabMetadata previousMetadata = currentStartupSelectionMetadata;
-                    currentStartupSelectionMetadata = inferRepeaterTabMetadata(nextPath, root.getClass().getName());
-                    try {
-                        if (pane.getSelectedIndex() != i) {
-                            pane.setSelectedIndex(i);
-                            selectionChanges++;
-                        }
-                        selectionChanges += cycleSelectionsRecursive(
-                                pane.getComponentAt(i),
-                                originalSelections,
-                                visitedOrder,
-                                nextPath);
-                    } finally {
-                        currentStartupSelectionMetadata = previousMetadata;
-                    }
-                }
-                return selectionChanges;
+    private static List<Integer> selectionOrder(JTabbedPane pane) {
+        if (pane == null || pane.getTabCount() <= 0) {
+            return List.of();
+        }
+        int originalIndex = pane.getSelectedIndex();
+        List<Integer> order = new ArrayList<>(pane.getTabCount());
+        for (int index = 0; index < pane.getTabCount(); index++) {
+            if (index != originalIndex) {
+                order.add(index);
             }
-            Component selected = pane.getSelectedComponent();
-            return selected == null ? 0 : cycleSelectionsRecursive(selected, originalSelections, visitedOrder, selectedPath);
         }
+        if (originalIndex >= 0 && originalIndex < pane.getTabCount()) {
+            order.add(originalIndex);
+        }
+        return order;
+    }
 
-        if (!(root instanceof Container container)) {
-            return 0;
+    private static int indexContainingDescendant(JTabbedPane pane, Component descendant) {
+        if (pane == null || descendant == null) {
+            return -1;
         }
+        for (int index = 0; index < pane.getTabCount(); index++) {
+            Component tabComponent = pane.getComponentAt(index);
+            if (tabComponent == descendant
+                    || SwingUtilities.isDescendingFrom(descendant, tabComponent)) {
+                return index;
+            }
+        }
+        return -1;
+    }
 
-        int selectionChanges = 0;
-        for (Component child : container.getComponents()) {
-            selectionChanges += cycleSelectionsRecursive(child, originalSelections, visitedOrder, selectedPath);
+    private static ToolTabLocation findAncestorToolTabLocation(Component descendant, String title) {
+        for (Component current = descendant; current != null; current = current.getParent()) {
+            if (!(current instanceof JTabbedPane pane)) {
+                continue;
+            }
+            for (int index = 0; index < pane.getTabCount(); index++) {
+                if (title.equalsIgnoreCase(pane.getTitleAt(index))
+                        && indexContainingDescendant(pane, descendant) == index) {
+                    return new ToolTabLocation(pane, index);
+                }
+            }
         }
-        return selectionChanges;
+        return null;
     }
 
     /**
@@ -1032,11 +1111,13 @@ public final class RepeaterTabsIndexReporter {
         TrafficExportQueue.offer(document);
     }
 
-    private static boolean shouldCaptureForCurrentRun() {
-        if (!RuntimeConfig.isExportRunning()) {
-            return true;
+    private static boolean shouldCaptureForCurrentRun(String capturePath) {
+        if (!RuntimeConfig.isExportRunning()
+                || !RuntimeConfig.isTrafficToolTypeEnabled(TOOL_TYPE_KEY)) {
+            return false;
         }
-        return CAPTURE_WINDOW_GENERATION.get() == RUN_GENERATION.get();
+        return CAPTURE_WINDOW_GENERATION.get() == RUN_GENERATION.get()
+                || "context_menu".equals(capturePath);
     }
 
     private static String describeRuntimeTrafficToolTypes() {
@@ -1438,21 +1519,19 @@ public final class RepeaterTabsIndexReporter {
                 finish();
                 return;
             }
+            // Selecting a Burp Repeater tab can synchronously construct and paint a substantial
+            // editor tree. Keep its slot metadata active until the next timer tick so Burp's final
+            // asynchronous editor binding can replace an initial stale binding for the same slot.
+            StartupTabSelectionStep step = plan.steps().get(nextStepIndex++);
+            currentStartupSelectionMetadata = step.metadata();
             try {
-                // Selecting a Burp Repeater tab can synchronously construct and paint a substantial
-                // editor tree. Process only one selection per timer tick so pending input and paint
-                // events get an opportunity to run between capture steps.
-                StartupTabSelectionStep step = plan.steps().get(nextStepIndex++);
-                currentStartupSelectionMetadata = step.metadata();
                 if (step.pane().getSelectedIndex() != step.selectedIndex()) {
                     step.pane().setSelectedIndex(step.selectedIndex());
                     selectionChanges++;
                 }
-            } finally {
+            } catch (RuntimeException exception) {
                 currentStartupSelectionMetadata = null;
-            }
-            if (nextStepIndex >= plan.steps().size()) {
-                finish();
+                throw exception;
             }
         }
 
