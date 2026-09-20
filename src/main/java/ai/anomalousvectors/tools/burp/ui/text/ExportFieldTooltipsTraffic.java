@@ -98,10 +98,10 @@ final class ExportFieldTooltipsTraffic {
                     "Proxy History, Repeater Tabs, and token-bound live Proxy HTTP use TimingData.timeBetweenRequestSentAndEndOfResponse(). Other live HTTP subtracts exporter-captured request/response timestamps; Proxy WebSocket writes 0 for individual frames.");
             case "burp.notes" -> Tooltips.textWithSource(
                     "User notes attached in Burp.",
-                    "HTTP docs read annotations.notes(); WebSocket docs read ProxyWebSocketMessage.annotations().notes().");
+                    "HTTP docs read annotations.notes(); historic WebSocket docs read ProxyWebSocketMessage.annotations(); live WebSocket handlers read final callback annotations.");
             case "burp.highlight" -> Tooltips.textWithSource(
                     "Burp highlight color.",
-                    "HTTP docs read annotations.highlightColor().name(); WebSocket docs read ProxyWebSocketMessage.annotations().highlightColor().name().");
+                    "HTTP docs read annotations.highlightColor().name(); historic WebSocket docs read ProxyWebSocketMessage.annotations(); live WebSocket handlers read final callback annotations.");
             case "request.path.with_query" -> Tooltips.textWithSource(
                     "Request path and query portion.",
                     "RequestResponseDocBuilder.buildTrafficRequestDoc() uses HttpRequest.path().");
@@ -160,7 +160,7 @@ final class ExportFieldTooltipsTraffic {
                     "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.webSocketId(); live WebSocket handlers write null because Montoya live callback types do not expose Burp History ids.");
             case "websocket.is_websocket" -> Tooltips.textWithSource(
                     "Whether this traffic document represents a WebSocket message.",
-                    "ProxyWebSocketIndexReporter and ToolWebSocketLiveHandler write true; HTTP traffic producers write false.");
+                    "ProxyWebSocketIndexReporter, ProxyWebSocketLiveHandler, and ToolWebSocketLiveHandler write true; HTTP traffic producers write false.");
             case "websocket.message_id" -> Tooltips.textWithSource(
                     "WebSocket message identifier within the WebSocket conversation. This is distinct from websocket.id, which identifies the connection/conversation.",
                     "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.id(); live WebSocket handlers write null.");
@@ -175,13 +175,13 @@ final class ExportFieldTooltipsTraffic {
                     "WebSocketTrafficDocumentBuilder.inferPayloadType() returns EMPTY for no bytes, TEXT for strict UTF-8 decodes, otherwise BINARY.");
             case "websocket.payload.b64" -> Tooltips.textWithSource(
                     "Raw WebSocket payload stored as base64 (effective on-the-wire bytes).",
-                    "ProxyWebSocketIndexReporter.buildDocument() uses editedPayload() when the frame was edited, otherwise payload().");
+                    "WebSocketTrafficDocumentBuilder.buildPayloadDoc() encodes the selected final payload bytes. Proxy WebSocket History prefers editedPayload(); live handlers pass their final callback payload.");
             case "websocket.payload.text" -> Tooltips.textWithSource(
                     "UTF-8 text view of the effective WebSocket payload when valid.",
                     "WebSocketTrafficDocumentBuilder.decodeUtf8OrNull() decodes the same bytes written to websocket.payload.b64.");
             case "websocket.payload.length" -> Tooltips.textWithSource(
                     "Effective WebSocket payload length in bytes.",
-                    "WebSocketTrafficDocumentBuilder.buildPayloadDoc() uses editedPayload() when the frame was edited, otherwise payload().");
+                    "WebSocketTrafficDocumentBuilder.buildPayloadDoc() records the selected final payload byte length.");
             case "websocket.payload.truncated" -> Tooltips.textWithSource(
                     "True when search/database export prefix-truncated this WebSocket payload to fit the live bulk byte budget. "
                             + "payload.length remains the original size; file export is not truncated by this path.",
@@ -212,7 +212,7 @@ final class ExportFieldTooltipsTraffic {
                     "ProxyHistoryIndexReporter and token-bound live Proxy HTTP use ProxyHttpRequestResponse.listenerPort(); ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.listenerPort(); live Proxy WebSocket callbacks write null because Montoya exposes only the target service there.");
             case "burp.timing.req_sent" -> Tooltips.textWithSource(
                     "Request-sent timestamp.",
-                    "Proxy History and token-bound live Proxy HTTP use TimingData.timeRequestSent() with item.time() fallback; other live HTTP uses the request callback timestamp. ProxyWebSocketIndexReporter reuses ProxyWebSocketMessage.time().");
+                    "Proxy History uses TimingData.timeRequestSent() when valid. Token-bound live Proxy HTTP preserves captured live timing when History timing is unavailable or sentinel; other live HTTP uses the request callback timestamp. Historic WebSocket frames use ProxyWebSocketMessage.time(); live WebSocket frames use the final callback time.");
             case "burp.timing.req_sent_to_res_start" -> Tooltips.textWithSource(
                     "Time to first response byte in milliseconds: request sent to start of response.",
                     "ProxyHistoryIndexReporter, RepeaterTabsIndexReporter, and token-bound live Proxy HTTP use Burp TimingData.timeBetweenRequestSentAndStartOfResponse(); other live HTTP and WebSocket docs write null.");

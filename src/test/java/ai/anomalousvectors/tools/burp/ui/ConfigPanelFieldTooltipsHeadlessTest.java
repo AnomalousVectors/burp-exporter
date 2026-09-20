@@ -262,6 +262,40 @@ class ConfigPanelFieldTooltipsHeadlessTest {
     }
 
     @Test
+    void traffic_downstreamFieldTooltips_matchCurrentProducers() throws Exception {
+        ConfigPanel panel = newPanelOnEdt();
+        JCheckBox webSocketFlag =
+                findByName(panel, "fields.traffic.websocket.is_websocket", JCheckBox.class);
+        JCheckBox payloadBase64 =
+                findByName(panel, "fields.traffic.websocket.payload.b64", JCheckBox.class);
+        JCheckBox payloadLength =
+                findByName(panel, "fields.traffic.websocket.payload.length", JCheckBox.class);
+        JCheckBox requestSent =
+                findByName(panel, "fields.traffic.burp.timing.req_sent", JCheckBox.class);
+
+        runEdt(() -> {
+            assertThat(webSocketFlag).isNotNull();
+            assertThat(payloadBase64).isNotNull();
+            assertThat(payloadLength).isNotNull();
+            assertThat(requestSent).isNotNull();
+            assertThat(webSocketFlag.getToolTipText())
+                    .contains("ProxyWebSocketLiveHandler")
+                    .contains("ToolWebSocketLiveHandler");
+            assertThat(payloadBase64.getToolTipText())
+                    .contains("selected final payload bytes")
+                    .contains("History prefers editedPayload()")
+                    .contains("live handlers pass their final callback payload");
+            assertThat(payloadLength.getToolTipText())
+                    .contains("selected final payload byte length");
+            assertThat(requestSent.getToolTipText())
+                    .contains("TimingData.timeRequestSent() when valid")
+                    .contains("preserves captured live timing")
+                    .contains("live WebSocket frames use the final callback time")
+                    .doesNotContain("item.time() fallback");
+        });
+    }
+
+    @Test
     void every_mapping_leaf_is_rendered_in_fields_panel() throws Exception {
         ConfigPanel panel = newPanelOnEdt();
 
