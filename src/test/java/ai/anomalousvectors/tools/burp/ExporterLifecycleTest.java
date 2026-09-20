@@ -26,7 +26,6 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.sinks.ExportReporterLifecycle;
 import ai.anomalousvectors.tools.burp.sinks.FindingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter;
-import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.SettingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.SitemapIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter;
@@ -79,7 +78,6 @@ class ExporterLifecycleTest {
             assertThat(peek(SettingsIndexReporter.class, "SCHEDULER")).isNull();
             assertThat(peek(FindingsIndexReporter.class, "SCHEDULER")).isNull();
             assertThat(peek(SitemapIndexReporter.class, "SCHEDULER")).isNull();
-            assertThat(peek(ProxyWebSocketIndexReporter.class, "SCHEDULER")).isNull();
 
             verify(fixture.extension).setName(ProductInfo.EXTENSION_NAME);
             verify(fixture.extension).registerUnloadingHandler(any(ExtensionUnloadingHandler.class));
@@ -160,7 +158,6 @@ class ExporterLifecycleTest {
             SettingsIndexReporter.start();
             FindingsIndexReporter.start();
             SitemapIndexReporter.start();
-            ProxyWebSocketIndexReporter.startLivePoll();
 
             ExecutorService startupExecutorBeforeUnload =
                     getStatic(ConfigPanel.class, "startupExecutor", ExecutorService.class);
@@ -177,6 +174,7 @@ class ExporterLifecycleTest {
             verify(fixture.httpRegistration).deregister();
             verify(fixture.proxyRequestRegistration).deregister();
             verify(fixture.proxyResponseRegistration).deregister();
+            verify(fixture.proxyWebSocketRegistration).deregister();
             verify(fixture.suiteTabRegistration).deregister();
             verify(fixture.unloadRegistration, atLeastOnce()).deregister();
             verify(fixture.logging).logToOutput(argThat(msg ->
@@ -229,7 +227,6 @@ class ExporterLifecycleTest {
         assertThat(peek(SettingsIndexReporter.class, "SCHEDULER")).isNull();
         assertThat(peek(FindingsIndexReporter.class, "SCHEDULER")).isNull();
         assertThat(peek(SitemapIndexReporter.class, "SCHEDULER")).isNull();
-        assertThat(peek(ProxyWebSocketIndexReporter.class, "SCHEDULER")).isNull();
         assertThat(peek(ProxyHistoryIndexReporter.class, "SCHEDULER")).isNull();
         assertThat(peek(TRAFFIC_HTTP_HANDLER_SUPPORT, "ORPHAN_SCHEDULER")).isNull();
         assertThat(getStatic(TrafficExportQueue.class, "drainWorker", Thread.class)).isNull();
@@ -254,6 +251,7 @@ class ExporterLifecycleTest {
         final Registration httpRegistration = mock(Registration.class);
         final Registration proxyRequestRegistration = mock(Registration.class);
         final Registration proxyResponseRegistration = mock(Registration.class);
+        final Registration proxyWebSocketRegistration = mock(Registration.class);
         final Registration webSocketRegistration = mock(Registration.class);
         final WebSockets webSockets = mock(WebSockets.class);
         final AtomicReference<ExtensionUnloadingHandler> unloadHandler = new AtomicReference<>();
@@ -279,6 +277,7 @@ class ExporterLifecycleTest {
             when(http.registerHttpHandler(any())).thenReturn(httpRegistration);
             when(proxy.registerRequestHandler(any())).thenReturn(proxyRequestRegistration);
             when(proxy.registerResponseHandler(any())).thenReturn(proxyResponseRegistration);
+            when(proxy.registerWebSocketCreationHandler(any())).thenReturn(proxyWebSocketRegistration);
             when(webSockets.registerWebSocketCreatedHandler(any())).thenReturn(webSocketRegistration);
         }
     }

@@ -9,6 +9,7 @@ import ai.anomalousvectors.tools.burp.sinks.ExporterIndexLogForwarder;
 import ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter;
 import ai.anomalousvectors.tools.burp.sinks.ParameterIntegritySessionLog;
 import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
+import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler;
 import ai.anomalousvectors.tools.burp.sinks.RepeaterTabsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ToolWebSocketLiveHandler;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
@@ -39,6 +40,7 @@ public class Exporter implements BurpExtension {
     private volatile Registration httpHandlerRegistration;
     private volatile Registration proxyRequestHandlerRegistration;
     private volatile Registration proxyResponseHandlerRegistration;
+    private volatile Registration proxyWebSocketRegistration;
     private volatile Registration requestEditorRegistration;
     private volatile Registration responseEditorRegistration;
     private volatile Registration contextMenuRegistration;
@@ -97,11 +99,13 @@ public class Exporter implements BurpExtension {
             }
 
             httpHandlerRegistration = api.http().registerHttpHandler(new TrafficHttpHandler());
-            // Proxy annotations carry a private token that deterministically joins live documents
-            // to their exact History rows; messageId and History id are separate namespaces.
+            // Proxy annotations bind live documents to History rows. Proxy and general HTTP
+            // callback IDs are separate namespaces; Proxy History row IDs are separate again.
             ProxyLiveMetadataCorrelator proxyLiveCorrelator = ProxyLiveMetadataCorrelator.instance();
             proxyRequestHandlerRegistration = api.proxy().registerRequestHandler(proxyLiveCorrelator);
             proxyResponseHandlerRegistration = api.proxy().registerResponseHandler(proxyLiveCorrelator);
+            proxyWebSocketRegistration = api.proxy()
+                    .registerWebSocketCreationHandler(ProxyWebSocketLiveHandler.instance());
             webSocketCreatedRegistration =
                     api.websockets().registerWebSocketCreatedHandler(ToolWebSocketLiveHandler.instance());
 
@@ -126,6 +130,8 @@ public class Exporter implements BurpExtension {
 
         safeDeregister(webSocketCreatedRegistration);
         webSocketCreatedRegistration = null;
+        safeDeregister(proxyWebSocketRegistration);
+        proxyWebSocketRegistration = null;
         safeDeregister(proxyResponseHandlerRegistration);
         proxyResponseHandlerRegistration = null;
         safeDeregister(proxyRequestHandlerRegistration);

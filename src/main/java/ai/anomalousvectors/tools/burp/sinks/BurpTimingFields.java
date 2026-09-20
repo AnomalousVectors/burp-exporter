@@ -55,8 +55,10 @@ final class BurpTimingFields {
     /**
      * Builds timing for a Proxy History row.
      *
-     * <p>Falls back to {@link ProxyHttpRequestResponse#time()} when {@link TimingData} does not
-     * expose request-sent time.</p>
+     * <p>{@link ProxyHttpRequestResponse#time()} is not used as a fallback because Montoya defines
+     * it as the time Proxy received the request, not the time Burp sent it. Burp can expose an
+     * epoch request-sent time with zero durations for manually intercepted exchanges; that entire
+     * timing tuple is treated as unavailable.</p>
      *
      * @param item proxy history entry; {@code null} yields an all-null timing map
      * @return {@code burp.timing.*} sub-document keys
@@ -71,36 +73,57 @@ final class BurpTimingFields {
                 TimingData td = item.timingData();
                 if (td != null) {
                     ZonedDateTime sent = td.timeRequestSent();
-                    if (sent != null) {
-                        timeRequestSent = sent.toInstant().toString();
-                    }
-                    var start = td.timeBetweenRequestSentAndStartOfResponse();
-                    if (start != null) {
-                        timeToFirstByteMs = (int) start.toMillis();
-                    }
-                    var end = td.timeBetweenRequestSentAndEndOfResponse();
-                    if (end != null) {
-                        durationMs = (int) end.toMillis();
+                    if (sent == null || !Instant.EPOCH.equals(sent.toInstant())) {
                         if (sent != null) {
-                            timeEnd = sent.plus(end).toInstant().toString();
+                            timeRequestSent = sent.toInstant().toString();
+                        }
+                        var start = td.timeBetweenRequestSentAndStartOfResponse();
+                        if (start != null) {
+                            timeToFirstByteMs = (int) start.toMillis();
+                        }
+                        var end = td.timeBetweenRequestSentAndEndOfResponse();
+                        if (end != null) {
+                            durationMs = (int) end.toMillis();
+                            if (sent != null) {
+                                timeEnd = sent.plus(end).toInstant().toString();
+                            }
                         }
                     }
                 }
             } catch (RuntimeException ignored) {
                 // Same optional-timing contract as {@link #from(HttpRequestResponse)}.
             }
-            if (timeRequestSent == null) {
-                try {
-                    ZonedDateTime sent = item.time();
-                    if (sent != null) {
-                        timeRequestSent = sent.toInstant().toString();
-                    }
-                } catch (RuntimeException ignored) {
-                    // Proxy row time is optional when timingData is incomplete.
+        }
+        return timingMap(timeRequestSent, timeEnd, timeToFirstByteMs, durationMs);
+    }
+
+    /**
+     * Overlays available Proxy History timing onto timing already captured by live callbacks.
+     *
+     * <p>History values are authoritative when present. Missing or sentinel History values leave
+     * the corresponding live value unchanged.</p>
+     *
+     * @param liveTiming timing captured by the live HTTP callbacks
+     * @param item matching Proxy History row
+     * @return complete timing map with available History values preferred
+     */
+    static Map<String, Object> mergeProxyHistoryOverLive(
+            Map<?, ?> liveTiming,
+            ProxyHttpRequestResponse item) {
+        Map<String, Object> merged = timingMap(null, null, null, null);
+        if (liveTiming != null) {
+            for (Map.Entry<?, ?> entry : liveTiming.entrySet()) {
+                if (entry.getKey() instanceof String key && merged.containsKey(key)) {
+                    merged.put(key, entry.getValue());
                 }
             }
         }
-        return timingMap(timeRequestSent, timeEnd, timeToFirstByteMs, durationMs);
+        fromProxyHistory(item).forEach((key, value) -> {
+            if (value != null) {
+                merged.put(key, value);
+            }
+        });
+        return merged;
     }
 
     /**

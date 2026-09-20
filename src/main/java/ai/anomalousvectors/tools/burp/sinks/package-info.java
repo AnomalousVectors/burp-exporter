@@ -7,6 +7,7 @@
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter},
+ *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ToolWebSocketLiveHandler},
  *       {@link ai.anomalousvectors.tools.burp.sinks.RepeaterTabsIndexReporter} — that feed
  *       the shared {@code traffic} index.</li>

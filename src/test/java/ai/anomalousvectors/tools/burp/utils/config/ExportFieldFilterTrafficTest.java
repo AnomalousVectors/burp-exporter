@@ -70,6 +70,28 @@ class ExportFieldFilterTrafficTest {
     }
 
     @Test
+    void filterTraffic_withObservedUnchangedStages_preservesEmptyArrays() {
+        Map<String, Object> proxy = new LinkedHashMap<>();
+        proxy.put("request_change_stages", List.of());
+        proxy.put("response_change_stages", List.of());
+        Map<String, Object> websocket = new LinkedHashMap<>();
+        websocket.put("change_stages", List.of());
+        Map<String, Object> doc = new LinkedHashMap<>();
+        doc.put("burp", Map.of("proxy", proxy));
+        doc.put("websocket", websocket);
+        doc.put("meta", new LinkedHashMap<>(Map.of("schema_version", "test")));
+
+        Map<String, Object> filtered = ExportFieldFilter.filterDocument(doc, "traffic");
+
+        Map<?, ?> filteredBurp = (Map<?, ?>) filtered.get("burp");
+        Map<?, ?> filteredProxy = (Map<?, ?>) filteredBurp.get("proxy");
+        Map<?, ?> filteredWebSocket = (Map<?, ?>) filtered.get("websocket");
+        assertThat(filteredProxy.get("request_change_stages")).isEqualTo(List.of());
+        assertThat(filteredProxy.get("response_change_stages")).isEqualTo(List.of());
+        assertThat(filteredWebSocket.get("change_stages")).isEqualTo(List.of());
+    }
+
+    @Test
     void filterTraffic_withHeaderNameSelection_preservesOnlyHeaderNames() {
         RuntimeConfig.updateState(new ConfigState.State(
                 List.of(ConfigKeys.SRC_TRAFFIC),

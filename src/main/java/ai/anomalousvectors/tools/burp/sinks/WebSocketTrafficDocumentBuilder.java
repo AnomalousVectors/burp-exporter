@@ -7,6 +7,7 @@ import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
@@ -46,7 +47,9 @@ final class WebSocketTrafficDocumentBuilder {
             Object webSocketMessageId,
             String direction,
             byte[] payloadBytes,
-            boolean edited,
+            String messageType,
+            Boolean historyHasEditedPayload,
+            List<String> changeStages,
             String timestamp,
             String notes,
             String highlight) {
@@ -102,8 +105,10 @@ final class WebSocketTrafficDocumentBuilder {
         websocket.put("id", input.webSocketId());
         websocket.put("message_id", input.webSocketMessageId());
         websocket.put("direction", input.direction());
-        websocket.put("message_type", inferPayloadType(input.payloadBytes()));
-        websocket.put("is_edited", input.edited());
+        websocket.put("message_type", input.messageType());
+        websocket.put("inferred_message_type", inferPayloadType(input.payloadBytes()));
+        websocket.put("history_has_edited_payload", input.historyHasEditedPayload());
+        websocket.put("change_stages", input.changeStages());
         websocket.put("time", wsTime);
         websocket.put("payload", buildPayloadDoc(input.payloadBytes()));
         doc.put("websocket", websocket);

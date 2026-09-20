@@ -76,6 +76,9 @@ public final class ExportFieldFilter {
         if (!isIncluded(pathPrefix, allowed)) {
             return ABSENT;
         }
+        if (currentList.isEmpty()) {
+            return List.of();
+        }
         List<Object> out = new ArrayList<>();
         for (Object item : currentList) {
             Object filtered = filterValue(item, pathPrefix, allowed);

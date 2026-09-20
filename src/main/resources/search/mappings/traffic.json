@@ -17,8 +17,9 @@
             "properties": {
               "history_id": { "type": "integer" },
               "listener_port": { "type": "integer" },
-              "request_is_edited": { "type": "boolean" },
-              "response_is_edited": { "type": "boolean" }
+              "history_is_edited": { "type": "boolean" },
+              "request_change_stages": { "type": "keyword", "ignore_above": 8191 },
+              "response_change_stages": { "type": "keyword", "ignore_above": 8191 }
             }
           },
           "repeater": {
@@ -245,11 +246,13 @@
       "websocket": {
         "properties": {
           "direction": { "type": "keyword", "ignore_above": 8191 },
-          "is_edited": { "type": "boolean" },
+          "history_has_edited_payload": { "type": "boolean" },
+          "change_stages": { "type": "keyword", "ignore_above": 8191 },
           "id": { "type": "integer" },
           "is_websocket": { "type": "boolean" },
           "message_id": { "type": "integer" },
           "message_type": { "type": "keyword", "ignore_above": 8191 },
+          "inferred_message_type": { "type": "keyword", "ignore_above": 8191 },
           "payload": {
             "properties": {
               "b64": { "type": "binary", "doc_values": false },

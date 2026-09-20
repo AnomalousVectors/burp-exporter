@@ -1,12 +1,13 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import burp.api.montoya.proxy.ProxyHttpRequestResponse;
 
 /**
- * Builds {@code burp.proxy.*} edit and history fields for traffic documents.
+ * Builds {@code burp.proxy.*} History and observable pipeline-stage fields.
  */
 final class BurpProxyFields {
 
@@ -15,8 +16,6 @@ final class BurpProxyFields {
     /**
      * Builds {@code burp.proxy.*} for a Proxy History row.
      *
-     * <p>Edit flags come from Montoya plus byte comparison via {@link ProxyEditSupport}.</p>
-     *
      * @param item proxy history row
      * @return {@code burp.proxy} sub-document map
      */
@@ -24,28 +23,16 @@ final class BurpProxyFields {
         Map<String, Object> proxy = new LinkedHashMap<>();
         proxy.put("history_id", item.id());
         proxy.put("listener_port", item.listenerPort());
-        boolean pairEdited = item.edited();
-        if (pairEdited) {
-            boolean requestEdited = ProxyEditSupport.requestWasEdited(item);
-            boolean responseEdited = ProxyEditSupport.responseWasEdited(item);
-            if (!requestEdited && !responseEdited) {
-                proxy.put("request_is_edited", null);
-                proxy.put("response_is_edited", null);
-            } else {
-                proxy.put("request_is_edited", requestEdited);
-                proxy.put("response_is_edited", responseEdited);
-            }
-        } else {
-            proxy.put("request_is_edited", false);
-            proxy.put("response_is_edited", false);
-        }
+        proxy.put("history_is_edited", item.edited());
+        proxy.put("request_change_stages", null);
+        proxy.put("response_change_stages", null);
         return proxy;
     }
 
     /**
      * Builds {@code burp.proxy.*} for live HTTP, Repeater tabs, or WebSocket documents.
      *
-     * <p>History id is {@code null} and edit flags are unset because these paths are not Proxy History rows.</p>
+     * <p>History-backed fields and pipeline stages are unknown on these paths.</p>
      *
      * @param listenerPort listener port when known, otherwise {@code null}
      * @return {@code burp.proxy} sub-document map
@@ -54,8 +41,21 @@ final class BurpProxyFields {
         Map<String, Object> proxy = new LinkedHashMap<>();
         proxy.put("history_id", null);
         proxy.put("listener_port", listenerPort);
-        proxy.put("request_is_edited", null);
-        proxy.put("response_is_edited", null);
+        proxy.put("history_is_edited", null);
+        proxy.put("request_change_stages", null);
+        proxy.put("response_change_stages", null);
+        return proxy;
+    }
+
+    static Map<String, Object> withChangeStages(
+            Map<String, Object> existing,
+            List<String> requestChangeStages,
+            List<String> responseChangeStages) {
+        Map<String, Object> proxy = existing == null
+                ? withoutProxyHistoryEditMetadata(null)
+                : new LinkedHashMap<>(existing);
+        proxy.put("request_change_stages", requestChangeStages);
+        proxy.put("response_change_stages", responseChangeStages);
         return proxy;
     }
 }

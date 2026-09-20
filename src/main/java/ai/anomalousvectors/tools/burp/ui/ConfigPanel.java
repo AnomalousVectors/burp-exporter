@@ -63,6 +63,7 @@ import ai.anomalousvectors.tools.burp.sinks.ParameterIntegritySessionLog;
 import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter;
+import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler;
 import ai.anomalousvectors.tools.burp.sinks.RepeaterTabsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.SettingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.SitemapIndexReporter;
@@ -1343,9 +1344,6 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 return;
             }
         }
-        if (isTrafficToolSelected("proxy")) {
-            ProxyWebSocketIndexReporter.startLivePoll();
-        }
         if (!RuntimeConfig.isExportRunActive(runToken)) {
             return;
         }
@@ -1898,7 +1896,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             startupExecutor.execute(() -> purgeQueuedTrafficForGate(currentTrafficGate));
         }
         ExporterIndexStatsReporter.refreshScheduleForCurrentState();
-        ProxyWebSocketIndexReporter.refreshLivePollScheduleForCurrentState();
+        ProxyWebSocketLiveHandler.clearRunState();
         refreshControlStatusIfExportRunning();
     }
 

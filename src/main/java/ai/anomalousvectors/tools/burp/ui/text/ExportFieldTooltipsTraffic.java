@@ -31,11 +31,13 @@ final class ExportFieldTooltipsTraffic {
             Map.entry("websocket.message_id", "websocket.message_id"),
             Map.entry("websocket.direction", "websocket.direction"),
             Map.entry("websocket.message_type", "websocket.message_type"),
+            Map.entry("websocket.inferred_message_type", "websocket.inferred_message_type"),
             Map.entry("websocket.payload.b64", "websocket.payload.b64"),
             Map.entry("websocket.payload.text", "websocket.payload.text"),
             Map.entry("websocket.payload.length", "websocket.payload.length"),
             Map.entry("websocket.payload.truncated", "websocket.payload.truncated"),
-            Map.entry("websocket.is_edited", "websocket.is_edited"),
+            Map.entry("websocket.history_has_edited_payload", "websocket.history_has_edited_payload"),
+            Map.entry("websocket.change_stages", "websocket.change_stages"),
             Map.entry("websocket.time", "websocket.time"));
     static String trafficDisplayName(String fieldKey) {
         if (fieldKey == null) {
@@ -81,13 +83,13 @@ final class ExportFieldTooltipsTraffic {
                     "RequestResponseDocBuilder.buildTrafficResponseDoc() uses only HttpResponse.httpVersion(); it does not copy request protocol data into response.protocol.http_version.");
             case "burp.reporting_tool" -> Tooltips.textWithSource(
                     "Burp tool display name.",
-                    "TrafficHttpHandler uses ToolType.toolName() from response.toolSource() with request fallback; ProxyHistoryIndexReporter writes \"Proxy History\"; RepeaterTabsIndexReporter writes \"Repeater Tabs\"; ProxyWebSocketIndexReporter writes \"Proxy WebSocket\"; ToolWebSocketLiveHandler uses ToolType.toolName() for non-proxy live WebSocket traffic.");
+                    "TrafficHttpHandler uses ToolType.toolName() from response.toolSource() with request fallback; ProxyHistoryIndexReporter writes \"Proxy History\"; RepeaterTabsIndexReporter writes \"Repeater Tabs\"; ProxyWebSocketIndexReporter writes \"Proxy WebSocket\"; live WebSocket handlers write their owning Burp tool.");
             case "burp.is_in_scope" -> Tooltips.textWithSource(
                     "Raw Burp Suite scope flag, not the extension's export-scope decision.",
                     "TrafficHttpHandler uses request.isInScope(); ProxyHistoryIndexReporter uses MontoyaApi.scope().isInScope(url); ProxyWebSocketIndexReporter uses MontoyaApi.scope().isInScope(url) via safeBurpInScope().");
             case "burp.message_id" -> Tooltips.textWithSource(
                     "Source-specific Burp message identifier used for correlation.",
-                    "TrafficHttpHandler uses response.messageId() or request.messageId() for orphan docs; ProxyHistoryIndexReporter uses ProxyHttpRequestResponse.id(); ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.id(); ToolWebSocketLiveHandler writes null for live non-proxy WebSocket frames.");
+                    "TrafficHttpHandler uses response.messageId() or request.messageId() for orphan docs; Proxy History reporters use their History row ids; live WebSocket handlers write null because their callback types expose no History message id.");
             case "burp.timing.end" -> Tooltips.textWithSource(
                     "Absolute end timestamp for this traffic event.",
                     "Proxy History, Repeater Tabs, and token-bound live Proxy HTTP derive this from TimingData.timeRequestSent() plus timeBetweenRequestSentAndEndOfResponse(). Other live HTTP uses the response-handler timestamp. For WebSocket messages, this is the frame/message time.");
@@ -155,18 +157,21 @@ final class ExportFieldTooltipsTraffic {
                             + "layouts that do not expose a readable group label write null.");
             case "websocket.id" -> Tooltips.textWithSource(
                     "WebSocket conversation identifier from Burp Proxy WebSocket history.",
-                    "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.webSocketId(); ToolWebSocketLiveHandler writes null because Montoya live WebSocket message types do not expose Burp history ids.");
+                    "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.webSocketId(); live WebSocket handlers write null because Montoya live callback types do not expose Burp History ids.");
             case "websocket.is_websocket" -> Tooltips.textWithSource(
                     "Whether this traffic document represents a WebSocket message.",
                     "ProxyWebSocketIndexReporter and ToolWebSocketLiveHandler write true; HTTP traffic producers write false.");
             case "websocket.message_id" -> Tooltips.textWithSource(
                     "WebSocket message identifier within the WebSocket conversation. This is distinct from websocket.id, which identifies the connection/conversation.",
-                    "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.id(); ToolWebSocketLiveHandler writes null for live non-proxy frames.");
+                    "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.id(); live WebSocket handlers write null.");
             case "websocket.direction" -> Tooltips.textWithSource(
                     "WebSocket message direction.",
-                    "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.direction().name().");
+                    "Historic and live WebSocket handlers use the Montoya direction name.");
             case "websocket.message_type" -> Tooltips.textWithSource(
-                    "Exporter payload classification for a WebSocket message.",
+                    "Exact WebSocket frame type when the live callback exposes it.",
+                    "Live WebSocket callbacks write TEXT or BINARY. Proxy WebSocket History writes null because Montoya does not expose the original opcode there.");
+            case "websocket.inferred_message_type" -> Tooltips.textWithSource(
+                    "Best-effort payload classification independent of the WebSocket opcode.",
                     "WebSocketTrafficDocumentBuilder.inferPayloadType() returns EMPTY for no bytes, TEXT for strict UTF-8 decodes, otherwise BINARY.");
             case "websocket.payload.b64" -> Tooltips.textWithSource(
                     "Raw WebSocket payload stored as base64 (effective on-the-wire bytes).",
@@ -181,24 +186,30 @@ final class ExportFieldTooltipsTraffic {
                     "True when search/database export prefix-truncated this WebSocket payload to fit the live bulk byte budget. "
                             + "payload.length remains the original size; file export is not truncated by this path.",
                     "SearchBodyPrefixFitter.fitToLiveBudget() sets payload.truncated when shortening b64/text under BulkByteBudget pressure.");
-            case "websocket.is_edited" -> Tooltips.textWithSource(
-                    "Whether the WebSocket frame payload was edited.",
-                    "ProxyWebSocketIndexReporter.buildDocument() uses ProxyWebSocketMessage.editedPayload() != null.");
+            case "websocket.history_has_edited_payload" -> Tooltips.textWithSource(
+                    "Whether Burp WebSocket History exposes a separate edited payload.",
+                    "ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.editedPayload() != null. Live callbacks write null because this History-only signal is unavailable.");
+            case "websocket.change_stages" -> Tooltips.textWithSource(
+                    "Observable live WebSocket stages at which payload bytes changed.",
+                    "ProxyWebSocketLiveHandler compares received and final to-be-sent callback payloads once and writes RECEIVED_TO_SENT when they differ. An empty array means the exposed stages matched; null means the comparison was unavailable.");
             case "websocket.time" -> Tooltips.textWithSource(
                     "WebSocket message timestamp.",
-                    "ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.time(); ToolWebSocketLiveHandler uses an exporter timestamp at handler time.");
+                    "ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.time(); live WebSocket handlers use an exporter timestamp at final callback time.");
             case "burp.proxy.history_id" -> Tooltips.textWithSource(
                     "Proxy History row identifier.",
                     "ProxyHistoryIndexReporter and live Proxy HTTP use ProxyHttpRequestResponse.id(). Live Proxy export waits for an exact private annotation-token match to its History row; live HttpHandler messageId remains a different id space. Null on Repeater, WebSocket, and live non-Proxy tools.");
-            case "burp.proxy.request_is_edited" -> Tooltips.textWithSource(
-                    "Whether the HTTP request was edited in the Proxy pipeline.",
-                    "Proxy History and token-bound live Proxy documents use BurpProxyFields: ProxyHttpRequestResponse.edited(), then request() and finalRequest() byte comparison. Null on Repeater, WebSocket, and non-Proxy live paths.");
-            case "burp.proxy.response_is_edited" -> Tooltips.textWithSource(
-                    "Whether the HTTP response was edited in the Proxy pipeline.",
-                    "Proxy History and token-bound live Proxy documents use BurpProxyFields: ProxyHttpRequestResponse.edited(), then originalResponse() and response() byte comparison. Null on Repeater, WebSocket, and non-Proxy live paths.");
+            case "burp.proxy.history_is_edited" -> Tooltips.textWithSource(
+                    "Burp's row-level edited signal for a Proxy History item.",
+                    "BurpProxyFields copies ProxyHttpRequestResponse.edited() without inferring which side or stage changed. Null when no History row was bound.");
+            case "burp.proxy.request_change_stages" -> Tooltips.textWithSource(
+                    "Observable live Proxy request stages at which complete message bytes changed.",
+                    "ProxyLiveMetadataCorrelator writes RECEIVED_TO_SENT when Proxy request callback bytes differ. An empty array means the exposed stages matched; null means the comparison was unavailable.");
+            case "burp.proxy.response_change_stages" -> Tooltips.textWithSource(
+                    "Observable live Proxy response stages at which complete message bytes changed.",
+                    "ProxyLiveMetadataCorrelator can write UPSTREAM_TO_RECEIVED and RECEIVED_TO_SENT. An empty array means all exposed stages matched; null means one or more comparisons were unavailable.");
             case "burp.proxy.listener_port" -> Tooltips.textWithSource(
                     "Proxy listener port used for the message.",
-                    "ProxyHistoryIndexReporter and token-bound live Proxy HTTP use ProxyHttpRequestResponse.listenerPort(); ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.listenerPort().");
+                    "ProxyHistoryIndexReporter and token-bound live Proxy HTTP use ProxyHttpRequestResponse.listenerPort(); ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.listenerPort(); live Proxy WebSocket callbacks write null because Montoya exposes only the target service there.");
             case "burp.timing.req_sent" -> Tooltips.textWithSource(
                     "Request-sent timestamp.",
                     "Proxy History and token-bound live Proxy HTTP use TimingData.timeRequestSent() with item.time() fallback; other live HTTP uses the request callback timestamp. ProxyWebSocketIndexReporter reuses ProxyWebSocketMessage.time().");

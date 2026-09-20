@@ -164,8 +164,9 @@ class MappingsContractTest {
 
             JsonNode burpProxy = props.path("burp").path("properties").path("proxy").path("properties");
             assertThat(burpProxy.has("is_edited")).isFalse();
-            assertThat(burpProxy.has("request_is_edited")).isTrue();
-            assertThat(burpProxy.has("response_is_edited")).isTrue();
+            assertThat(burpProxy.has("history_is_edited")).isTrue();
+            assertThat(burpProxy.has("request_change_stages")).isTrue();
+            assertThat(burpProxy.has("response_change_stages")).isTrue();
             JsonNode burpTiming = props.path("burp").path("properties").path("timing").path("properties");
             assertThat(burpTiming.has("req_sent")).isTrue();
             assertThat(burpTiming.has("req_sent_to_res_start")).isTrue();
@@ -177,7 +178,8 @@ class MappingsContractTest {
 
             JsonNode websocket = props.path("websocket").path("properties");
             assertThat(websocket.has("direction")).isTrue();
-            assertThat(websocket.has("is_edited")).isTrue();
+            assertThat(websocket.has("history_has_edited_payload")).isTrue();
+            assertThat(websocket.has("change_stages")).isTrue();
             assertThat(websocket.has("original")).isFalse();
             assertThat(websocket.has("original_payload")).isFalse();
             assertThat(websocket.has("edited_payload")).isFalse();
@@ -188,6 +190,7 @@ class MappingsContractTest {
             assertThat(websocket.has("is_websocket")).isTrue();
             assertThat(websocket.has("message_id")).isTrue();
             assertThat(websocket.has("message_type")).isTrue();
+            assertThat(websocket.has("inferred_message_type")).isTrue();
             assertThat(websocket.has("time")).isTrue();
             JsonNode payload = websocket.path("payload").path("properties");
             assertThat(payload.has("b64")).isTrue();

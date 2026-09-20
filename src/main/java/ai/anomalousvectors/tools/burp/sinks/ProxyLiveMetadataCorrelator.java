@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.sinks;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -36,25 +37,28 @@ import burp.api.montoya.proxy.http.ProxyRequestToBeSentAction;
 import burp.api.montoya.proxy.http.ProxyResponseHandler;
 import burp.api.montoya.proxy.http.ProxyResponseReceivedAction;
 import burp.api.montoya.proxy.http.ProxyResponseToBeSentAction;
+import burp.api.montoya.http.message.responses.HttpResponse;
+import burp.api.montoya.http.message.requests.HttpRequest;
 
 /**
  * Deterministically joins live Proxy documents to their exact Proxy History rows.
  *
- * <p>A unique marker is added to each eligible intercepted request's notes. Burp carries the
- * annotation onto the corresponding History row, allowing correlation without URL, timing, or
- * FIFO guesses. Documents remain outside {@link TrafficExportQueue} until the token is found and
- * the History-backed fields are applied. Generated markers are removed from Burp annotations and
- * independently redacted by {@link BurpAnnotationFields} before any document is exported.</p>
+ * <p>A unique marker is added to each eligible intercepted request's notes. Burp normally carries
+ * the annotation onto the corresponding History row. If it does not, correlation accepts only one
+ * newly appended row whose complete final-request bytes, listener port, and request time match.
+ * Generated markers are removed from Burp annotations and independently redacted by
+ * {@link BurpAnnotationFields} before export.</p>
  *
  * <p>Burp callbacks perform only marker bookkeeping and in-memory admission. A dedicated worker
- * performs History lookup, binding, cleanup, durable spooling, and queue handoff without holding
- * the callback-state lock. The 15-second threshold moves unresolved entries to disk; it never
- * authorizes an incomplete export. Thread-safe.</p>
+ * performs History lookup, binding, cleanup, bounded durable spooling, and queue handoff without
+ * holding the callback-state lock. After the correlation window, an otherwise complete final
+ * exchange is exported with unavailable History fields instead of being discarded. Thread-safe.</p>
  */
 public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, ProxyResponseHandler {
 
     private static final ProxyLiveMetadataCorrelator INSTANCE = new ProxyLiveMetadataCorrelator();
     private static final long DEFAULT_DURABLE_THRESHOLD_MS = 15_000L;
+    private static final long CORRELATION_WINDOW_MS = 15_000L;
     private static final long INITIAL_COALESCE_MS = 10L;
     private static final long COLD_RETRY_MS = 60_000L;
     private static final long STOP_WAIT_MS = 10_000L;
@@ -72,11 +76,14 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
      */
     private static final Condition RESPONSES_DRAINED = OWNER.newCondition();
     private static volatile ReentrantLock reconcileOwner = new ReentrantLock();
-    private static final Map<Integer, LiveToken> LIVE_TOKENS = new HashMap<>();
+    private static final Map<Integer, LiveToken> PROXY_LIVE_TOKENS = new HashMap<>();
+    private static final Map<Integer, LiveToken> HTTP_LIVE_TOKENS = new HashMap<>();
     private static final Map<String, LiveToken> LIVE_TOKENS_BY_TOKEN = new HashMap<>();
-    private static final Set<Integer> RETIRED_MESSAGE_IDS = new HashSet<>();
+    private static final Set<Integer> RETIRED_HTTP_MESSAGE_IDS = new HashSet<>();
     private static final Set<String> RETIRED_TOKENS = new HashSet<>();
     private static final Map<String, DeferredEntry> PENDING = new LinkedHashMap<>();
+    private static final Map<Integer, DeferredEntry> PENDING_BY_PROXY_MESSAGE_ID = new HashMap<>();
+    private static final Map<Integer, DeferredEntry> PENDING_BY_HTTP_MESSAGE_ID = new HashMap<>();
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-proxy-token-reconcile");
     private static final AtomicBoolean COALESCE_SCHEDULED = new AtomicBoolean();
@@ -358,7 +365,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         OWNER.lock();
         try {
             if (retiringGeneration == generation) {
-                RETIRED_MESSAGE_IDS.clear();
+                RETIRED_HTTP_MESSAGE_IDS.clear();
                 RETIRED_TOKENS.clear();
             }
             closing = LIVE_TOKENS_BY_TOKEN.values().stream()
@@ -366,7 +373,9 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                     .distinct()
                     .toList();
             for (LiveToken live : closing) {
-                RETIRED_MESSAGE_IDS.addAll(live.messageIds);
+                if (live.httpMessageId != null) {
+                    RETIRED_HTTP_MESSAGE_IDS.add(live.httpMessageId);
+                }
                 RETIRED_TOKENS.add(live.token);
                 removeLiveTokenLocked(live);
             }
@@ -412,7 +421,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             Annotations annotations,
             int messageId,
             Long requestSentMs) {
-        deferUntilHistoryBound(document, annotations, messageId, requestSentMs, null);
+        deferUntilHistoryBound(document, annotations, messageId, requestSentMs, null, null, null);
     }
 
     static void deferUntilHistoryBound(
@@ -421,6 +430,18 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             int messageId,
             Long requestSentMs,
             ResponseLease responseLease) {
+        deferUntilHistoryBound(
+                document, annotations, messageId, requestSentMs, responseLease, null, null);
+    }
+
+    static void deferUntilHistoryBound(
+            Map<String, Object> document,
+            Annotations annotations,
+            int messageId,
+            Long requestSentMs,
+            ResponseLease responseLease,
+            HttpRequest finalRequest,
+            HttpResponse upstreamResponse) {
         if (document == null) {
             return;
         }
@@ -440,14 +461,14 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             }
             String annotatedToken = ProxyCorrelationToken.find(annotations).orElse(null);
             LiveToken live = annotatedToken == null
-                    ? LIVE_TOKENS.get(messageId)
+                    ? HTTP_LIVE_TOKENS.get(messageId)
                     : LIVE_TOKENS_BY_TOKEN.get(annotatedToken);
             if (live != null) {
                 removeLiveTokenLocked(live);
             }
             if (live == null
                     && ((annotatedToken != null && RETIRED_TOKENS.remove(annotatedToken))
-                            || RETIRED_MESSAGE_IDS.remove(messageId))) {
+                            || RETIRED_HTTP_MESSAGE_IDS.remove(messageId))) {
                 ProxyCorrelationToken.find(annotations)
                         .ifPresent(token -> ProxyCorrelationToken.remove(annotations, token));
                 return;
@@ -503,8 +524,15 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                     epochMillis.getAsLong(),
                     monotonicNanos.getAsLong(),
                     document,
-                    cleanupTargets);
+                    cleanupTargets,
+                    live,
+                    messageBytes(finalRequest),
+                    messageBytes(upstreamResponse));
             PENDING.put(token, entry);
+            PENDING_BY_HTTP_MESSAGE_ID.put(messageId, entry);
+            if (live.proxyMessageId != null) {
+                PENDING_BY_PROXY_MESSAGE_ID.put(live.proxyMessageId, entry);
+            }
         } finally {
             OWNER.unlock();
         }
@@ -527,16 +555,38 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
      * @param annotations callback annotations, possibly carrying the authoritative token
      */
     static void abandonMessage(int messageId, Annotations annotations) {
+        abandonMessage(messageId, annotations, null);
+    }
+
+    /**
+     * Removes marker state, using complete downstream bytes only when callback identities differ.
+     *
+     * <p>The Proxy-specific and global HTTP callback families can expose different message IDs and
+     * annotation objects for the same exchange. If neither direct identity is available, this
+     * method removes a Proxy-stage token only when the complete downstream request has one unique
+     * match. Ambiguous requests are left for normal response or run cleanup.</p>
+     *
+     * @param messageId message ID from the callback abandoning export
+     * @param annotations callback annotations, possibly carrying the authoritative token
+     * @param downstreamRequest final request observed by the global HTTP callback, or {@code null}
+     */
+    static void abandonMessage(
+            int messageId,
+            Annotations annotations,
+            HttpRequest downstreamRequest) {
         LiveToken removed;
         OWNER.lock();
         try {
             String token = ProxyCorrelationToken.find(annotations).orElse(null);
             LiveToken live = token == null
-                    ? LIVE_TOKENS.get(messageId)
+                    ? HTTP_LIVE_TOKENS.get(messageId)
                     : LIVE_TOKENS_BY_TOKEN.get(token);
+            if (live == null && token == null) {
+                live = uniqueUnclaimedProxyStageLocked(messageBytes(downstreamRequest));
+            }
             removeLiveTokenLocked(live);
             removed = live;
-            RETIRED_MESSAGE_IDS.remove(messageId);
+            RETIRED_HTTP_MESSAGE_IDS.remove(messageId);
             if (token != null) {
                 RETIRED_TOKENS.remove(token);
             }
@@ -552,8 +602,11 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         if (live == null) {
             return;
         }
-        for (Integer messageId : live.messageIds) {
-            LIVE_TOKENS.remove(messageId, live);
+        if (live.proxyMessageId != null) {
+            PROXY_LIVE_TOKENS.remove(live.proxyMessageId, live);
+        }
+        if (live.httpMessageId != null) {
+            HTTP_LIVE_TOKENS.remove(live.httpMessageId, live);
         }
         LIVE_TOKENS_BY_TOKEN.remove(live.token, live);
     }
@@ -568,6 +621,13 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
      * @param annotations annotations returned in the HTTP request action
      */
     static void markHttpRequest(int messageId, Annotations annotations) {
+        markHttpRequest(messageId, annotations, null);
+    }
+
+    static void markHttpRequest(
+            int messageId,
+            Annotations annotations,
+            HttpRequest downstreamRequest) {
         HTTP_PROXY_REQUESTS.incrementAndGet();
         if (!intakeOpen) {
             return;
@@ -577,7 +637,22 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             if (!intakeOpen) {
                 return;
             }
-            if (attachMarkerLocked(messageId, annotations, null)) {
+            String annotatedToken = ProxyCorrelationToken.find(annotations).orElse(null);
+            LiveToken observed = annotatedToken == null
+                    ? null
+                    : LIVE_TOKENS_BY_TOKEN.get(annotatedToken);
+            if (observed == null || observed.generation != generation) {
+                observed = uniqueUnclaimedProxyStageLocked(messageBytes(downstreamRequest));
+            }
+            boolean attached = observed == null
+                    ? attachNewHttpMarkerLocked(messageId, annotations)
+                    : attachExistingMarkerLocked(observed, messageId, annotations);
+            if (attached) {
+                String token = ProxyCorrelationToken.find(annotations).orElse(null);
+                LiveToken live = token == null ? null : LIVE_TOKENS_BY_TOKEN.get(token);
+                if (live != null) {
+                    live.httpRequestObserved = true;
+                }
                 long marked = HTTP_MARKED_REQUESTS.incrementAndGet();
                 if (marked == 1L) {
                     Logger.logDebug("[ProxyCorrelation] First live Proxy HTTP request marked: "
@@ -587,6 +662,56 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         } finally {
             OWNER.unlock();
         }
+    }
+
+    private static LiveToken uniqueUnclaimedProxyStageLocked(byte[] downstreamRequestBytes) {
+        if (downstreamRequestBytes == null) {
+            return null;
+        }
+        LiveToken match = null;
+        for (LiveToken candidate : LIVE_TOKENS_BY_TOKEN.values()) {
+            if (candidate.generation != generation
+                    || !candidate.proxyRequestObserved
+                    || candidate.httpRequestObserved
+                    || candidate.requestToBeSentBytes == null
+                    || !Arrays.equals(candidate.requestToBeSentBytes, downstreamRequestBytes)) {
+                continue;
+            }
+            if (match != null && match != candidate) {
+                return null;
+            }
+            match = candidate;
+        }
+        return match;
+    }
+
+    private static boolean attachExistingMarkerLocked(
+            LiveToken live,
+            int messageId,
+            Annotations annotations) {
+        if (!ProxyCorrelationToken.append(annotations, live.token)) {
+            EXPLICIT_FAILURES.incrementAndGet();
+            logExplicitFailure("marker_attach_failed", messageId);
+            return false;
+        }
+        live.httpMessageId = messageId;
+        HTTP_LIVE_TOKENS.put(messageId, live);
+        RETIRED_HTTP_MESSAGE_IDS.remove(messageId);
+        RETIRED_TOKENS.remove(live.token);
+        addIdentity(live.annotations, annotations);
+        return true;
+    }
+
+    private static boolean attachNewHttpMarkerLocked(
+            int messageId,
+            Annotations annotations) {
+        LiveToken live = new LiveToken(tokenSupplier.get(), generation);
+        LIVE_TOKENS_BY_TOKEN.put(live.token, live);
+        if (!attachExistingMarkerLocked(live, messageId, annotations)) {
+            LIVE_TOKENS_BY_TOKEN.remove(live.token, live);
+            return false;
+        }
+        return true;
     }
 
     /** Returns current non-durable pending document count. */
@@ -703,7 +828,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     @Override
     public ProxyRequestReceivedAction handleRequestReceived(InterceptedRequest request) {
         Annotations annotations = request.annotations();
-        markRequest(request, annotations);
+        rememberRequestStage(request, annotations, false);
         return ProxyRequestReceivedAction.continueWith(request, annotations);
     }
 
@@ -711,7 +836,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     @Override
     public ProxyRequestToBeSentAction handleRequestToBeSent(InterceptedRequest request) {
         Annotations annotations = request.annotations();
-        markRequest(request, annotations);
+        rememberRequestStage(request, annotations, true);
         return ProxyRequestToBeSentAction.continueWith(request, annotations);
     }
 
@@ -719,7 +844,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     @Override
     public ProxyResponseReceivedAction handleResponseReceived(InterceptedResponse response) {
         Annotations annotations = response.annotations();
-        rememberResponseAnnotations(response, annotations);
+        rememberResponseStage(response, annotations, false);
         return ProxyResponseReceivedAction.continueWith(response, annotations);
     }
 
@@ -727,11 +852,14 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     @Override
     public ProxyResponseToBeSentAction handleResponseToBeSent(InterceptedResponse response) {
         Annotations annotations = response.annotations();
-        rememberResponseAnnotations(response, annotations);
+        rememberResponseStage(response, annotations, true);
         return ProxyResponseToBeSentAction.continueWith(response, annotations);
     }
 
-    private static void markRequest(InterceptedRequest request, Annotations annotations) {
+    private static void rememberRequestStage(
+            InterceptedRequest request,
+            Annotations annotations,
+            boolean toBeSent) {
         if (request == null) {
             return;
         }
@@ -746,18 +874,24 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             if (!intakeOpen) {
                 return;
             }
-            String token = ProxyCorrelationToken.find(annotations).orElse(null);
-            if (token == null) {
+            Integer port = parseListenerPort(request.listenerInterface());
+            if (!attachProxyMarkerLocked(request.messageId(), annotations, port)) {
                 return;
             }
+            String token = ProxyCorrelationToken.find(annotations).orElse(null);
             LiveToken live = LIVE_TOKENS_BY_TOKEN.get(token);
             if (live == null || live.generation != generation) {
                 return;
             }
             addIdentity(live.annotations, annotations);
-            Integer port = parseListenerPort(request.listenerInterface());
             if (port != null) {
                 live.listenerPort = port;
+            }
+            live.proxyRequestObserved = true;
+            if (toBeSent) {
+                live.requestToBeSentBytes = messageBytes(request);
+            } else {
+                live.requestReceivedBytes = messageBytes(request);
             }
         } catch (RuntimeException e) {
             EXPLICIT_FAILURES.incrementAndGet();
@@ -767,14 +901,17 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         }
     }
 
-    private static boolean attachMarkerLocked(
+    private static boolean attachProxyMarkerLocked(
             int messageId,
             Annotations annotations,
             Integer listenerPort) {
         String annotatedToken = ProxyCorrelationToken.find(annotations).orElse(null);
         LiveToken live = annotatedToken == null
-                ? LIVE_TOKENS.get(messageId)
+                ? null
                 : LIVE_TOKENS_BY_TOKEN.get(annotatedToken);
+        if (live == null || live.generation != generation) {
+            live = PROXY_LIVE_TOKENS.get(messageId);
+        }
         if (live == null || live.generation != generation) {
             if (annotatedToken != null) {
                 ProxyCorrelationToken.remove(annotations, annotatedToken);
@@ -782,9 +919,8 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             live = new LiveToken(tokenSupplier.get(), generation);
             LIVE_TOKENS_BY_TOKEN.put(live.token, live);
         }
-        live.messageIds.add(messageId);
-        LIVE_TOKENS.put(messageId, live);
-        RETIRED_MESSAGE_IDS.remove(messageId);
+        live.proxyMessageId = messageId;
+        PROXY_LIVE_TOKENS.put(messageId, live);
         RETIRED_TOKENS.remove(live.token);
         if (!ProxyCorrelationToken.append(annotations, live.token)) {
             removeLiveTokenLocked(live);
@@ -799,23 +935,47 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         return true;
     }
 
-    private static void rememberResponseAnnotations(
+    private static void rememberResponseStage(
             InterceptedResponse response,
-            Annotations annotations) {
+            Annotations annotations,
+            boolean toBeSent) {
         if (response == null) {
             return;
         }
         OWNER.lock();
         try {
             String token = ProxyCorrelationToken.find(annotations).orElse(null);
-            LiveToken live = token == null ? null : LIVE_TOKENS_BY_TOKEN.get(token);
-            if (live == null || live.generation != generation) {
-                return;
-            }
-            addIdentity(live.annotations, annotations);
+            LiveToken live = token == null
+                    ? PROXY_LIVE_TOKENS.get(response.messageId())
+                    : LIVE_TOKENS_BY_TOKEN.get(token);
+            DeferredEntry pending = token == null
+                    ? PENDING_BY_PROXY_MESSAGE_ID.get(response.messageId())
+                    : PENDING.get(token);
             Integer port = parseListenerPort(response.listenerInterface());
-            if (port != null) {
-                live.listenerPort = port;
+            if (live != null && live.generation == generation) {
+                addIdentity(live.annotations, annotations);
+                if (port != null) {
+                    live.listenerPort = port;
+                }
+                if (toBeSent) {
+                    live.responseToBeSent = durableResponse(response);
+                    live.responseToBeSentBytes = messageBytes(response);
+                    live.responseToBeSentObserved = true;
+                } else {
+                    live.responseReceivedBytes = messageBytes(response);
+                }
+            } else if (pending != null && pending.generation == generation) {
+                synchronized (pending) {
+                    addIdentity(pending.cleanupTargets, annotations);
+                    if (toBeSent) {
+                        pending.responseToBeSent = durableResponse(response);
+                        pending.responseToBeSentBytes = messageBytes(response);
+                        pending.responseToBeSentObserved = true;
+                    } else {
+                        pending.responseReceivedBytes = messageBytes(response);
+                    }
+                }
+                requestImmediateWake();
             }
         } catch (RuntimeException e) {
             Logger.logWarnPanelOnly("[ProxyCorrelation] Unable to retain response annotations: " + e.getMessage());
@@ -959,6 +1119,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                     > ExportAdmissionController.MEM_DOC_SAFETY_RAIL
                     || !ExportAdmissionController.memAccepts(pendingMemoryBytes, 0L);
             if (!entry.durable
+                    && nowNanos < entry.finalResponseDeadlineNanos
                     && (memoryPressure || nowNanos >= entry.nextDurabilityAttemptAtNanos)) {
                 if (!persist(entry)) {
                     entry.scheduleDurabilityRetry(nowNanos);
@@ -1010,10 +1171,12 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         }
 
         if (appendedBatch.status == LookupStatus.LOOKUP_FAILED) {
-            dueEntries.removeAll(freshDue);
+            dueEntries.removeIf(entry -> freshDue.contains(entry)
+                    && nowNanos < entry.finalResponseDeadlineNanos);
         }
         if (allHistoryBatch.status == LookupStatus.LOOKUP_FAILED) {
-            dueEntries.removeAll(freshRescanDue);
+            dueEntries.removeIf(entry -> freshRescanDue.contains(entry)
+                    && nowNanos < entry.finalResponseDeadlineNanos);
         }
         Set<DeferredEntry> fullHistoryChecked =
                 allHistoryBatch.status == LookupStatus.LOOKUP_FAILED
@@ -1105,13 +1268,15 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             return;
         }
         if (entry.document == null
-                && (entry.bound || !rows.isEmpty())
+                && (entry.bound
+                        || !rows.isEmpty()
+                        || nowNanos >= entry.finalResponseDeadlineNanos)
                 && !entry.loadDocument()) {
             entry.scheduleRetry(nowNanos);
             return;
         }
         if (!entry.bound) {
-            if (rows.size() > 1) {
+            if (rows.size() > 1 && nowNanos < entry.finalResponseDeadlineNanos) {
                 rateLimitedLookupWarning(
                         "Multiple Proxy History rows matched one marker: generation="
                                 + entry.generation + ", messageId=" + entry.messageId
@@ -1119,17 +1284,56 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                 entry.scheduleRetry(nowNanos);
                 return;
             }
-            if (rows.size() == 1 && bind(entry, rows.get(0))) {
-                entry.history = rows.get(0);
+            List<ProxyHttpRequestResponse> candidateRows = rows;
+            if (candidateRows.isEmpty()) {
+                candidateRows = source.fallbackCandidates(
+                        entry.requestToBeSentBytes,
+                        entry.listenerPort,
+                        entry.requestSentMs);
+            }
+            if (candidateRows.size() == 1 && bind(entry, candidateRows.get(0))) {
+                entry.history = candidateRows.get(0);
                 if (entry.durable && !persist(entry)) {
                     entry.scheduleRetry(nowNanos);
                     return;
                 }
-            } else if (rows.isEmpty()) {
+            } else if (candidateRows.isEmpty()
+                    && nowNanos >= entry.finalResponseDeadlineNanos) {
+                if (entry.document == null && !entry.loadDocument()) {
+                    entry.scheduleRetry(nowNanos);
+                    return;
+                }
+                cleanupAnnotations(entry.cleanupTargetsSnapshot(), entry.token);
+                entry.cleanupComplete = true;
+                entry.bound = true;
+                rateLimitedLookupWarning(
+                        "Proxy History correlation window elapsed: generation="
+                                + entry.generation
+                                + ", messageId="
+                                + entry.messageId
+                                + "; exporting the final exchange without History-only fields.");
+            } else if (candidateRows.isEmpty()) {
                 if (entry.nextLookupAtNanos <= nowNanos) {
                     entry.scheduleRetry(nowNanos);
                 }
                 return;
+            } else if (candidateRows.size() > 1
+                    && nowNanos >= entry.finalResponseDeadlineNanos) {
+                if (entry.document == null && !entry.loadDocument()) {
+                    entry.scheduleRetry(nowNanos);
+                    return;
+                }
+                cleanupAnnotations(entry.cleanupTargetsSnapshot(), entry.token);
+                entry.cleanupComplete = true;
+                entry.bound = true;
+                rateLimitedLookupWarning(
+                        "Proxy History correlation remained ambiguous: generation="
+                                + entry.generation
+                                + ", messageId="
+                                + entry.messageId
+                                + ", matches="
+                                + candidateRows.size()
+                                + "; exporting the final exchange without History-only fields.");
             } else {
                 entry.scheduleRetry(nowNanos);
                 return;
@@ -1154,6 +1358,11 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             }
             entry.cleanupComplete = true;
         }
+        if (!entry.readyForFinalResponse(nowNanos)) {
+            entry.scheduleRetry(nowNanos);
+            return;
+        }
+        applyObservedStageFields(entry);
         if (entry.durable && !persist(entry)) {
             entry.scheduleRetry(nowNanos);
             return;
@@ -1170,12 +1379,26 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         OWNER.lock();
         try {
             PENDING.remove(entry.token, entry);
+            PENDING_BY_HTTP_MESSAGE_ID.remove(entry.messageId, entry);
+            if (entry.proxyMessageId != null) {
+                PENDING_BY_PROXY_MESSAGE_ID.remove(entry.proxyMessageId, entry);
+            }
         } finally {
             OWNER.unlock();
         }
         source.forget(entry.token);
         spool.complete(entry.token, ACTIVE_PERSIST_WORKERS.get() > 0L);
-        BOUND_TOTAL.incrementAndGet();
+        if (hasHistoryId(entry.document)) {
+            BOUND_TOTAL.incrementAndGet();
+        }
+    }
+
+    private static boolean hasHistoryId(Map<String, Object> document) {
+        if (document == null || !(document.get("burp") instanceof Map<?, ?> burp)) {
+            return false;
+        }
+        return burp.get("proxy") instanceof Map<?, ?> proxy
+                && proxy.get("history_id") != null;
     }
 
     private static void scheduleNextWake() {
@@ -1261,7 +1484,11 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                 success = false;
             }
         }
-        for (Annotations annotations : entry.cleanupTargets) {
+        List<Annotations> cleanupTargets;
+        synchronized (entry) {
+            cleanupTargets = List.copyOf(entry.cleanupTargets);
+        }
+        for (Annotations annotations : cleanupTargets) {
             success &= cleanupAnnotation(annotations, entry.token);
         }
         if (!success) {
@@ -1324,8 +1551,95 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         }
         Map<String, Object> burp = StringKeyedMaps.copy(burpMap);
         burp.put("proxy", BurpProxyFields.forProxyHistory(history));
-        burp.put("timing", BurpTimingFields.fromProxyHistory(history));
+        Object timingValue = burp.get("timing");
+        Map<?, ?> liveTiming = timingValue instanceof Map<?, ?> timingMap ? timingMap : null;
+        burp.put("timing", BurpTimingFields.mergeProxyHistoryOverLive(liveTiming, history));
         document.put("burp", burp);
+    }
+
+    private static void applyObservedStageFields(DeferredEntry entry) {
+        synchronized (entry) {
+            if (entry.responseToBeSent != null) {
+                applyFinalResponse(entry.document, entry.responseToBeSent);
+            }
+            Object burpValue = entry.document.get("burp");
+            if (!(burpValue instanceof Map<?, ?> burpMap)) {
+                return;
+            }
+            Map<String, Object> burp = StringKeyedMaps.copy(burpMap);
+            Object proxyValue = burp.get("proxy");
+            Map<String, Object> proxy = proxyValue instanceof Map<?, ?> proxyMap
+                    ? StringKeyedMaps.copy(proxyMap)
+                    : BurpProxyFields.withoutProxyHistoryEditMetadata(entry.listenerPort);
+            burp.put("proxy", BurpProxyFields.withChangeStages(
+                    proxy,
+                    changeStages(
+                            entry.requestReceivedBytes,
+                            entry.requestToBeSentBytes,
+                            "RECEIVED_TO_SENT"),
+                    responseChangeStages(
+                            entry.upstreamResponseBytes,
+                            entry.responseReceivedBytes,
+                            entry.responseToBeSentBytes)));
+            entry.document.put("burp", burp);
+        }
+    }
+
+    static List<String> changeStages(byte[] first, byte[] second, String stage) {
+        if (first == null || second == null) {
+            return null;
+        }
+        return java.util.Arrays.equals(first, second) ? List.of() : List.of(stage);
+    }
+
+    static List<String> responseChangeStages(
+            byte[] upstream,
+            byte[] received,
+            byte[] toBeSent) {
+        if (upstream == null || received == null || toBeSent == null) {
+            return null;
+        }
+        List<String> stages = new ArrayList<>(2);
+        if (!java.util.Arrays.equals(upstream, received)) {
+            stages.add("UPSTREAM_TO_RECEIVED");
+        }
+        if (!java.util.Arrays.equals(received, toBeSent)) {
+            stages.add("RECEIVED_TO_SENT");
+        }
+        return List.copyOf(stages);
+    }
+
+    static void applyFinalResponse(
+            Map<String, Object> document,
+            HttpResponse finalResponse) {
+        if (document != null && finalResponse != null) {
+            document.put(
+                    "response",
+                    RequestResponseDocBuilder.buildTrafficResponseDoc(finalResponse));
+        }
+    }
+
+    private static byte[] messageBytes(burp.api.montoya.http.message.HttpMessage message) {
+        if (message == null) {
+            return null;
+        }
+        burp.api.montoya.core.ByteArray byteArray = message.toByteArray();
+        if (byteArray == null) {
+            return null;
+        }
+        byte[] bytes = byteArray.getBytes();
+        return bytes == null ? null : bytes.clone();
+    }
+
+    private static HttpResponse durableResponse(HttpResponse response) {
+        if (response == null) {
+            return null;
+        }
+        try {
+            return response.copyToTempFile();
+        } catch (RuntimeException ignored) {
+            return response;
+        }
     }
 
     private static boolean persist(DeferredEntry entry) {
@@ -1341,10 +1655,12 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                 OWNER.lock();
                 try {
                     entry.durable = true;
-                    entry.nextLookupAtNanos = Math.max(
-                            entry.nextLookupAtNanos,
-                            monotonicNanos.getAsLong()
-                                    + TimeUnit.MILLISECONDS.toNanos(COLD_RETRY_MS));
+                    entry.nextLookupAtNanos = Math.min(
+                            entry.finalResponseDeadlineNanos,
+                            Math.max(
+                                    entry.nextLookupAtNanos,
+                                    monotonicNanos.getAsLong()
+                                            + TimeUnit.MILLISECONDS.toNanos(COLD_RETRY_MS)));
                 } finally {
                     OWNER.unlock();
                 }
@@ -1489,13 +1805,13 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         try {
             intakeOpen = true;
             LiveToken live = new LiveToken(token, generation);
-            live.messageIds.add(messageId);
+            live.httpMessageId = messageId;
             live.listenerPort = listenerPort;
             addIdentity(live.annotations, annotations);
             ProxyCorrelationToken.append(annotations, token);
-            LIVE_TOKENS.put(messageId, live);
+            HTTP_LIVE_TOKENS.put(messageId, live);
             LIVE_TOKENS_BY_TOKEN.put(token, live);
-            RETIRED_MESSAGE_IDS.remove(messageId);
+            RETIRED_HTTP_MESSAGE_IDS.remove(messageId);
             RETIRED_TOKENS.remove(token);
         } finally {
             OWNER.unlock();
@@ -1511,11 +1827,14 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         OWNER.lock();
         try {
             handoffOpen = false;
-            LIVE_TOKENS.clear();
+            PROXY_LIVE_TOKENS.clear();
+            HTTP_LIVE_TOKENS.clear();
             LIVE_TOKENS_BY_TOKEN.clear();
-            RETIRED_MESSAGE_IDS.clear();
+            RETIRED_HTTP_MESSAGE_IDS.clear();
             RETIRED_TOKENS.clear();
             PENDING.clear();
+            PENDING_BY_PROXY_MESSAGE_ID.clear();
+            PENDING_BY_HTTP_MESSAGE_ID.clear();
             inFlightResponses = 0;
             lateFinalizationGeneration = 0L;
             COALESCE_SCHEDULED.set(false);
@@ -1598,11 +1917,14 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             schedulerEnabled = true;
             generation = 0L;
             handoffOpen = false;
-            LIVE_TOKENS.clear();
+            PROXY_LIVE_TOKENS.clear();
+            HTTP_LIVE_TOKENS.clear();
             LIVE_TOKENS_BY_TOKEN.clear();
-            RETIRED_MESSAGE_IDS.clear();
+            RETIRED_HTTP_MESSAGE_IDS.clear();
             RETIRED_TOKENS.clear();
             PENDING.clear();
+            PENDING_BY_PROXY_MESSAGE_ID.clear();
+            PENDING_BY_HTTP_MESSAGE_ID.clear();
             inFlightResponses = 0;
             lateFinalizationGeneration = 0L;
             previousSpool = spool;
@@ -1647,6 +1969,13 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
 
     interface HistorySource {
         LookupBatch lookup(Set<String> tokens, LookupScope scope);
+
+        default List<ProxyHttpRequestResponse> fallbackCandidates(
+                byte[] finalRequestBytes,
+                Integer listenerPort,
+                Long requestSentMs) {
+            return List.of();
+        }
 
         default void forget(String token) { }
 
@@ -1704,7 +2033,9 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
      * invalidates the append cursor and causes one safe rescan.</p>
      */
     private static final class BurpHistorySource implements HistorySource {
+        private static final int MAX_RECENT_FALLBACK_ROWS = 4_096;
         private final Map<String, List<ProxyHttpRequestResponse>> rowsByToken = new HashMap<>();
+        private final List<ProxyHttpRequestResponse> recentRows = new ArrayList<>();
         private int cursorSize;
         private Integer cursorLastId;
         private boolean initialized;
@@ -1731,6 +2062,12 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                     if (row == null) {
                         continue;
                     }
+                    if (scope == LookupScope.APPENDED_ROWS && !tokens.isEmpty()) {
+                        recentRows.add(row);
+                        if (recentRows.size() > MAX_RECENT_FALLBACK_ROWS) {
+                            recentRows.remove(0);
+                        }
+                    }
                     try {
                         ProxyCorrelationToken.find(row.annotations())
                                 .ifPresent(token -> rowsByToken
@@ -1756,6 +2093,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         @Override
         public void reset() {
             rowsByToken.clear();
+            recentRows.clear();
             initialized = false;
             cursorSize = 0;
             cursorLastId = null;
@@ -1766,9 +2104,48 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             rowsByToken.remove(token);
         }
 
+        @Override
+        public List<ProxyHttpRequestResponse> fallbackCandidates(
+                byte[] finalRequestBytes,
+                Integer listenerPort,
+                Long requestSentMs) {
+            if (finalRequestBytes == null || listenerPort == null || requestSentMs == null) {
+                return List.of();
+            }
+            List<ProxyHttpRequestResponse> matches = new ArrayList<>();
+            for (ProxyHttpRequestResponse row : recentRows) {
+                if (matchesFallback(row, finalRequestBytes, listenerPort, requestSentMs)) {
+                    matches.add(row);
+                }
+            }
+            return List.copyOf(matches);
+        }
+
+        private static boolean matchesFallback(
+                ProxyHttpRequestResponse row,
+                byte[] finalRequestBytes,
+                int listenerPort,
+                long requestSentMs) {
+            try {
+                if (row.listenerPort() != listenerPort || row.time() == null) {
+                    return false;
+                }
+                long delta = Math.abs(row.time().toInstant().toEpochMilli() - requestSentMs);
+                if (delta > HISTORY_TIME_VALIDATION_MS || row.finalRequest() == null) {
+                    return false;
+                }
+                return java.util.Arrays.equals(
+                        finalRequestBytes,
+                        messageBytes(row.finalRequest()));
+            } catch (RuntimeException ignored) {
+                return false;
+            }
+        }
+
         private int appendedStart(List<ProxyHttpRequestResponse> history) {
             if (!initialized || cursorSize > history.size()) {
                 rowsByToken.clear();
+                recentRows.clear();
                 return 0;
             }
             if (cursorSize == 0) {
@@ -1780,11 +2157,13 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                         || cursorLastId == null
                         || previousTail.id() != cursorLastId.intValue()) {
                     rowsByToken.clear();
+                    recentRows.clear();
                     return 0;
                 }
                 return cursorSize;
             } catch (RuntimeException e) {
                 rowsByToken.clear();
+                recentRows.clear();
                 return 0;
             }
         }
@@ -1857,9 +2236,18 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     private static final class LiveToken {
         private final String token;
         private final long generation;
-        private final Set<Integer> messageIds = new HashSet<>();
+        private Integer proxyMessageId;
+        private Integer httpMessageId;
         private final List<Annotations> annotations = new ArrayList<>();
         private Integer listenerPort;
+        private boolean proxyRequestObserved;
+        private boolean httpRequestObserved;
+        private byte[] requestReceivedBytes;
+        private byte[] requestToBeSentBytes;
+        private byte[] responseReceivedBytes;
+        private byte[] responseToBeSentBytes;
+        private HttpResponse responseToBeSent;
+        private boolean responseToBeSentObserved;
 
         private LiveToken(String token, long generation) {
             this.token = token;
@@ -1891,6 +2279,16 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         private volatile long nextLookupAtNanos;
         private volatile long nextDurabilityAttemptAtNanos;
         private ProxyHttpRequestResponse history;
+        private final boolean expectFinalResponse;
+        private final long finalResponseDeadlineNanos;
+        private final Integer proxyMessageId;
+        private final byte[] upstreamResponseBytes;
+        private final byte[] requestReceivedBytes;
+        private final byte[] requestToBeSentBytes;
+        private volatile byte[] responseReceivedBytes;
+        private volatile byte[] responseToBeSentBytes;
+        private volatile HttpResponse responseToBeSent;
+        private volatile boolean responseToBeSentObserved;
 
         private DeferredEntry(
                 String token,
@@ -1901,7 +2299,10 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                 long createdAtEpochMs,
                 long createdAtNanos,
                 Map<String, Object> document,
-                List<Annotations> cleanupTargets) {
+                List<Annotations> cleanupTargets,
+                LiveToken live,
+                byte[] fallbackFinalRequestBytes,
+                byte[] upstreamResponseBytes) {
             this.token = token;
             this.messageId = messageId;
             this.listenerPort = listenerPort;
@@ -1910,6 +2311,19 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             this.createdAtEpochMs = createdAtEpochMs;
             this.document = document;
             this.cleanupTargets = cleanupTargets;
+            this.expectFinalResponse = live != null && live.proxyRequestObserved;
+            this.finalResponseDeadlineNanos = createdAtNanos
+                    + TimeUnit.MILLISECONDS.toNanos(CORRELATION_WINDOW_MS);
+            this.proxyMessageId = live == null ? null : live.proxyMessageId;
+            this.upstreamResponseBytes = upstreamResponseBytes;
+            this.requestReceivedBytes = live == null ? null : live.requestReceivedBytes;
+            this.requestToBeSentBytes = live == null || live.requestToBeSentBytes == null
+                    ? fallbackFinalRequestBytes
+                    : live.requestToBeSentBytes;
+            this.responseReceivedBytes = live == null ? null : live.responseReceivedBytes;
+            this.responseToBeSentBytes = live == null ? null : live.responseToBeSentBytes;
+            this.responseToBeSent = live == null ? null : live.responseToBeSent;
+            this.responseToBeSentObserved = live != null && live.responseToBeSentObserved;
             this.recovered = false;
             this.nextLookupAtNanos = createdAtNanos;
             this.nextDurabilityAttemptAtNanos = createdAtNanos
@@ -1927,6 +2341,12 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             this.createdAtEpochMs = stored.createdAtEpochMs();
             this.document = null;
             this.cleanupTargets = new ArrayList<>();
+            this.expectFinalResponse = false;
+            this.finalResponseDeadlineNanos = recoveredAtNanos;
+            this.proxyMessageId = null;
+            this.upstreamResponseBytes = null;
+            this.requestReceivedBytes = null;
+            this.requestToBeSentBytes = null;
             this.recovered = true;
             this.durable = true;
             this.bound = stored.bound();
@@ -1959,6 +2379,16 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
 
         private boolean coldLane() {
             return recovered || durable;
+        }
+
+        private boolean readyForFinalResponse(long nowNanos) {
+            return !expectFinalResponse
+                    || responseToBeSentObserved
+                    || nowNanos >= finalResponseDeadlineNanos;
+        }
+
+        private synchronized List<Annotations> cleanupTargetsSnapshot() {
+            return List.copyOf(cleanupTargets);
         }
 
         private boolean requiresFullRescan() {

@@ -21,7 +21,6 @@ import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.sinks.ExportReporterLifecycle;
 import ai.anomalousvectors.tools.burp.sinks.FindingsIndexReporter;
-import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.SettingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.SitemapIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter;
@@ -40,7 +39,6 @@ class ConfigPanelStopLifecycleHeadlessTest {
             SettingsIndexReporter.start();
             FindingsIndexReporter.start();
             SitemapIndexReporter.start();
-            ProxyWebSocketIndexReporter.startLivePoll();
 
             ConfigPanel panel = newPanelOnEdt();
             JButton stopButton = (JButton) findByName(panel, "control.startStop");
@@ -55,7 +53,6 @@ class ConfigPanelStopLifecycleHeadlessTest {
             assertThat(peek(SettingsIndexReporter.class, "SCHEDULER")).isNull();
             assertThat(peek(FindingsIndexReporter.class, "SCHEDULER")).isNull();
             assertThat(peek(SitemapIndexReporter.class, "SCHEDULER")).isNull();
-            assertThat(peek(ProxyWebSocketIndexReporter.class, "SCHEDULER")).isNull();
         } finally {
             ExportReporterLifecycle.resetForTests();
             ConfigPanel.shutdownStartupExecutor();
@@ -157,8 +154,7 @@ class ConfigPanelStopLifecycleHeadlessTest {
             if (peek(ExporterIndexStatsReporter.class, "SCHEDULER") == null
                     && peek(SettingsIndexReporter.class, "SCHEDULER") == null
                     && peek(FindingsIndexReporter.class, "SCHEDULER") == null
-                    && peek(SitemapIndexReporter.class, "SCHEDULER") == null
-                    && peek(ProxyWebSocketIndexReporter.class, "SCHEDULER") == null) {
+                    && peek(SitemapIndexReporter.class, "SCHEDULER") == null) {
                 return;
             }
             runEdt(() -> { });

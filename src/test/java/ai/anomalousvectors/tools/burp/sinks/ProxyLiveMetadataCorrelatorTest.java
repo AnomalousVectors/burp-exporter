@@ -37,7 +37,10 @@ import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
+import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.handler.TimingData;
+import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.proxy.Proxy;
 import burp.api.montoya.proxy.ProxyHttpRequestResponse;
 import burp.api.montoya.proxy.http.InterceptedRequest;
@@ -74,6 +77,7 @@ class ProxyLiveMetadataCorrelatorTest {
     void tearDown() {
         RuntimeConfig.setExportRunning(false);
         ProxyLiveMetadataCorrelator.resetForTests();
+        MontoyaApiProvider.set(null);
     }
 
     @Test
@@ -86,6 +90,101 @@ class ProxyLiveMetadataCorrelatorTest {
         assertThat(ProxyCorrelationToken.find(annotations.value)).contains(TOKEN_A);
         assertThat(ProxyCorrelationToken.remove(annotations.value, TOKEN_A)).isTrue();
         assertThat(annotations.notes.get()).isEqualTo("user note\nlater edit");
+    }
+
+    @Test
+    void historyFallback_requiresCompleteRequestListenerAndTimeMatch() {
+        HttpRequest finalRequest = mock(HttpRequest.class);
+        ByteArray requestBytes = mock(ByteArray.class);
+        when(finalRequest.toByteArray()).thenReturn(requestBytes);
+        when(requestBytes.getBytes()).thenReturn(new byte[] {1, 2, 3});
+        ProxyHttpRequestResponse row = mock(ProxyHttpRequestResponse.class);
+        when(row.finalRequest()).thenReturn(finalRequest);
+        when(row.listenerPort()).thenReturn(8080);
+        when(row.time()).thenReturn(ZonedDateTime.ofInstant(
+                java.time.Instant.ofEpochMilli(SENT_MS), ZoneOffset.UTC));
+        MutableAnnotations rowAnnotations = mutableAnnotations("");
+        when(row.annotations()).thenReturn(rowAnnotations.value);
+
+        MontoyaApi api = mock(MontoyaApi.class);
+        Proxy proxy = mock(Proxy.class);
+        when(api.proxy()).thenReturn(proxy);
+        when(proxy.history()).thenReturn(List.of(row));
+        MontoyaApiProvider.set(api);
+        ProxyLiveMetadataCorrelator.HistorySource source =
+                ProxyLiveMetadataCorrelator.newBurpHistorySourceForTest();
+        source.lookup(Set.of(TOKEN_A), ProxyLiveMetadataCorrelator.LookupScope.APPENDED_ROWS);
+
+        assertThat(source.fallbackCandidates(new byte[] {1, 2, 3}, 8080, SENT_MS))
+                .containsExactly(row);
+        assertThat(source.fallbackCandidates(new byte[] {1, 2, 4}, 8080, SENT_MS)).isEmpty();
+        assertThat(source.fallbackCandidates(new byte[] {1, 2, 3}, 8081, SENT_MS)).isEmpty();
+        assertThat(source.fallbackCandidates(
+                        new byte[] {1, 2, 3},
+                        8080,
+                        SENT_MS - Duration.ofMinutes(2).toMillis()))
+                .isEmpty();
+    }
+
+    @Test
+    void uniqueFallbackCandidate_bindsWhenMarkerIsMissingFromHistory() {
+        MutableAnnotations live = mutableAnnotations("");
+        ProxyHttpRequestResponse row = historyRow(
+                88_001,
+                8080,
+                mutableAnnotations("").value,
+                5,
+                6);
+        AtomicReference<byte[]> observedRequest = new AtomicReference<>();
+        ProxyLiveMetadataCorrelator.HistorySource source =
+                new ProxyLiveMetadataCorrelator.HistorySource() {
+                    @Override
+                    public ProxyLiveMetadataCorrelator.LookupBatch lookup(
+                            Set<String> tokens,
+                            ProxyLiveMetadataCorrelator.LookupScope scope) {
+                        return ProxyLiveMetadataCorrelator.LookupBatch.success(List.of());
+                    }
+
+                    @Override
+                    public List<ProxyHttpRequestResponse> fallbackCandidates(
+                            byte[] finalRequestBytes,
+                            Integer listenerPort,
+                            Long requestSentMs) {
+                        observedRequest.set(finalRequestBytes);
+                        return List.of(row);
+                    }
+                };
+        ProxyLiveMetadataCorrelator.configureForTests(
+                source,
+                document -> {
+                    offered.add(document);
+                    return true;
+                },
+                testSpool,
+                monotonicNanos::get,
+                epochMillis::get,
+                () -> TOKEN_A,
+                15_000L);
+        ProxyLiveMetadataCorrelator.registerLiveTokenForTest(81, TOKEN_A, 8080, live.value);
+        HttpRequest request = mock(HttpRequest.class);
+        ByteArray requestBytes = mock(ByteArray.class);
+        when(request.toByteArray()).thenReturn(requestBytes);
+        when(requestBytes.getBytes()).thenReturn(new byte[] {9, 8, 7});
+
+        Map<String, Object> document = liveDocument(81);
+        ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
+                document,
+                live.value,
+                81,
+                SENT_MS,
+                null,
+                request,
+                null);
+        ProxyLiveMetadataCorrelator.runReconciliationForTest();
+
+        assertThat(observedRequest.get()).containsExactly(9, 8, 7);
+        assertThat(offered).containsExactly(document);
+        assertThat(historyId(document)).isEqualTo(88_001);
     }
 
     @Test
@@ -147,9 +246,236 @@ class ProxyLiveMetadataCorrelatorTest {
     }
 
     @Test
-    void unmarkedProxyCallbackIdCollision_cannotAliasGlobalHttpToken() {
+    void separateHttpAndProxyCallbacks_exportCompleteUnmodifiedStageMetadata() {
         RuntimeConfig.setExportRunning(true);
         try {
+            MutableAnnotations proxyReceivedAnnotations = mutableAnnotations("proxy received");
+            MutableAnnotations proxySentAnnotations = mutableAnnotations("proxy sent");
+            InterceptedRequest proxyRequest = mock(InterceptedRequest.class);
+            ByteArray proxyReceivedBytes = mock(ByteArray.class);
+            ByteArray proxySentBytes = mock(ByteArray.class);
+            when(proxyRequest.messageId()).thenReturn(71);
+            when(proxyRequest.annotations())
+                    .thenReturn(proxyReceivedAnnotations.value, proxySentAnnotations.value);
+            when(proxyRequest.toByteArray()).thenReturn(proxyReceivedBytes, proxySentBytes);
+            when(proxyReceivedBytes.getBytes()).thenReturn(new byte[] {4, 5, 6});
+            when(proxySentBytes.getBytes()).thenReturn(new byte[] {4, 5, 6});
+            ProxyRequestReceivedAction receivedAction = mock(ProxyRequestReceivedAction.class);
+            ProxyRequestToBeSentAction proxyAction = mock(ProxyRequestToBeSentAction.class);
+            try (MockedStatic<ProxyRequestReceivedAction> receivedFactory =
+                            mockStatic(ProxyRequestReceivedAction.class);
+                    MockedStatic<ProxyRequestToBeSentAction> sentFactory =
+                            mockStatic(ProxyRequestToBeSentAction.class)) {
+                receivedFactory.when(() -> ProxyRequestReceivedAction.continueWith(
+                                proxyRequest, proxyReceivedAnnotations.value))
+                        .thenReturn(receivedAction);
+                sentFactory.when(() -> ProxyRequestToBeSentAction.continueWith(
+                                proxyRequest, proxySentAnnotations.value))
+                        .thenReturn(proxyAction);
+                assertThat(ProxyLiveMetadataCorrelator.instance()
+                                .handleRequestReceived(proxyRequest))
+                        .isSameAs(receivedAction);
+                assertThat(ProxyLiveMetadataCorrelator.instance()
+                                .handleRequestToBeSent(proxyRequest))
+                        .isSameAs(proxyAction);
+            }
+
+            String proxyToken = ProxyCorrelationToken.find(proxyReceivedAnnotations.value)
+                    .orElseThrow();
+            assertThat(ProxyCorrelationToken.find(proxySentAnnotations.value)).contains(proxyToken);
+            MutableAnnotations httpAnnotations = mutableAnnotations("http");
+            HttpRequest downstreamRequest = mock(HttpRequest.class);
+            ByteArray downstreamBytes = mock(ByteArray.class);
+            when(downstreamRequest.toByteArray()).thenReturn(downstreamBytes);
+            when(downstreamBytes.getBytes()).thenReturn(new byte[] {4, 5, 6});
+
+            ProxyLiveMetadataCorrelator.markHttpRequest(
+                    9_071, httpAnnotations.value, downstreamRequest);
+
+            assertThat(ProxyCorrelationToken.find(httpAnnotations.value)).contains(proxyToken);
+
+            HttpResponse upstreamResponse = mock(HttpResponse.class);
+            ByteArray upstreamBytes = mock(ByteArray.class);
+            when(upstreamResponse.toByteArray()).thenReturn(upstreamBytes);
+            when(upstreamBytes.getBytes()).thenReturn(new byte[] {7, 8, 9});
+            Map<String, Object> document = liveDocument(9_071);
+            MutableAnnotations historyAnnotations =
+                    mutableAnnotations(ProxyCorrelationToken.marker(proxyToken));
+            history.add(historyRow(88_071, 8080, historyAnnotations.value, 5, 6));
+            ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
+                    document,
+                    httpAnnotations.value,
+                    9_071,
+                    SENT_MS,
+                    null,
+                    downstreamRequest,
+                    upstreamResponse);
+
+            InterceptedResponse proxyResponse = mock(InterceptedResponse.class);
+            MutableAnnotations proxyResponseReceivedAnnotations =
+                    mutableAnnotations("proxy response received");
+            MutableAnnotations proxyResponseSentAnnotations =
+                    mutableAnnotations("proxy response sent");
+            ByteArray proxyReceivedResponseBytes = mock(ByteArray.class);
+            ByteArray proxySentResponseBytes = mock(ByteArray.class);
+            when(proxyResponse.messageId()).thenReturn(71);
+            when(proxyResponse.annotations()).thenReturn(
+                    proxyResponseReceivedAnnotations.value,
+                    proxyResponseSentAnnotations.value);
+            when(proxyResponse.toByteArray())
+                    .thenReturn(proxyReceivedResponseBytes, proxySentResponseBytes);
+            when(proxyReceivedResponseBytes.getBytes()).thenReturn(new byte[] {7, 8, 9});
+            when(proxySentResponseBytes.getBytes()).thenReturn(new byte[] {7, 8, 9});
+            ProxyResponseReceivedAction responseReceivedAction =
+                    mock(ProxyResponseReceivedAction.class);
+            ProxyResponseToBeSentAction responseSentAction = mock(ProxyResponseToBeSentAction.class);
+            try (MockedStatic<ProxyResponseReceivedAction> receivedFactory =
+                            mockStatic(ProxyResponseReceivedAction.class);
+                    MockedStatic<ProxyResponseToBeSentAction> sentFactory =
+                            mockStatic(ProxyResponseToBeSentAction.class)) {
+                receivedFactory.when(() -> ProxyResponseReceivedAction.continueWith(
+                                proxyResponse, proxyResponseReceivedAnnotations.value))
+                        .thenReturn(responseReceivedAction);
+                sentFactory.when(() -> ProxyResponseToBeSentAction.continueWith(
+                                proxyResponse, proxyResponseSentAnnotations.value))
+                        .thenReturn(responseSentAction);
+                assertThat(ProxyLiveMetadataCorrelator.instance()
+                                .handleResponseReceived(proxyResponse))
+                        .isSameAs(responseReceivedAction);
+                assertThat(ProxyLiveMetadataCorrelator.instance()
+                                .handleResponseToBeSent(proxyResponse))
+                        .isSameAs(responseSentAction);
+            }
+
+            ProxyLiveMetadataCorrelator.runReconciliationForTest();
+
+            assertThat(offered).containsExactly(document);
+            assertThat(proxy(document).get("request_change_stages")).isEqualTo(List.of());
+            assertThat(proxy(document).get("response_change_stages")).isEqualTo(List.of());
+        } finally {
+            RuntimeConfig.setExportRunning(false);
+        }
+    }
+
+    @Test
+    void matchingNumericIdsAcrossCallbackFamilies_doNotCollide() {
+        AtomicInteger tokenIndex = new AtomicInteger();
+        ProxyLiveMetadataCorrelator.configureForTests(
+                (ignored, scope) ->
+                        ProxyLiveMetadataCorrelator.LookupBatch.success(List.copyOf(history)),
+                document -> {
+                    offered.add(document);
+                    return true;
+                },
+                testSpool,
+                monotonicNanos::get,
+                epochMillis::get,
+                () -> tokenIndex.getAndIncrement() == 0 ? TOKEN_A : TOKEN_B,
+                15_000L);
+        RuntimeConfig.setExportRunning(true);
+        try {
+            MutableAnnotations proxyAnnotations = mutableAnnotations("proxy");
+            InterceptedRequest proxyRequest = mock(InterceptedRequest.class);
+            ByteArray proxyBytes = mock(ByteArray.class);
+            when(proxyRequest.messageId()).thenReturn(72);
+            when(proxyRequest.annotations()).thenReturn(proxyAnnotations.value);
+            when(proxyRequest.toByteArray()).thenReturn(proxyBytes);
+            when(proxyBytes.getBytes()).thenReturn(new byte[] {1, 2, 3});
+            ProxyRequestToBeSentAction proxyAction = mock(ProxyRequestToBeSentAction.class);
+            try (MockedStatic<ProxyRequestToBeSentAction> factory =
+                    mockStatic(ProxyRequestToBeSentAction.class)) {
+                factory.when(() -> ProxyRequestToBeSentAction.continueWith(
+                                proxyRequest, proxyAnnotations.value))
+                        .thenReturn(proxyAction);
+                assertThat(ProxyLiveMetadataCorrelator.instance()
+                                .handleRequestToBeSent(proxyRequest))
+                        .isSameAs(proxyAction);
+            }
+            String proxyToken = ProxyCorrelationToken.find(proxyAnnotations.value).orElseThrow();
+
+            MutableAnnotations unrelatedHttpAnnotations = mutableAnnotations("http unrelated");
+            HttpRequest unrelatedHttpRequest = mock(HttpRequest.class);
+            ByteArray unrelatedHttpBytes = mock(ByteArray.class);
+            when(unrelatedHttpRequest.toByteArray()).thenReturn(unrelatedHttpBytes);
+            when(unrelatedHttpBytes.getBytes()).thenReturn(new byte[] {4, 5, 6});
+            ProxyLiveMetadataCorrelator.markHttpRequest(
+                    72, unrelatedHttpAnnotations.value, unrelatedHttpRequest);
+            String unrelatedToken = ProxyCorrelationToken.find(unrelatedHttpAnnotations.value)
+                    .orElseThrow();
+
+            assertThat(unrelatedToken).isNotEqualTo(proxyToken);
+
+            ProxyLiveMetadataCorrelator.abandonMessage(
+                    72, unrelatedHttpAnnotations.value, unrelatedHttpRequest);
+            MutableAnnotations matchingHttpAnnotations = mutableAnnotations("http matching");
+            HttpRequest matchingHttpRequest = mock(HttpRequest.class);
+            ByteArray matchingHttpBytes = mock(ByteArray.class);
+            when(matchingHttpRequest.toByteArray()).thenReturn(matchingHttpBytes);
+            when(matchingHttpBytes.getBytes()).thenReturn(new byte[] {1, 2, 3});
+            ProxyLiveMetadataCorrelator.markHttpRequest(
+                    9_072, matchingHttpAnnotations.value, matchingHttpRequest);
+
+            assertThat(ProxyCorrelationToken.find(matchingHttpAnnotations.value))
+                    .contains(proxyToken);
+        } finally {
+            RuntimeConfig.setExportRunning(false);
+        }
+    }
+
+    @Test
+    void rejectedHttpRequest_abandonsUniqueProxyStageByCompleteDownstreamBytes() {
+        RuntimeConfig.setExportRunning(true);
+        try {
+            MutableAnnotations proxyAnnotations = mutableAnnotations("proxy");
+            InterceptedRequest proxyRequest = mock(InterceptedRequest.class);
+            ByteArray proxyBytes = mock(ByteArray.class);
+            when(proxyRequest.messageId()).thenReturn(72);
+            when(proxyRequest.annotations()).thenReturn(proxyAnnotations.value);
+            when(proxyRequest.toByteArray()).thenReturn(proxyBytes);
+            when(proxyBytes.getBytes()).thenReturn(new byte[] {9, 8, 7});
+            ProxyRequestToBeSentAction proxyAction = mock(ProxyRequestToBeSentAction.class);
+            try (MockedStatic<ProxyRequestToBeSentAction> factory =
+                    mockStatic(ProxyRequestToBeSentAction.class)) {
+                factory.when(() -> ProxyRequestToBeSentAction.continueWith(
+                                proxyRequest, proxyAnnotations.value))
+                        .thenReturn(proxyAction);
+                assertThat(ProxyLiveMetadataCorrelator.instance()
+                                .handleRequestToBeSent(proxyRequest))
+                        .isSameAs(proxyAction);
+            }
+
+            MutableAnnotations httpAnnotations = mutableAnnotations("http");
+            HttpRequest downstreamRequest = mock(HttpRequest.class);
+            ByteArray downstreamBytes = mock(ByteArray.class);
+            when(downstreamRequest.toByteArray()).thenReturn(downstreamBytes);
+            when(downstreamBytes.getBytes()).thenReturn(new byte[] {9, 8, 7});
+
+            ProxyLiveMetadataCorrelator.abandonMessage(
+                    9_072, httpAnnotations.value, downstreamRequest);
+
+            assertThat(ProxyCorrelationToken.find(proxyAnnotations.value)).isEmpty();
+            assertThat(ProxyCorrelationToken.find(httpAnnotations.value)).isEmpty();
+        } finally {
+            RuntimeConfig.setExportRunning(false);
+        }
+    }
+
+    @Test
+    void unmarkedProxyCallbackIdCollision_createsDistinctAnnotationBackedToken() {
+        RuntimeConfig.setExportRunning(true);
+        try {
+            ProxyLiveMetadataCorrelator.configureForTests(
+                    (ignored, scope) ->
+                            ProxyLiveMetadataCorrelator.LookupBatch.success(List.copyOf(history)),
+                    document -> {
+                        offered.add(document);
+                        return true;
+                    },
+                    testSpool,
+                    monotonicNanos::get,
+                    epochMillis::get,
+                    () -> TOKEN_B,
+                    15_000L);
             MutableAnnotations globalHttp = mutableAnnotations("global");
             MutableAnnotations unrelatedProxy = mutableAnnotations("proxy");
             ProxyLiveMetadataCorrelator.registerLiveTokenForTest(
@@ -169,7 +495,7 @@ class ProxyLiveMetadataCorrelatorTest {
             }
 
             assertThat(ProxyCorrelationToken.find(globalHttp.value)).contains(TOKEN_A);
-            assertThat(ProxyCorrelationToken.find(unrelatedProxy.value)).isEmpty();
+            assertThat(ProxyCorrelationToken.find(unrelatedProxy.value)).contains(TOKEN_B);
         } finally {
             RuntimeConfig.setExportRunning(false);
         }
@@ -554,15 +880,20 @@ class ProxyLiveMetadataCorrelatorTest {
             Map<?, ?> timing = timing(document);
             assertThat(proxy.keySet().stream().map(String.class::cast).toList())
                     .containsExactlyInAnyOrder(
-                    "history_id", "listener_port", "request_is_edited", "response_is_edited");
+                    "history_id",
+                    "listener_port",
+                    "history_is_edited",
+                    "request_change_stages",
+                    "response_change_stages");
             assertThat(timing.keySet().stream().map(String.class::cast).toList())
                     .containsExactlyInAnyOrder(
                     "req_sent", "end", "req_sent_to_res_start", "req_sent_to_res_end");
             historyIds.add(proxy.get("history_id"));
             assertThat(proxy.get("history_id")).isEqualTo(90_000 + index);
             assertThat(proxy.get("listener_port")).isEqualTo(8080);
-            assertThat(proxy.get("request_is_edited")).isEqualTo(false);
-            assertThat(proxy.get("response_is_edited")).isEqualTo(false);
+            assertThat(proxy.get("history_is_edited")).isEqualTo(false);
+            assertThat(proxy.get("request_change_stages")).isNull();
+            assertThat(proxy.get("response_change_stages")).isNull();
             assertThat(timing.get("req_sent"))
                     .isEqualTo(java.time.Instant.ofEpochMilli(SENT_MS).toString());
             assertThat(timing.get("end"))
@@ -603,6 +934,32 @@ class ProxyLiveMetadataCorrelatorTest {
         assertThat(((Map<?, ?>) document.get("burp")).get("message_id")).isEqualTo(9_011);
         assertThat(historyId(document)).isEqualTo(80_011);
         assertThat(ProxyLiveMetadataCorrelator.explicitFailures()).isZero();
+    }
+
+    @Test
+    void historyEpochTiming_preservesLiveCallbackTiming() {
+        MutableAnnotations annotations = mutableAnnotations("");
+        ProxyLiveMetadataCorrelator.registerLiveTokenForTest(11, TOKEN_A, 8080, annotations.value);
+        Map<String, Object> document = liveDocument(9_012);
+        ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
+                document,
+                annotations.value,
+                9_012,
+                SENT_MS);
+        history.add(historyRowWithEpochTiming(
+                80_012,
+                8080,
+                mutableAnnotations(ProxyCorrelationToken.marker(TOKEN_A)).value));
+
+        ProxyLiveMetadataCorrelator.runReconciliationForTest();
+
+        assertThat(offered).containsExactly(document);
+        assertThat(timing(document).get("req_sent"))
+                .isEqualTo(java.time.Instant.ofEpochMilli(SENT_MS).toString());
+        assertThat(timing(document).get("end"))
+                .isEqualTo(java.time.Instant.ofEpochMilli(SENT_MS + 100L).toString());
+        assertThat(timing(document).get("req_sent_to_res_start")).isNull();
+        assertThat(timing(document).get("req_sent_to_res_end")).isEqualTo(100L);
     }
 
     @Test
@@ -680,10 +1037,16 @@ class ProxyLiveMetadataCorrelatorTest {
         assertThat(offered).isEmpty();
         assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isEqualTo(1);
         assertThat(ProxyLiveMetadataCorrelator.lookupFailures()).isGreaterThanOrEqualTo(1L);
+
+        monotonicNanos.addAndGet(Duration.ofSeconds(16).toNanos());
+        ProxyLiveMetadataCorrelator.runReconciliationForTest();
+
+        assertThat(offered).hasSize(1);
+        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
     }
 
     @Test
-    void thresholdMovesDocumentToDurableSpoolWithoutExportingIt() {
+    void correlationDeadlineExportsFinalDocumentWithoutHistoryFields() {
         MutableAnnotations live = mutableAnnotations("");
         ProxyLiveMetadataCorrelator.registerLiveTokenForTest(41, TOKEN_A, 8080, live.value);
         ProxyLiveMetadataCorrelator.deferUntilHistoryBound(liveDocument(41), live.value, 41, SENT_MS);
@@ -691,16 +1054,15 @@ class ProxyLiveMetadataCorrelatorTest {
         monotonicNanos.addAndGet(Duration.ofSeconds(16).toNanos());
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
 
-        assertThat(offered).isEmpty();
-        assertThat(ProxyLiveMetadataCorrelator.pendingMemoryCount()).isZero();
-        assertThat(ProxyLiveMetadataCorrelator.pendingDurableCount()).isEqualTo(1);
-        assertThat(ProxyLiveMetadataCorrelator.pendingDurableBytes()).isPositive();
-        assertThat(ProxyLiveMetadataCorrelator.durableSpooledTotal()).isEqualTo(1L);
-        assertThat(ProxyLiveMetadataCorrelator.pendingDocumentLoadedForTest(TOKEN_A)).isFalse();
+        assertThat(offered).hasSize(1);
+        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
+        assertThat(ProxyLiveMetadataCorrelator.pendingDurableCount()).isZero();
+        assertThat(historyId(offered.get(0))).isNull();
+        assertThat(live.notes.get()).isEmpty();
     }
 
     @Test
-    void failedDurableWrite_backsOffInsteadOfRetryingImmediately() {
+    void correlationDeadline_doesNotRequireDurableSpool() {
         AtomicInteger persistAttempts = new AtomicInteger();
         ProxyCorrelationSpool failingSpool =
                 new ProxyCorrelationSpool(tempDir.resolve("failing-spool"), 10_000_000L) {
@@ -712,7 +1074,10 @@ class ProxyLiveMetadataCorrelatorTest {
                 };
         ProxyLiveMetadataCorrelator.configureForTests(
                 (tokens, scope) -> ProxyLiveMetadataCorrelator.LookupBatch.success(List.of()),
-                document -> true,
+                document -> {
+                    offered.add(document);
+                    return true;
+                },
                 failingSpool,
                 monotonicNanos::get,
                 epochMillis::get,
@@ -723,20 +1088,22 @@ class ProxyLiveMetadataCorrelatorTest {
         ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
                 liveDocument(42), live.value, 42, SENT_MS);
 
+        monotonicNanos.addAndGet(Duration.ofSeconds(16).toNanos());
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
 
-        assertThat(persistAttempts).hasValue(1);
-        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isEqualTo(1);
+        assertThat(persistAttempts).hasValue(0);
+        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
+        assertThat(offered).hasSize(1);
     }
 
     @Test
     void restartRehydratesAndBindsDurableDocument() {
+        configure(testSpool, 0L);
         MutableAnnotations live = mutableAnnotations("");
         ProxyLiveMetadataCorrelator.registerLiveTokenForTest(51, TOKEN_A, 8080, live.value);
         Map<String, Object> document = liveDocument(51);
         ProxyLiveMetadataCorrelator.deferUntilHistoryBound(document, live.value, 51, SENT_MS);
-        monotonicNanos.addAndGet(Duration.ofSeconds(16).toNanos());
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
 
         ProxyLiveMetadataCorrelator.dropMemoryForRestartTest();
@@ -760,11 +1127,11 @@ class ProxyLiveMetadataCorrelatorTest {
 
     @Test
     void recoveredDurableEntry_usesColdLaneInsteadOfEveryReconciliationPass() {
+        configure(testSpool, 0L);
         MutableAnnotations live = mutableAnnotations("");
         ProxyLiveMetadataCorrelator.registerLiveTokenForTest(52, TOKEN_A, 8080, live.value);
         ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
                 liveDocument(52), live.value, 52, SENT_MS);
-        monotonicNanos.addAndGet(Duration.ofSeconds(16).toNanos());
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
         ProxyLiveMetadataCorrelator.dropMemoryForRestartTest();
         ProxyCorrelationSpool recoveredSpool =
@@ -782,16 +1149,17 @@ class ProxyLiveMetadataCorrelatorTest {
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
 
         assertThat(ProxyLiveMetadataCorrelator.historyLookupAttempts()).isEqualTo(1L);
-        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isEqualTo(1);
+        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
+        assertThat(offered).hasSize(1);
     }
 
     @Test
     void recoveredColdEntry_doesNotJoinFreshAppendLookup() {
+        configure(testSpool, 0L);
         MutableAnnotations stale = mutableAnnotations("");
         ProxyLiveMetadataCorrelator.registerLiveTokenForTest(53, TOKEN_A, 8080, stale.value);
         ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
                 liveDocument(53), stale.value, 53, SENT_MS);
-        monotonicNanos.addAndGet(Duration.ofSeconds(16).toNanos());
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
         ProxyLiveMetadataCorrelator.dropMemoryForRestartTest();
         ProxyCorrelationSpool recoveredSpool =
@@ -1022,6 +1390,10 @@ class ProxyLiveMetadataCorrelatorTest {
     }
 
     private void configure(ProxyCorrelationSpool configuredSpool) {
+        configure(configuredSpool, 15_000L);
+    }
+
+    private void configure(ProxyCorrelationSpool configuredSpool, long durableThresholdMs) {
         ProxyLiveMetadataCorrelator.configureForTests(
                 (ignored, scope) -> ProxyLiveMetadataCorrelator.LookupBatch.success(List.copyOf(history)),
                 document -> {
@@ -1032,7 +1404,7 @@ class ProxyLiveMetadataCorrelatorTest {
                 monotonicNanos::get,
                 epochMillis::get,
                 () -> TOKEN_A,
-                15_000L);
+                durableThresholdMs);
     }
 
     private static Map<String, Object> liveDocument(int messageId) {
@@ -1070,6 +1442,20 @@ class ProxyLiveMetadataCorrelatorTest {
         when(item.time()).thenReturn(sent);
         when(item.timingData()).thenReturn(timing);
         when(item.annotations()).thenReturn(annotations);
+        return item;
+    }
+
+    private static ProxyHttpRequestResponse historyRowWithEpochTiming(
+            int id,
+            int listenerPort,
+            Annotations annotations) {
+        ProxyHttpRequestResponse item = historyRow(id, listenerPort, annotations, 0, 0);
+        TimingData timing = mock(TimingData.class);
+        when(timing.timeRequestSent())
+                .thenReturn(ZonedDateTime.ofInstant(java.time.Instant.EPOCH, ZoneOffset.UTC));
+        when(timing.timeBetweenRequestSentAndStartOfResponse()).thenReturn(Duration.ZERO);
+        when(timing.timeBetweenRequestSentAndEndOfResponse()).thenReturn(Duration.ZERO);
+        when(item.timingData()).thenReturn(timing);
         return item;
     }
 

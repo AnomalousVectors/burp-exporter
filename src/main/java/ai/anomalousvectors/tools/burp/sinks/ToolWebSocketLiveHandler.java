@@ -26,8 +26,9 @@ import burp.api.montoya.websocket.WebSocketCreatedHandler;
 /**
  * Live WebSocket export for non-proxy Burp tools (Repeater, Intruder, Scanner, Extensions, etc.).
  *
- * <p>Proxy WebSocket frames (with Burp history ids) are exported by
- * {@link ProxyWebSocketIndexReporter}. This handler uses {@code api.websockets()} and sets
+ * <p>Live Proxy WebSocket frames are exported by {@link ProxyWebSocketLiveHandler}; historic
+ * Proxy WebSocket frames are exported by {@link ProxyWebSocketIndexReporter}. This handler uses
+ * {@code api.websockets()} and sets
  * {@code websocket.id} / {@code websocket.message_id} to null because Montoya live message types
  * do not expose Burp history identifiers.</p>
  */
@@ -83,7 +84,7 @@ public final class ToolWebSocketLiveHandler implements WebSocketCreatedHandler {
             if (message != null) {
                 String text = message.payload();
                 byte[] bytes = text == null ? null : text.getBytes(StandardCharsets.UTF_8);
-                exportFrame(bytes, message.direction());
+                exportFrame(bytes, message.direction(), "TEXT");
             }
             return message == null ? TextMessageAction.continueWith("") : TextMessageAction.continueWith(message);
         }
@@ -94,13 +95,13 @@ public final class ToolWebSocketLiveHandler implements WebSocketCreatedHandler {
             if (message != null && message.payload() != null) {
                 bytes = message.payload().getBytes();
             }
-            exportFrame(bytes, message == null ? null : message.direction());
+            exportFrame(bytes, message == null ? null : message.direction(), "BINARY");
             return message == null
                     ? BinaryMessageAction.continueWith(ByteArray.byteArray(new byte[0]))
                     : BinaryMessageAction.continueWith(message);
         }
 
-        private void exportFrame(byte[] payloadBytes, Direction direction) {
+        private void exportFrame(byte[] payloadBytes, Direction direction, String messageType) {
             if (!RuntimeConfig.trafficExportGate().allowsToolType(toolTypeKey)) {
                 return;
             }
@@ -108,7 +109,8 @@ public final class ToolWebSocketLiveHandler implements WebSocketCreatedHandler {
                     MontoyaApiProvider.get(), upgradeRequest, "ToolWebSocketLive")) {
                 return;
             }
-            Map<String, Object> doc = buildLiveDocument(toolType, upgradeRequest, payloadBytes, direction);
+            Map<String, Object> doc = buildLiveDocument(
+                    toolType, upgradeRequest, payloadBytes, direction, messageType);
             if (doc != null) {
                 TrafficExportQueue.offer(doc);
             } else {
@@ -133,6 +135,20 @@ public final class ToolWebSocketLiveHandler implements WebSocketCreatedHandler {
             HttpRequest upgrade,
             byte[] payloadBytes,
             Direction direction) {
+        return buildLiveDocument(
+                toolType,
+                upgrade,
+                payloadBytes,
+                direction,
+                WebSocketTrafficDocumentBuilder.inferPayloadType(payloadBytes));
+    }
+
+    static Map<String, Object> buildLiveDocument(
+            ToolType toolType,
+            HttpRequest upgrade,
+            byte[] payloadBytes,
+            Direction direction,
+            String messageType) {
         MontoyaApi api = MontoyaApiProvider.get();
         HttpService service = upgrade == null ? null : upgrade.httpService();
         String wsTime = Instant.now().toString();
@@ -148,7 +164,9 @@ public final class ToolWebSocketLiveHandler implements WebSocketCreatedHandler {
                 null,
                 direction == null ? null : direction.name(),
                 payloadBytes,
-                false,
+                messageType,
+                null,
+                null,
                 wsTime,
                 null,
                 null));

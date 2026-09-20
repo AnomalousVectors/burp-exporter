@@ -65,7 +65,9 @@ class WebSocketTrafficDocumentBuilderScopeTest {
                 null,
                 "CLIENT_TO_SERVER",
                 "hi".getBytes(StandardCharsets.UTF_8),
-                false,
+                "TEXT",
+                null,
+                null,
                 "2024-01-01T00:00:00Z",
                 null,
                 null))).isNull();
@@ -124,7 +126,9 @@ class WebSocketTrafficDocumentBuilderScopeTest {
                 null,
                 "CLIENT_TO_SERVER",
                 "hi".getBytes(StandardCharsets.UTF_8),
-                false,
+                "TEXT",
+                null,
+                null,
                 "2024-01-01T00:00:00Z",
                 null,
                 null))).isNotNull();

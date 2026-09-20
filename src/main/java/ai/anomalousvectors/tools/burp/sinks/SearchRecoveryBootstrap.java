@@ -188,7 +188,6 @@ public final class SearchRecoveryBootstrap {
         SettingsIndexReporter.start();
         FindingsIndexReporter.start();
         SitemapIndexReporter.start();
-        ProxyWebSocketIndexReporter.startLivePoll();
     }
 
     private static boolean historicProxySelected() {

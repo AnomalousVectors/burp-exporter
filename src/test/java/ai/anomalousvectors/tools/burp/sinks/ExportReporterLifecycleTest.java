@@ -60,7 +60,6 @@ class ExportReporterLifecycleTest {
             SettingsIndexReporter.start();
             FindingsIndexReporter.start();
             SitemapIndexReporter.start();
-            ProxyWebSocketIndexReporter.startLivePoll();
 
             ExportReporterLifecycle.resetForTests();
 
@@ -68,7 +67,6 @@ class ExportReporterLifecycleTest {
             assertThat(peek(SettingsIndexReporter.class, "SCHEDULER")).isNull();
             assertThat(peek(FindingsIndexReporter.class, "SCHEDULER")).isNull();
             assertThat(peek(SitemapIndexReporter.class, "SCHEDULER")).isNull();
-            assertThat(peek(ProxyWebSocketIndexReporter.class, "SCHEDULER")).isNull();
             assertThat(MontoyaApiProvider.get()).isNull();
             assertThat(BurpRuntimeMetadata.burpVersion()).isNull();
             assertThat(BurpRuntimeMetadata.projectId()).isNull();

@@ -241,8 +241,9 @@ class ProxyHistoryIndexReporterTest {
         assertThat(requestDoc.containsKey("edited")).isFalse();
         assertThat(burp.get("reporting_tool")).isEqualTo("Proxy History");
         assertThat(proxy.containsKey("is_edited")).isFalse();
-        assertThat(proxy.get("request_is_edited")).isEqualTo(false);
-        assertThat(proxy.get("response_is_edited")).isEqualTo(false);
+        assertThat(proxy.get("history_is_edited")).isEqualTo(false);
+        assertThat(proxy.get("request_change_stages")).isNull();
+        assertThat(proxy.get("response_change_stages")).isNull();
         assertThat(websocket.get("is_websocket")).isEqualTo(false);
         assertThat(doc.containsKey("tool_type")).isFalse();
         Map<?, ?> path = nestedMap(requestDoc, "path");

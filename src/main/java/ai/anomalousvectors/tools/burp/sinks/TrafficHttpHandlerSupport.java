@@ -157,7 +157,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     + e.getClass().getSimpleName()
                     + "; Burp traffic continued and this exchange will not be exported.");
             ProxyLiveMetadataCorrelator.abandonMessage(
-                    request.messageId(), request.annotations());
+                    request.messageId(), request.annotations(), request);
             return RequestToBeSentAction.continueWith(request);
         }
     }
@@ -168,6 +168,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         RuntimeConfig.TrafficExportGate trafficGate = RuntimeConfig.trafficExportGate();
         if (!RuntimeConfig.isExportReady()
                 || !trafficGate.anyTrafficExportEnabled()) {
+            ProxyLiveMetadataCorrelator.abandonMessage(
+                    request.messageId(), annotations, request);
             return RequestToBeSentAction.continueWith(request);
         }
         String scopeUrl = RequestResponseDocBuilder.buildBestEffortUrl(
@@ -178,21 +180,24 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         if (!ScopeFilter.shouldExport(
                 RuntimeConfig.getState(), scopeUrl, request.isInScope())) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
-            ProxyLiveMetadataCorrelator.abandonMessage(request.messageId(), annotations);
+            ProxyLiveMetadataCorrelator.abandonMessage(
+                    request.messageId(), annotations, request);
             return RequestToBeSentAction.continueWith(request);
         }
         ToolSource toolSource = request.toolSource();
         ToolType toolType = toolSource == null ? null : toolSource.toolType();
         if (!shouldExportTrafficByToolSource(toolType)) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
-            ProxyLiveMetadataCorrelator.abandonMessage(request.messageId(), annotations);
+            ProxyLiveMetadataCorrelator.abandonMessage(
+                    request.messageId(), annotations, request);
             return RequestToBeSentAction.continueWith(request);
         }
         if (toolType == ToolType.EXTENSIONS) {
             HttpService svc = request.httpService();
             if (svc != null && isRequestToConfiguredOpenSearch(svc.host(), svc.port())) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SELF_OPENSEARCH, 1);
-                ProxyLiveMetadataCorrelator.abandonMessage(request.messageId(), annotations);
+                ProxyLiveMetadataCorrelator.abandonMessage(
+                        request.messageId(), annotations, request);
                 return RequestToBeSentAction.continueWith(request);
             }
         }
@@ -203,7 +208,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             try {
                 ProxyLiveMetadataCorrelator.markHttpRequest(
                         request.messageId(),
-                        annotations);
+                        annotations,
+                        request);
             } catch (RuntimeException e) {
                 Logger.logError("[ProxyCorrelation] Request marker admission failed safely: "
                         + "error=" + e.getClass().getSimpleName()
@@ -237,11 +243,13 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                         ensureOrphanSchedulerStarted();
                     } else {
                         pendingOrphans.remove(request.messageId(), pending);
-                        ProxyLiveMetadataCorrelator.abandonMessage(request.messageId(), annotations);
+                        ProxyLiveMetadataCorrelator.abandonMessage(
+                                request.messageId(), annotations, request);
                     }
                 }
             } else {
-                ProxyLiveMetadataCorrelator.abandonMessage(request.messageId(), annotations);
+                ProxyLiveMetadataCorrelator.abandonMessage(
+                        request.messageId(), annotations, request);
             }
         }
         return RequestToBeSentAction.continueWith(request, annotations);
@@ -349,7 +357,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 response.messageId(),
                 toolType,
                 requestSentMs,
-                responseLease);
+                responseLease,
+                request,
+                response);
 
         return ResponseReceivedAction.continueWith(response);
     }
@@ -357,9 +367,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     /**
      * Offers a live traffic document immediately, or defers Proxy docs until History can be claimed.
      *
-     * <p>HttpHandler often runs before Burp has appended the matching Proxy History row. Correlation
-     * remains asynchronous and moves unresolved documents to durable storage after its in-memory
-     * threshold; it never exports incomplete History-backed fields.</p>
+     * <p>HttpHandler often runs before Burp has appended the matching Proxy History row.
+     * Correlation remains asynchronous; after its bounded window, a final exchange can continue
+     * with unavailable History-only fields.</p>
      */
     private static void offerOrDeferLiveProxyDocument(
             Map<String, Object> document,
@@ -367,17 +377,24 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             int messageId,
             ToolType toolType,
             Long requestSentMs,
-            ProxyLiveMetadataCorrelator.ResponseLease responseLease) {
+            ProxyLiveMetadataCorrelator.ResponseLease responseLease,
+            HttpRequest request,
+            burp.api.montoya.http.message.responses.HttpResponse response) {
         boolean proxyLive = toolType == ToolType.PROXY || toolType == null;
         if (proxyLive) {
             try {
                 ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
-                        document, annotations, messageId, requestSentMs, responseLease);
+                        document,
+                        annotations,
+                        messageId,
+                        requestSentMs,
+                        responseLease,
+                        request,
+                        response);
             } catch (RuntimeException e) {
                 Logger.logError("[ProxyCorrelation] Response admission failed safely: "
                         + "error=" + e.getClass().getSimpleName()
-                        + "; Burp traffic continued and the document was not "
-                        + "exported with incomplete History metadata.");
+                        + "; Burp traffic continued and this document was not exported.");
                 ProxyLiveMetadataCorrelator.abandonMessage(messageId, annotations);
             }
             return;

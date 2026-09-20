@@ -129,12 +129,13 @@ class ToolWebSocketLiveHandlerTest {
                 ConfigState.DEFAULT_FINDINGS_SEVERITIES,
                 null));
         var exportFrame = handlerCaptor.getValue().getClass()
-                .getDeclaredMethod("exportFrame", byte[].class, Direction.class);
+                .getDeclaredMethod("exportFrame", byte[].class, Direction.class, String.class);
         exportFrame.setAccessible(true);
         exportFrame.invoke(
                 handlerCaptor.getValue(),
                 "hello".getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                Direction.CLIENT_TO_SERVER);
+                Direction.CLIENT_TO_SERVER,
+                "TEXT");
 
         assertThat(TrafficExportQueue.getCurrentSize()).isZero();
     }
@@ -231,7 +232,11 @@ class ToolWebSocketLiveHandlerTest {
         when(api.scope().isInScope(anyString())).thenReturn(true);
         MontoyaApiProvider.set(api);
         TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
-            invokeExportFrame(handler, "text-frame".getBytes(java.nio.charset.StandardCharsets.UTF_8), Direction.CLIENT_TO_SERVER);
+            invokeExportFrame(
+                    handler,
+                    "text-frame".getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                    Direction.CLIENT_TO_SERVER,
+                    "TEXT");
             assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
             Map<?, ?> websocket = nestedMap(queuedDocument(), "websocket");
             assertThat(nestedMap(websocket, "payload").get("text")).isEqualTo("text-frame");
@@ -248,7 +253,11 @@ class ToolWebSocketLiveHandlerTest {
         when(api.scope().isInScope(anyString())).thenReturn(true);
         MontoyaApiProvider.set(api);
         TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
-            invokeExportFrame(handler, new byte[] {(byte) 0xDE, (byte) 0xAD}, Direction.SERVER_TO_CLIENT);
+            invokeExportFrame(
+                    handler,
+                    new byte[] {(byte) 0xDE, (byte) 0xAD},
+                    Direction.SERVER_TO_CLIENT,
+                    "BINARY");
             assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
             Map<?, ?> payloadDoc = nestedMap(nestedMap(queuedDocument(), "websocket"), "payload");
             assertThat(payloadDoc.get("b64")).isNotNull();
@@ -256,10 +265,15 @@ class ToolWebSocketLiveHandlerTest {
         });
     }
 
-    private static void invokeExportFrame(MessageHandler handler, byte[] payload, Direction direction) throws Exception {
-        var exportFrame = handler.getClass().getDeclaredMethod("exportFrame", byte[].class, Direction.class);
+    private static void invokeExportFrame(
+            MessageHandler handler,
+            byte[] payload,
+            Direction direction,
+            String messageType) throws Exception {
+        var exportFrame = handler.getClass()
+                .getDeclaredMethod("exportFrame", byte[].class, Direction.class, String.class);
         exportFrame.setAccessible(true);
-        exportFrame.invoke(handler, payload, direction);
+        exportFrame.invoke(handler, payload, direction, messageType);
     }
 
     private static MessageHandler registerRepeaterHandler() throws Exception {
