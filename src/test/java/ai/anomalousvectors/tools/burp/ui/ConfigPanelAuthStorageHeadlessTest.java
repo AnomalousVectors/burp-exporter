@@ -63,10 +63,10 @@ class ConfigPanelAuthStorageHeadlessTest {
     @Test
     void defaultBasicAuth_appliesLoadedSessionCredentialsWithoutAdditionalAction() throws Exception {
         withCleanSession(() -> {
-            SecureCredentialStore.saveOpenSearchCredentials("carol", "pw123");
+            SecureCredentialStore.saveOpenSearchCredentials("  carol  ", "  pw123  ");
             newPanelOnEdt();
-            assertThat(RuntimeConfig.openSearchUser()).isEqualTo("carol");
-            assertThat(RuntimeConfig.openSearchPassword()).isEqualTo("pw123");
+            assertThat(RuntimeConfig.openSearchUser()).isEqualTo("  carol  ");
+            assertThat(RuntimeConfig.openSearchPassword()).isEqualTo("  pw123  ");
         });
     }
 

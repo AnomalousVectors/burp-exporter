@@ -173,11 +173,11 @@ public final class AmazonOpenSearchSigV4 {
         SecureCredentialStore.AwsStaticCredentials stored =
                 SecureCredentialStore.loadAwsStaticCredentials(
                         ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey());
-        if (stored.accessKeyId().isBlank() || stored.secretAccessKey().isBlank()) {
+        if (stored.accessKeyId().isEmpty() || stored.secretAccessKey().isEmpty()) {
             throw new IllegalStateException("IAM SigV4 static credentials require access key ID and secret access key.");
         }
         try {
-            Object credentials = stored.sessionToken().isBlank()
+            Object credentials = stored.sessionToken().isEmpty()
                     ? Class.forName("software.amazon.awssdk.auth.credentials.AwsBasicCredentials")
                             .getMethod("create", String.class, String.class)
                             .invoke(null, stored.accessKeyId(), stored.secretAccessKey())

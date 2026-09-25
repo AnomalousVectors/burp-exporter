@@ -17,6 +17,43 @@ class SecureCredentialStoreTest {
     }
 
     @Test
+    void credentialValues_preserveWhitespaceAndUnicodeExactly() {
+        withCleanStore(() -> {
+            String amazon = ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey();
+            SecureCredentialStore.saveOpenSearchCredentials("  用户  ", "\t密码\n");
+            SecureCredentialStore.saveApiKeyCredentials("  api-token  ");
+            SecureCredentialStore.saveJwtCredentials("\tbearer-token\n");
+            SecureCredentialStore.saveCertificateCredentials(" cert.pem ", " key.pem ", "  passphrase  ");
+            SecureCredentialStore.saveAwsStaticCredentials(amazon, "  access-id  ", "\tsecret\n", "   ");
+
+            assertThat(SecureCredentialStore.loadOpenSearchCredentials())
+                    .isEqualTo(new SecureCredentialStore.BasicCredentials("  用户  ", "\t密码\n"));
+            assertThat(SecureCredentialStore.loadApiKeyCredentials().token()).isEqualTo("  api-token  ");
+            assertThat(SecureCredentialStore.loadJwtCredentials().token()).isEqualTo("\tbearer-token\n");
+            assertThat(SecureCredentialStore.loadCertificateCredentials())
+                    .isEqualTo(new SecureCredentialStore.CertificateCredentials(
+                            "cert.pem", "key.pem", "  passphrase  "));
+            assertThat(SecureCredentialStore.loadAwsStaticCredentials(amazon))
+                    .isEqualTo(new SecureCredentialStore.AwsStaticCredentials(
+                            "  access-id  ", "\tsecret\n", "   "));
+        });
+    }
+
+    @Test
+    void whitespaceOnlyRequiredCredentials_remainPresent() {
+        withCleanStore(() -> {
+            SecureCredentialStore.saveOpenSearchCredentials(" ", "\t");
+            SecureCredentialStore.saveApiKeyCredentials(" ");
+            SecureCredentialStore.saveJwtCredentials("\n");
+
+            assertThat(SecureCredentialStore.loadOpenSearchCredentials())
+                    .isEqualTo(new SecureCredentialStore.BasicCredentials(" ", "\t"));
+            assertThat(SecureCredentialStore.loadApiKeyCredentials().token()).isEqualTo(" ");
+            assertThat(SecureCredentialStore.loadJwtCredentials().token()).isEqualTo("\n");
+        });
+    }
+
+    @Test
     void apiKey_roundTrip_saveAndLoad() {
         withCleanStore(() -> {
             SecureCredentialStore.saveApiKeyCredentials("os_api_token_1");
@@ -62,7 +99,7 @@ class SecureCredentialStoreTest {
     }
 
     @Test
-    void blankInput_clearsOnlyTargetAuthType() {
+    void emptyInput_clearsOnlyTargetAuthType() {
         withCleanStore(() -> {
             SecureCredentialStore.saveOpenSearchCredentials("u", "p");
             SecureCredentialStore.saveApiKeyCredentials("os_api_token");

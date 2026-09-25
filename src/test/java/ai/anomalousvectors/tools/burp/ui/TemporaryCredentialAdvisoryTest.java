@@ -14,7 +14,7 @@ import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 class TemporaryCredentialAdvisoryTest {
 
     @Test
-    void forAmazonSessionToken_requiresStaticAuthAndNonBlankToken() {
+    void forAmazonSessionToken_requiresStaticAuthAndNonEmptyToken() {
         assertThat(TemporaryCredentialAdvisory.forAmazonSessionToken(
                         ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC, "temp-token"))
                 .isPresent()
@@ -26,7 +26,9 @@ class TemporaryCredentialAdvisoryTest {
                 });
 
         assertThat(TemporaryCredentialAdvisory.forAmazonSessionToken(
-                        ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC, "  ")).isEmpty();
+                        ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC, "  ")).isPresent();
+        assertThat(TemporaryCredentialAdvisory.forAmazonSessionToken(
+                        ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC, "")).isEmpty();
         assertThat(TemporaryCredentialAdvisory.forAmazonSessionToken(
                         ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE, "temp-token")).isEmpty();
     }

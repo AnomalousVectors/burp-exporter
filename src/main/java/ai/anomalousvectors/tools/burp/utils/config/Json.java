@@ -442,7 +442,7 @@ public final class Json {
         auth.put("type", authType);
         switch (authType) {
             case "Basic" -> {
-                if (!sinks.openSearchUser().isBlank()) {
+                if (!sinks.openSearchUser().isEmpty()) {
                     auth.put("username", sinks.openSearchUser());
                 }
             }
@@ -489,7 +489,7 @@ public final class Json {
         node.put("tlsMode", ConfigState.normalizeOpenSearchTlsMode(options.tlsMode()));
         ObjectNode auth = node.putObject("auth");
         auth.put("type", options.authType());
-        if ("Basic".equals(options.authType()) && !options.username().isBlank()) {
+        if ("Basic".equals(options.authType()) && !options.username().isEmpty()) {
             auth.put("username", options.username());
         }
         buildPinnedTls(node, options.pinnedTlsCertificateSourcePath(),
@@ -514,7 +514,7 @@ public final class Json {
         auth.put("type", authType);
         switch (authType) {
             case "Basic" -> {
-                if (!options.username().isBlank()) {
+                if (!options.username().isEmpty()) {
                     auth.put("username", options.username());
                 }
             }
@@ -1235,7 +1235,8 @@ public final class Json {
             String fieldName,
             String value,
             List<String> allowedFields) throws IOException {
-        if (value == null || value.isBlank() || allowedFields.contains(fieldName)) {
+        boolean absent = "username".equals(fieldName) ? value == null || value.isEmpty() : isBlank(value);
+        if (absent || allowedFields.contains(fieldName)) {
             return;
         }
         String allowed = allowedFields.isEmpty() ? "none" : String.join(", ", allowedFields);

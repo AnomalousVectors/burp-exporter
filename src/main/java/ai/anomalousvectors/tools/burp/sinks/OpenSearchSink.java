@@ -91,16 +91,18 @@ public class OpenSearchSink {
      * @param baseUrl search destination base URL
      * @param shortName logical index key and bundled mapping name
      * @param mappingsResourceRoot classpath resource root; blank uses the configured default
-     * @param username basic-auth username; blank disables basic authentication
-     * @param password basic-auth password; blank disables basic authentication
+     * @param username basic-auth username; null or empty disables basic authentication
+     * @param password basic-auth password; null or empty disables basic authentication
      * @return created, compatible-existing, or failed result
      */
     public static IndexResult createIndexFromResource(String baseUrl, String shortName, String mappingsResourceRoot,
             String username, String password) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return createIndexFromResource(baseUrl, shortName, resolvedFullIndexName(shortName), mappingsResourceRoot, auth);
+        return createIndexFromResource(
+                baseUrl,
+                shortName,
+                resolvedFullIndexName(shortName),
+                mappingsResourceRoot,
+                OpenSearchAuth.basicOrNone(username, password));
     }
 
     /**
@@ -124,16 +126,18 @@ public class OpenSearchSink {
      * @param shortName logical index key and bundled mapping name
      * @param fullIndexName concrete destination index name
      * @param mappingsResourceRoot classpath resource root; blank uses the configured default
-     * @param username basic-auth username; blank disables basic authentication
-     * @param password basic-auth password; blank disables basic authentication
+     * @param username basic-auth username; null or empty disables basic authentication
+     * @param password basic-auth password; null or empty disables basic authentication
      * @return created, compatible-existing, or failed result
      */
     public static IndexResult createIndexFromResource(String baseUrl, String shortName, String fullIndexName, String mappingsResourceRoot,
             String username, String password) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return createIndexFromResource(baseUrl, shortName, fullIndexName, mappingsResourceRoot, auth);
+        return createIndexFromResource(
+                baseUrl,
+                shortName,
+                fullIndexName,
+                mappingsResourceRoot,
+                OpenSearchAuth.basicOrNone(username, password));
     }
 
     /**
@@ -525,10 +529,11 @@ public class OpenSearchSink {
      */
     public static List<IndexResult> createSelectedIndexes(String baseUrl, List<String> selectedSources,
             String username, String password, BooleanSupplier shouldContinue) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return createSelectedIndexes(baseUrl, selectedSources, auth, shouldContinue);
+        return createSelectedIndexes(
+                baseUrl,
+                selectedSources,
+                OpenSearchAuth.basicOrNone(username, password),
+                shouldContinue);
     }
 
     /**

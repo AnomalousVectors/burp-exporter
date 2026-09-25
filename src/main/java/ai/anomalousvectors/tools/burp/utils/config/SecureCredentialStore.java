@@ -6,8 +6,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * Stores database-destination credentials in memory for the current Burp session only.
  *
  * <p>Thread-safe. Null, blank, and unrecognized destination keys normalize to upstream
- * OpenSearch. Credentials are held as immutable {@link String} values and therefore cannot be
- * actively zeroed before garbage collection.</p>
+ * OpenSearch. Credential values preserve every non-null character exactly; null values become
+ * empty. Credentials are held as immutable {@link String} values and therefore cannot be actively
+ * zeroed before garbage collection.</p>
  */
 public final class SecureCredentialStore {
     private static final String DEFAULT_DESTINATION = ConfigState.SearchDestination.OPEN_SEARCH.configKey();
@@ -95,16 +96,16 @@ public final class SecureCredentialStore {
         return selectedAuthTypes.containsKey(destinationKey(destination));
     }
 
-    /** Saves basic credentials for the current Burp session. Blank values clear stored credentials. */
+    /** Saves basic credentials for the current Burp session. Empty values clear stored credentials. */
     public static void saveOpenSearchCredentials(String username, String password) {
         saveBasicCredentials(DEFAULT_DESTINATION, username, password);
     }
 
-    /** Saves basic credentials for one database destination. Blank values clear stored credentials. */
+    /** Saves basic credentials for one database destination. Empty values clear stored credentials. */
     public static void saveBasicCredentials(String destination, String username, String password) {
-        String user = safe(username);
-        String pass = safe(password);
-        if (user.isBlank() || pass.isBlank()) {
+        String user = credentialValue(username);
+        String pass = credentialValue(password);
+        if (user.isEmpty() || pass.isEmpty()) {
             clearBasicCredentials(destination);
             return;
         }
@@ -128,8 +129,8 @@ public final class SecureCredentialStore {
 
     /** Saves API key for one database destination. */
     public static void saveApiKeyCredentials(String destination, String token) {
-        String apiKeyToken = safe(token);
-        if (apiKeyToken.isBlank()) {
+        String apiKeyToken = credentialValue(token);
+        if (apiKeyToken.isEmpty()) {
             clearApiKeyCredentials(destination);
             return;
         }
@@ -153,8 +154,8 @@ public final class SecureCredentialStore {
 
     /** Saves bearer-token credentials for one database destination. */
     public static void saveJwtCredentials(String destination, String token) {
-        String jwt = safe(token);
-        if (jwt.isBlank()) {
+        String jwt = credentialValue(token);
+        if (jwt.isEmpty()) {
             clearJwtCredentials(destination);
             return;
         }
@@ -179,9 +180,9 @@ public final class SecureCredentialStore {
     /** Saves certificate credentials for one database destination. */
     public static void saveCertificateCredentials(
             String destination, String certPath, String keyPath, String passphrase) {
-        String cert = safe(certPath);
-        String key = safe(keyPath);
-        String pass = safe(passphrase);
+        String cert = normalizedValue(certPath);
+        String key = normalizedValue(keyPath);
+        String pass = credentialValue(passphrase);
         if (cert.isBlank() || key.isBlank()) {
             clearCertificateCredentials(destination);
             return;
@@ -207,8 +208,8 @@ public final class SecureCredentialStore {
     /** Saves pinned TLS certificate material for one database destination. */
     public static void savePinnedTlsCertificate(
             String destination, String sourcePath, String fingerprintSha256, byte[] encodedBytes) {
-        String path = safe(sourcePath);
-        String fingerprint = safe(fingerprintSha256);
+        String path = normalizedValue(sourcePath);
+        String fingerprint = normalizedValue(fingerprintSha256);
         byte[] bytes = encodedBytes == null ? new byte[0] : java.util.Arrays.copyOf(encodedBytes, encodedBytes.length);
         if (path.isBlank() || fingerprint.isBlank() || bytes.length == 0) {
             clearPinnedTlsCertificate(destination);
@@ -234,7 +235,7 @@ public final class SecureCredentialStore {
     /**
      * Saves AWS static credentials for one database destination.
      *
-     * <p>Blank required fields clear the stored credential. The session token is optional.</p>
+     * <p>Empty required fields clear the stored credential. The session token is optional.</p>
      *
      * @param destination destination key; null, blank, or unknown selects upstream OpenSearch
      * @param accessKeyId required AWS access-key identifier
@@ -246,10 +247,10 @@ public final class SecureCredentialStore {
             String accessKeyId,
             String secretAccessKey,
             String sessionToken) {
-        String accessKey = safe(accessKeyId);
-        String secretKey = safe(secretAccessKey);
-        String token = safe(sessionToken);
-        if (accessKey.isBlank() || secretKey.isBlank()) {
+        String accessKey = credentialValue(accessKeyId);
+        String secretKey = credentialValue(secretAccessKey);
+        String token = credentialValue(sessionToken);
+        if (accessKey.isEmpty() || secretKey.isEmpty()) {
             clearAwsStaticCredentials(destination);
             return;
         }
@@ -336,7 +337,11 @@ public final class SecureCredentialStore {
         pinnedTlsCertificates.clear();
     }
 
-    private static String safe(String value) {
+    private static String credentialValue(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String normalizedValue(String value) {
         return value == null ? "" : value.trim();
     }
 

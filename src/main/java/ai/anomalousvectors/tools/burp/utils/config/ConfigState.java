@@ -378,7 +378,8 @@ public final class ConfigState {
     /**
      * Persisted non-secret Amazon OpenSearch Service settings.
      *
-     * <p>Nullable strings normalize to trimmed empty values. Authentication and deployment values
+     * <p>Nullable strings normalize to empty values. The Basic username is preserved exactly;
+     * paths and other non-credential values are trimmed. Authentication and deployment values
      * normalize to supported defaults.</p>
      *
      * @param authType authentication type
@@ -407,7 +408,7 @@ public final class ConfigState {
             String pinnedTlsCertificateEncodedBase64) {
         public OpenSearchAmazonOptions {
             authType = normalizeOpenSearchAmazonAuthType(authType);
-            username = username == null ? "" : username.trim();
+            username = username == null ? "" : username;
             region = region == null ? "" : region.trim();
             profile = profile == null ? "" : profile.trim();
             credentialsFilePath = credentialsFilePath == null ? "" : credentialsFilePath.trim();
@@ -425,8 +426,9 @@ public final class ConfigState {
     /**
      * Persisted non-secret Elasticsearch settings.
      *
-     * <p>Nullable strings normalize to trimmed empty values. Authentication, deployment, and TLS
-     * values normalize to supported defaults.</p>
+     * <p>Nullable strings normalize to empty values. The Basic username is preserved exactly;
+     * paths and other non-credential values are trimmed. Authentication, deployment, and TLS values
+     * normalize to supported defaults.</p>
      *
      * @param authType authentication type
      * @param username username used only for Basic authentication
@@ -450,7 +452,7 @@ public final class ConfigState {
             String pinnedTlsCertificateEncodedBase64) {
         public ElasticsearchOptions {
             authType = normalizeElasticsearchAuthType(authType);
-            username = username == null ? "" : username.trim();
+            username = username == null ? "" : username;
             certPath = certPath == null ? "" : certPath.trim();
             certKeyPath = certKeyPath == null ? "" : certKeyPath.trim();
             deploymentType = normalizeDeploymentType(deploymentType);

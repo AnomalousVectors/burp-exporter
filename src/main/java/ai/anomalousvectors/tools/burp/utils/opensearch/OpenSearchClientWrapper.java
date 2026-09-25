@@ -59,10 +59,7 @@ public class OpenSearchClientWrapper {
      * @return structured connection status
      */
     public static SearchConnectionStatus testConnection(String baseUrl, String username, String password) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return testConnection(baseUrl, auth);
+        return testConnection(baseUrl, OpenSearchAuth.basicOrNone(username, password));
     }
 
     /**
@@ -173,10 +170,7 @@ public class OpenSearchClientWrapper {
      * @return structured connection status
      */
     public static SearchConnectionStatus safeTestConnection(String baseUrl, String username, String password) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return safeTestConnection(baseUrl, auth);
+        return safeTestConnection(baseUrl, OpenSearchAuth.basicOrNone(username, password));
     }
 
     /**

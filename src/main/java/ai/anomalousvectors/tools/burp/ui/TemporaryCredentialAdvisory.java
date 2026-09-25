@@ -49,7 +49,7 @@ public final class TemporaryCredentialAdvisory {
     }
 
     /**
-     * Returns an advisory when Amazon Static auth currently has a non-blank session token in the UI.
+     * Returns an advisory when Amazon Static auth currently has a non-empty session token in the UI.
      *
      * @param authType selected Amazon auth type
      * @param sessionToken session token field text; {@code null} treated as empty
@@ -59,7 +59,7 @@ public final class TemporaryCredentialAdvisory {
         if (!ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC.equals(authType)) {
             return Optional.empty();
         }
-        if (sessionToken == null || sessionToken.isBlank()) {
+        if (sessionToken == null || sessionToken.isEmpty()) {
             return Optional.empty();
         }
         return Optional.of(new Active(

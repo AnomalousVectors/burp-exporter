@@ -80,10 +80,7 @@ public final class OpenSearchConnector {
      * @throws OpenSearchClientBuildException when the client cannot be constructed
      */
     public static OpenSearchClient getClient(String baseUrl, String username, String password) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return getClient(baseUrl, auth);
+        return getClient(baseUrl, OpenSearchAuth.basicOrNone(username, password));
     }
 
     /**
@@ -114,10 +111,7 @@ public final class OpenSearchConnector {
      * behaviorally aligned with connector/test-connection.</p>
      */
     static CloseableHttpClient getClassicHttpClient(String baseUrl, String username, String password) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return getClassicHttpClient(baseUrl, auth);
+        return getClassicHttpClient(baseUrl, OpenSearchAuth.basicOrNone(username, password));
     }
 
     /**

@@ -58,15 +58,12 @@ public final class OpenSearchRawGet {
      * thread interrupt flag.</p>
      *
      * @param baseUrl database base URL
-     * @param username Basic username; blank disables authentication
-     * @param password sensitive Basic password; blank disables authentication
+     * @param username Basic username; null or empty disables authentication
+     * @param password sensitive Basic password; null or empty disables authentication
      * @return non-null wire result with redacted request/header log fields
      */
     public static RawGetResult performRawGet(String baseUrl, String username, String password) {
-        OpenSearchAuth auth = username == null || username.isBlank() || password == null || password.isBlank()
-                ? OpenSearchAuth.none()
-                : OpenSearchAuth.basic(username, password);
-        return performRawGet(baseUrl, auth);
+        return performRawGet(baseUrl, OpenSearchAuth.basicOrNone(username, password));
     }
 
     /**

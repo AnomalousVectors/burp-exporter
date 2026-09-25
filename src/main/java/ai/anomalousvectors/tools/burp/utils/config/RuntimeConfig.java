@@ -879,13 +879,13 @@ public final class RuntimeConfig {
     /** Optional OpenSearch username for basic auth (empty = no auth). */
     public static String openSearchUser() {
         ConfigState.State current = state;
-        return current == null ? "" : safe(current.sinks().openSearchUser());
+        return current == null ? "" : credentialValue(current.sinks().openSearchUser());
     }
 
     /** Optional OpenSearch password for basic auth (empty = no auth). */
     public static String openSearchPassword() {
         ConfigState.State current = state;
-        return current == null ? "" : safe(current.sinks().openSearchPassword());
+        return current == null ? "" : credentialValue(current.sinks().openSearchPassword());
     }
 
     /** Current OpenSearch TLS mode. */
@@ -983,8 +983,8 @@ public final class RuntimeConfig {
                         sinks.fileDiskUsagePercent(),
                         sinks.databaseEnabled(),
                         safe(sinks.openSearchUrl()),
-                        safe(sinks.openSearchUser()),
-                        safe(sinks.openSearchPassword()),
+                        credentialValue(sinks.openSearchUser()),
+                        credentialValue(sinks.openSearchPassword()),
                         sinks.openSearchTlsMode(),
                         sinks.openSearchOptions(),
                         sinks.searchDestination(),
@@ -1046,6 +1046,10 @@ public final class RuntimeConfig {
 
     private static String safe(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static String credentialValue(String value) {
+        return value == null ? "" : value;
     }
 
     private static ConfigState.State defaultState() {

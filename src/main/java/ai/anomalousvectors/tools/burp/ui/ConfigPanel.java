@@ -3460,8 +3460,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 ? String.valueOf(openSearchAuthTypeCombo.getSelectedItem())
                 : ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE;
         boolean authBasic = "Basic".equals(authType);
-        String osUser = nonBlankOr(openSearchUserField.getText(), "");
-        String osPass = authBasic ? nonBlankOr(passwordText(openSearchPasswordField), "") : "";
+        String osUser = credentialValue(openSearchUserField.getText());
+        String osPass = authBasic ? credentialValue(passwordText(openSearchPasswordField)) : "";
         SecureCredentialStore.PinnedTlsCertificate pinnedTlsCertificate = SecureCredentialStore.loadPinnedTlsCertificate(
                 ConfigState.SearchDestination.OPEN_SEARCH.configKey());
         String pinnedTlsCertificateBase64 = pinnedTlsCertificate.encodedBytes().length == 0
@@ -3482,12 +3482,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         String searchDestination = selectedSearchDestinationKey();
         String awsAuthType = String.valueOf(openSearchAmazonAuthTypeCombo.getSelectedItem());
         String elasticAuthType = String.valueOf(elasticSearchAuthTypeCombo.getSelectedItem());
-        String awsUser = nonBlankOr(openSearchAmazonUserField.getText(), "");
+        String awsUser = credentialValue(openSearchAmazonUserField.getText());
         String awsRegion = nonBlankOr(openSearchAmazonRegionField.getText(), "");
         String awsProfile = nonBlankOr(openSearchAmazonProfileField.getText(), "");
         String awsCredentialsFile = nonBlankOr(openSearchAmazonCredentialsFileField.getText(), "");
         String awsConfigFile = nonBlankOr(openSearchAmazonConfigFileField.getText(), "");
-        String elasticUser = nonBlankOr(elasticSearchUserField.getText(), "");
+        String elasticUser = credentialValue(elasticSearchUserField.getText());
         String elasticCertPath = nonBlankOr(elasticSearchCertPathField.getText(), "");
         String elasticCertKeyPath = nonBlankOr(elasticSearchCertKeyPathField.getText(), "");
         return new ConfigState.State(
@@ -3945,10 +3945,22 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     }
 
     private static String passwordText(JPasswordField field) {
-        if (field == null || field.getPassword() == null) {
+        if (field == null) {
             return "";
         }
-        return new String(field.getPassword());
+        char[] password = field.getPassword();
+        if (password == null) {
+            return "";
+        }
+        try {
+            return new String(password);
+        } finally {
+            java.util.Arrays.fill(password, '\0');
+        }
+    }
+
+    private static String credentialValue(String value) {
+        return value == null ? "" : value;
     }
 
     private static String rootMessage(Throwable throwable) {

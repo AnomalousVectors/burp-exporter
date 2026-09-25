@@ -1,7 +1,8 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
-import java.io.IOException;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,12 +14,15 @@ import java.security.PrivateKey;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.security.spec.PKCS8EncodedKeySpec;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 
 import javax.crypto.EncryptedPrivateKeyInfo;
+import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import javax.security.auth.DestroyFailedException;
 
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpHeaders;
@@ -39,7 +43,7 @@ import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
  * serialize, or persist an instance or values returned by secret-bearing methods.</p>
  */
 public final class OpenSearchAuth {
-    private static final char[] EMPTY_PASSWORD = new char[0];
+    static final int MAX_CLIENT_AUTH_FILE_BYTES = 10 * 1024 * 1024;
 
     /** Supported HTTP authentication modes for search database destinations. */
     public enum Mode {
@@ -67,12 +71,12 @@ public final class OpenSearchAuth {
             String keyPath,
             String keyPassphrase) {
         this.mode = mode == null ? Mode.NONE : mode;
-        this.username = safe(username);
-        this.password = safe(password);
-        this.token = safe(token);
-        this.certificatePath = safe(certificatePath);
-        this.keyPath = safe(keyPath);
-        this.keyPassphrase = safe(keyPassphrase);
+        this.username = credentialValue(username);
+        this.password = credentialValue(password);
+        this.token = credentialValue(token);
+        this.certificatePath = normalizedPath(certificatePath);
+        this.keyPath = normalizedPath(keyPath);
+        this.keyPassphrase = credentialValue(keyPassphrase);
     }
 
     /**
@@ -93,6 +97,22 @@ public final class OpenSearchAuth {
      */
     public static OpenSearchAuth basic(String username, String password) {
         return new OpenSearchAuth(Mode.BASIC, username, password, "", "", "", "");
+    }
+
+    /**
+     * Returns Basic authentication when both credential values are present, otherwise no auth.
+     *
+     * <p>Credentials are opaque: whitespace is preserved and counts as present. Only null or the
+     * empty string disables authentication.</p>
+     *
+     * @param username Basic username; {@code null} or empty disables authentication
+     * @param password sensitive Basic password; {@code null} or empty disables authentication
+     * @return immutable Basic descriptor or {@link Mode#NONE} descriptor
+     */
+    public static OpenSearchAuth basicOrNone(String username, String password) {
+        return username == null || username.isEmpty() || password == null || password.isEmpty()
+                ? none()
+                : basic(username, password);
     }
 
     /**
@@ -202,7 +222,7 @@ public final class OpenSearchAuth {
             case "Basic" -> {
                 SecureCredentialStore.BasicCredentials basic =
                         SecureCredentialStore.loadBasicCredentials(destination);
-                String username = options.username().isBlank() ? basic.username() : options.username();
+                String username = options.username().isEmpty() ? basic.username() : options.username();
                 yield basic(username, basic.password());
             }
             case "API key" -> apiKey(SecureCredentialStore.loadApiKeyCredentials(destination).token());
@@ -228,7 +248,7 @@ public final class OpenSearchAuth {
             case "Basic" -> {
                 SecureCredentialStore.BasicCredentials basic =
                         SecureCredentialStore.loadBasicCredentials(destination);
-                String username = options.username().isBlank() ? basic.username() : options.username();
+                String username = options.username().isEmpty() ? basic.username() : options.username();
                 yield basic(username, basic.password());
             }
             default -> none();
@@ -247,13 +267,13 @@ public final class OpenSearchAuth {
     /**
      * Returns whether this descriptor has the fields required by its selected mode.
      *
-     * @return {@code true} when required credential fields are non-blank
+     * @return {@code true} when required credential values are non-empty and paths are non-blank
      */
     public boolean isComplete() {
         return switch (mode) {
             case NONE -> true;
-            case BASIC -> !username.isBlank() && !password.isBlank();
-            case API_KEY, BEARER_TOKEN -> !token.isBlank();
+            case BASIC -> !username.isEmpty() && !password.isEmpty();
+            case API_KEY, BEARER_TOKEN -> !token.isEmpty();
             case CERTIFICATE -> !certificatePath.isBlank() && !keyPath.isBlank();
         };
     }
@@ -369,7 +389,8 @@ public final class OpenSearchAuth {
      * Loads selected client-certificate key material into an SSL context builder.
      *
      * <p>The method performs blocking file and cryptographic I/O on the calling thread. It is a
-     * no-op for modes other than {@link Mode#CERTIFICATE}.</p>
+     * no-op for modes other than {@link Mode#CERTIFICATE}. Each selected certificate or private-key
+     * file is limited to 10 MiB before parsing.</p>
      *
      * @param builder mutable SSL context builder that receives key material
      * @throws GeneralSecurityException if credentials are incomplete or key material is invalid
@@ -383,16 +404,20 @@ public final class OpenSearchAuth {
         if (!isComplete()) {
             throw new GeneralSecurityException(validationMessage());
         }
+        Path selectedCertificate = Path.of(certificatePath);
+        Path selectedPrivateKey = Path.of(keyPath);
+        validateSelectedFileSize(selectedCertificate, "Client certificate");
+        validateSelectedFileSize(selectedPrivateKey, "Client private key");
         KeyStore keyStore = KeyStore.getInstance("PKCS12");
-        char[] passphrase = keyPassphrase.isBlank() ? EMPTY_PASSWORD : keyPassphrase.toCharArray();
+        char[] passphrase = keyPassphrase.toCharArray();
         try {
-            keyStore.load(null, EMPTY_PASSWORD);
-            Certificate certificate = readCertificate(Path.of(certificatePath));
-            PrivateKey privateKey = readPrivateKey(Path.of(keyPath), passphrase);
+            keyStore.load(null, new char[0]);
+            Certificate certificate = readCertificate(selectedCertificate);
+            PrivateKey privateKey = readPrivateKey(selectedPrivateKey, passphrase);
             keyStore.setKeyEntry("opensearch-client", privateKey, passphrase, new Certificate[] { certificate });
             builder.loadKeyMaterial(keyStore, passphrase);
-        } catch (IOException | GeneralSecurityException e) {
-            throw e;
+        } finally {
+            Arrays.fill(passphrase, '\0');
         }
     }
 
@@ -409,54 +434,109 @@ public final class OpenSearchAuth {
     }
 
     private String basicHeaderValue() {
-        String encoded = Base64.getEncoder()
-                .encodeToString((username + ":" + password).getBytes(StandardCharsets.UTF_8));
-        return "Basic " + encoded;
+        byte[] credentialBytes = (username + ":" + password).getBytes(StandardCharsets.UTF_8);
+        try {
+            return "Basic " + Base64.getEncoder().encodeToString(credentialBytes);
+        } finally {
+            Arrays.fill(credentialBytes, (byte) 0);
+        }
     }
 
     private static Certificate readCertificate(Path path) throws IOException, GeneralSecurityException {
-        try (var input = Files.newInputStream(path)) {
+        byte[] certificateBytes = readBoundedFile(path, "Client certificate");
+        try (var input = new ByteArrayInputStream(certificateBytes)) {
             return CertificateFactory.getInstance("X.509").generateCertificate(input);
+        } finally {
+            Arrays.fill(certificateBytes, (byte) 0);
         }
     }
 
     private static PrivateKey readPrivateKey(Path path, char[] passphrase) throws IOException, GeneralSecurityException {
-        byte[] keyBytes = Files.readAllBytes(path);
-        boolean rsaPkcs1 = isPemBlock(keyBytes, "RSA PRIVATE KEY");
-        byte[] encoded = decodePemOrDer(keyBytes);
-        if (rsaPkcs1) {
-            try {
-                return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(wrapRsaPkcs1Key(encoded)));
-            } catch (GeneralSecurityException e) {
-                // Continue through the common failure path so callers get a consistent error.
-            }
-        }
-        GeneralSecurityException last = null;
-        for (String algorithm : List.of("RSA", "EC", "DSA")) {
-            try {
-                return KeyFactory.getInstance(algorithm).generatePrivate(new PKCS8EncodedKeySpec(encoded));
-            } catch (GeneralSecurityException e) {
-                last = e;
-            }
-        }
-        if (passphrase != null && passphrase.length > 0) {
-            try {
-                EncryptedPrivateKeyInfo encrypted = new EncryptedPrivateKeyInfo(encoded);
-                SecretKeyFactory factory = SecretKeyFactory.getInstance(encrypted.getAlgName());
-                var secretKey = factory.generateSecret(new PBEKeySpec(passphrase));
-                PKCS8EncodedKeySpec keySpec = encrypted.getKeySpec(secretKey);
-                for (String algorithm : List.of("RSA", "EC", "DSA")) {
-                    try {
-                        return KeyFactory.getInstance(algorithm).generatePrivate(keySpec);
-                    } catch (GeneralSecurityException e) {
-                        last = e;
-                    }
+        byte[] keyBytes = readBoundedFile(path, "Client private key");
+        byte[] encoded = null;
+        try {
+            boolean rsaPkcs1 = isPemBlock(keyBytes, "RSA PRIVATE KEY");
+            encoded = decodePemOrDer(keyBytes);
+            if (rsaPkcs1) {
+                byte[] wrapped = wrapRsaPkcs1Key(encoded);
+                try {
+                    return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(wrapped));
+                } catch (GeneralSecurityException e) {
+                    // Continue through the common failure path so callers get a consistent error.
+                } finally {
+                    Arrays.fill(wrapped, (byte) 0);
                 }
-            } catch (GeneralSecurityException e) {
-                last = e;
+            }
+            GeneralSecurityException last = null;
+            for (String algorithm : List.of("RSA", "EC", "DSA")) {
+                try {
+                    return KeyFactory.getInstance(algorithm).generatePrivate(new PKCS8EncodedKeySpec(encoded));
+                } catch (GeneralSecurityException e) {
+                    last = e;
+                }
+            }
+            if (passphrase != null && passphrase.length > 0) {
+                PBEKeySpec passwordSpec = new PBEKeySpec(passphrase);
+                SecretKey secretKey = null;
+                try {
+                    EncryptedPrivateKeyInfo encrypted = new EncryptedPrivateKeyInfo(encoded);
+                    SecretKeyFactory factory = SecretKeyFactory.getInstance(encrypted.getAlgName());
+                    secretKey = factory.generateSecret(passwordSpec);
+                    PKCS8EncodedKeySpec keySpec = encrypted.getKeySpec(secretKey);
+                    for (String algorithm : List.of("RSA", "EC", "DSA")) {
+                        try {
+                            return KeyFactory.getInstance(algorithm).generatePrivate(keySpec);
+                        } catch (GeneralSecurityException e) {
+                            last = e;
+                        }
+                    }
+                } catch (GeneralSecurityException e) {
+                    last = e;
+                } finally {
+                    passwordSpec.clearPassword();
+                    destroySecretKey(secretKey);
+                }
+            }
+            throw new GeneralSecurityException("Unsupported or unreadable PKCS#8 private key.", last);
+        } finally {
+            Arrays.fill(keyBytes, (byte) 0);
+            if (encoded != null && encoded != keyBytes) {
+                Arrays.fill(encoded, (byte) 0);
             }
         }
-        throw new GeneralSecurityException("Unsupported or unreadable PKCS#8 private key.", last);
+    }
+
+    static byte[] readBoundedFile(Path path, String description) throws IOException {
+        validateSelectedFileSize(path, description);
+        try (var input = Files.newInputStream(path)) {
+            byte[] bytes = input.readNBytes(MAX_CLIENT_AUTH_FILE_BYTES + 1);
+            if (bytes.length > MAX_CLIENT_AUTH_FILE_BYTES) {
+                Arrays.fill(bytes, (byte) 0);
+                throw fileTooLarge(path, description);
+            }
+            return bytes;
+        }
+    }
+
+    private static void validateSelectedFileSize(Path path, String description) throws IOException {
+        if (Files.size(path) > MAX_CLIENT_AUTH_FILE_BYTES) {
+            throw fileTooLarge(path, description);
+        }
+    }
+
+    private static IOException fileTooLarge(Path path, String description) {
+        return new IOException(description + " exceeds the 10 MiB limit: " + path);
+    }
+
+    private static void destroySecretKey(SecretKey secretKey) {
+        if (secretKey == null) {
+            return;
+        }
+        try {
+            secretKey.destroy();
+        } catch (DestroyFailedException ignored) {
+            // Some JCA providers do not support active destruction of generated secret keys.
+        }
     }
 
     private static boolean isPemBlock(byte[] bytes, String label) {
@@ -516,15 +596,25 @@ public final class OpenSearchAuth {
 
     private static String fingerprint(String value) {
         byte[] bytes = value == null ? new byte[0] : value.getBytes(StandardCharsets.UTF_8);
+        byte[] digest = null;
         try {
-            var digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+            digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
             return new BigInteger(1, digest).toString(16);
         } catch (GeneralSecurityException e) {
             return Integer.toHexString(java.util.Arrays.hashCode(bytes));
+        } finally {
+            Arrays.fill(bytes, (byte) 0);
+            if (digest != null) {
+                Arrays.fill(digest, (byte) 0);
+            }
         }
     }
 
-    private static String safe(String value) {
+    private static String credentialValue(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String normalizedPath(String value) {
         return value == null ? "" : value.trim();
     }
 }

@@ -228,6 +228,71 @@ class JsonTypedRoundTripTest {
     }
 
     @Test
+    void build_and_parse_preservesBasicUsernamesExactlyForEveryDestination() throws IOException {
+        String openSearchUsername = "  upstream-user  ";
+        String amazonUsername = "\tamazon-user\n";
+        String elasticsearchUsername = "  elasticsearch-user\t";
+        ConfigState.State state = new ConfigState.State(
+                List.of(ConfigKeys.SRC_SETTINGS),
+                ConfigKeys.SCOPE_ALL,
+                List.of(),
+                new ConfigState.Sinks(
+                        false,
+                        "",
+                        false,
+                        false,
+                        true,
+                        ConfigState.DEFAULT_FILE_TOTAL_CAP_GB,
+                        true,
+                        ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT,
+                        true,
+                        "https://opensearch.url:9200",
+                        openSearchUsername,
+                        "  non-durable-password  ",
+                        ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                        new ConfigState.OpenSearchOptions("Basic", "", "", "", "", "", ""),
+                        ConfigState.SearchDestination.OPEN_SEARCH.configKey(),
+                        "https://search-example.us-east-1.es.amazonaws.com",
+                        new ConfigState.OpenSearchAmazonOptions(
+                                "Basic",
+                                amazonUsername,
+                                "us-east-1",
+                                "",
+                                "",
+                                "",
+                                ConfigState.DEPLOYMENT_HOSTED,
+                                ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                                "",
+                                "",
+                                ""),
+                        "https://elasticsearch.example:9200",
+                        new ConfigState.ElasticsearchOptions(
+                                "Basic",
+                                elasticsearchUsername,
+                                "",
+                                "",
+                                ConfigState.DEPLOYMENT_SELF_HOSTED,
+                                ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                                "",
+                                "",
+                                "")),
+                ConfigState.DEFAULT_SETTINGS_SUB,
+                ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                null);
+
+        String json = ConfigJsonMapper.build(state);
+        ConfigState.State parsed = ConfigJsonMapper.parseState(json);
+
+        assertThat(parsed.sinks().openSearchUser()).isEqualTo(openSearchUsername);
+        assertThat(parsed.sinks().openSearchPassword()).isEmpty();
+        assertThat(parsed.sinks().openSearchAmazonOptions().username()).isEqualTo(amazonUsername);
+        assertThat(parsed.sinks().elasticSearchOptions().username()).isEqualTo(elasticsearchUsername);
+    }
+
+    @Test
     void build_and_parse_preserves_nonSecret_amazon_openSearch_metadata() throws IOException {
         ConfigState.OpenSearchAmazonOptions amazonOptions = new ConfigState.OpenSearchAmazonOptions(
                 "IAM SigV4 - Profile",
