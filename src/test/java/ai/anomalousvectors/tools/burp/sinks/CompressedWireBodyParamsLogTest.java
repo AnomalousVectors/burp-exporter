@@ -76,8 +76,8 @@ class CompressedWireBodyParamsLogTest {
                 .contains("wire_replaced=1/1 url(s)")
                 .contains("startup/backlog")
                 .contains("No raw body data was lost")
-                .contains("Data-Integrity#compressed_wire_body_params")
-                .doesNotContain("Data-Integrity#wire_replaced")
+                .contains("Reference#compressed_wire_body_params")
+                .doesNotContain("Reference#wire_replaced")
                 .doesNotContain("Wiki -> Data Integrity -> Logging")
                 .doesNotContain("event.type=parameter_integrity_detail")
                 .doesNotContain("category=wire_replaced")
@@ -103,8 +103,8 @@ class CompressedWireBodyParamsLogTest {
         assertThat(debugMessages).hasSize(1);
         assertThat(debugMessages.get(0))
                 .contains("supplemental_rejected_non_form=1/1 url(s)")
-                .contains("Data-Integrity#compressed_wire_body_params")
-                .doesNotContain("Data-Integrity#supplemental_rejected_non_form")
+                .contains("Reference#compressed_wire_body_params")
+                .doesNotContain("Reference#supplemental_rejected_non_form")
                 .doesNotContain("event.type=parameter_integrity_detail")
                 .doesNotContain("category=supplemental_rejected_non_form")
                 .doesNotContain("https://example.test/rejected")
@@ -129,7 +129,7 @@ class CompressedWireBodyParamsLogTest {
         assertThat(debugMessages).hasSize(1);
         assertThat(debugMessages.get(0))
                 .contains("compressed-wire BODY params replaced")
-                .contains("Data-Integrity#wire_replaced");
+                .contains("Reference#wire_replaced");
     }
 
     @Test
@@ -149,12 +149,12 @@ class CompressedWireBodyParamsLogTest {
         assertThat(infoMessages).isEmpty();
         assertThat(debugMessages.get(0))
                 .contains("skip-path BODY params rescued")
-                .contains("Data-Integrity#skip_path_rescued");
+                .contains("Reference#skip_path_rescued");
         assertThat(debugMessages.get(1))
                 .contains("compressed_wire_body_params during stop")
                 .contains("skip_path_rescued=1/1 url(s)")
-                .contains("Data-Integrity#compressed_wire_body_params")
-                .doesNotContain("Data-Integrity#skip_path_rescued")
+                .contains("Reference#compressed_wire_body_params")
+                .doesNotContain("Reference#skip_path_rescued")
                 .doesNotContain("event.type=parameter_integrity_detail")
                 .doesNotContain("category=skip_path_rescued")
                 .doesNotContain("https://example.test/stop")
@@ -196,8 +196,8 @@ class CompressedWireBodyParamsLogTest {
                 .contains("supplemental_rejected_non_form=0/0 url(s)")
                 .contains("skip_path_rescued=4/0 url(s)")
                 .contains("during test")
-                .contains("Data-Integrity#compressed_wire_body_params")
-                .doesNotContain("Data-Integrity#wire_replaced")
+                .contains("Reference#compressed_wire_body_params")
+                .doesNotContain("Reference#wire_replaced")
                 .doesNotContain("Wiki -> Data Integrity -> Logging")
                 .doesNotContain("event.type=parameter_integrity_detail");
     }

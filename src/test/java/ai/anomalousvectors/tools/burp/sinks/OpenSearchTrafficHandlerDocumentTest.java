@@ -10,10 +10,12 @@ import static org.mockito.Mockito.when;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import burp.api.montoya.http.HttpService;
@@ -85,6 +87,27 @@ class TrafficHttpHandlerDocumentTest {
         when(response.attributes(any(AttributeType[].class))).thenReturn(List.of());
         ByteArray responseBytes = byteArray("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
         when(response.toByteArray()).thenReturn(responseBytes);
+    }
+
+    @Test
+    @ResourceLock("default-locale")
+    void buildDocument_usesLocaleIndependentResponseAttributeKeys() {
+        Attribute visibleWordCount = mock(Attribute.class);
+        when(visibleWordCount.type()).thenReturn(AttributeType.VISIBLE_WORD_COUNT);
+        when(visibleWordCount.value()).thenReturn(2);
+        when(response.attributes(any(AttributeType[].class))).thenReturn(List.of(visibleWordCount));
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+            Map<String, Object> doc = handler.buildDocument(response, request, true);
+
+            Map<?, ?> body = nestedMap(nestedMap(doc, "response"), "body");
+            Map<?, ?> html = nestedMap(body, "html");
+            assertThat(nestedMap(html, "text").get("visible_word_count")).isEqualTo(2);
+        } finally {
+            Locale.setDefault(original);
+        }
     }
 
     @Test

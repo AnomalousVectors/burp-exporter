@@ -69,7 +69,7 @@ class BodyParameterTruncationLogTest {
                 .contains("1 unique request.url")
                 .contains("dropped_body_params=12")
                 .contains("No raw request data was lost")
-                .contains("Data-Integrity#body_params_truncated")
+                .contains("Reference#body_params_truncated")
                 .doesNotContain("Wiki -> Data Integrity -> Logging")
                 .doesNotContain("Drill-down if affected endpoints matter")
                 .doesNotContain("event.type=parameter_integrity_detail")
@@ -99,7 +99,7 @@ class BodyParameterTruncationLogTest {
         assertThat(debugMessages.get(0))
                 .contains("[ParameterIntegrity]")
                 .contains("No raw request data was lost")
-                .contains("Data-Integrity#body_params_truncated")
+                .contains("Reference#body_params_truncated")
                 .doesNotContain("category=body_params_truncated")
                 .doesNotContain("live-a")
                 .doesNotContain("...");
@@ -126,7 +126,7 @@ class BodyParameterTruncationLogTest {
         assertThat(debugMessages).hasSize(BodyParameterTruncationLog.LIVE_UNIQUE_URL_LOG_CAP + 1);
         assertThat(debugMessages.get(debugMessages.size() - 1))
                 .contains("BODY parameters truncated for 1 additional unique request.url")
-                .contains("Data-Integrity#body_params_truncated");
+                .contains("Reference#body_params_truncated");
         assertThat(warnMessages).isEmpty();
     }
 
@@ -161,7 +161,7 @@ class BodyParameterTruncationLogTest {
         assertThat(line)
                 .contains("2 unique request.url")
                 .contains("dropped_body_params=10")
-                .contains("Data-Integrity#body_params_truncated")
+                .contains("Reference#body_params_truncated")
                 .doesNotContain("event.type=parameter_integrity_detail")
                 .doesNotContain("category=body_params_truncated")
                 .doesNotContain("https://example.test/a")

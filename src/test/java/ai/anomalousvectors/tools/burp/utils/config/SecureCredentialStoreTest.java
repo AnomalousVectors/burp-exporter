@@ -2,7 +2,10 @@ package ai.anomalousvectors.tools.burp.utils.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.util.Locale;
+
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 class SecureCredentialStoreTest {
 
@@ -142,6 +145,22 @@ class SecureCredentialStoreTest {
             assertThat(SecureCredentialStore.loadSelectedAuthType(destination))
                     .isEqualTo(ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC);
         });
+    }
+
+    @Test
+    @ResourceLock("default-locale")
+    void selectedAuthType_isLocaleIndependent() {
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+            withCleanStore(() -> {
+                SecureCredentialStore.saveSelectedAuthType("API key");
+
+                assertThat(SecureCredentialStore.loadSelectedAuthType()).isEqualTo("API key");
+            });
+        } finally {
+            Locale.setDefault(original);
+        }
     }
 
     private static void withCleanStore(CheckedRunnable action) {

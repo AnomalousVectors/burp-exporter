@@ -150,7 +150,7 @@ final class WebSocketTrafficDocumentBuilder {
             }
             var scope = api.scope();
             return scope != null && scope.isInScope(url);
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return false;
         }
     }

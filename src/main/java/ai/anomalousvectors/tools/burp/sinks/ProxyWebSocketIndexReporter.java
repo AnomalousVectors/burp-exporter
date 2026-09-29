@@ -316,7 +316,7 @@ public final class ProxyWebSocketIndexReporter {
             }
             List<ProxyWebSocketMessage> history = proxy.webSocketHistory();
             return history != null ? history : List.of();
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return List.of();
         }
     }

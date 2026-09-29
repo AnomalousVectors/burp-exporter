@@ -586,7 +586,7 @@ public final class SitemapIndexReporter {
                 return null;
             }
             return siteMap.requestResponses();
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return null;
         }
     }

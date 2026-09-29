@@ -68,7 +68,7 @@ class UrlParameterTruncationLogTest {
                 .contains("1 unique request.url")
                 .contains("dropped_url_params=12")
                 .contains("No request body data was lost")
-                .contains("Data-Integrity#url_params_truncated")
+                .contains("Reference#url_params_truncated")
                 .doesNotContain("Wiki -> Data Integrity -> Logging")
                 .doesNotContain("Drill-down if affected endpoints matter")
                 .doesNotContain("event.type=parameter_integrity_detail")
@@ -112,7 +112,7 @@ class UrlParameterTruncationLogTest {
         assertThat(debugMessages).hasSize(2);
         assertThat(debugMessages.get(0))
                 .contains("No request body data was lost")
-                .contains("Data-Integrity#url_params_truncated")
+                .contains("Reference#url_params_truncated")
                 .doesNotContain("category=url_params_truncated")
                 .doesNotContain("live-a")
                 .doesNotContain("...");
@@ -139,7 +139,7 @@ class UrlParameterTruncationLogTest {
         assertThat(debugMessages).hasSize(UrlParameterTruncationLog.LIVE_UNIQUE_URL_LOG_CAP + 1);
         assertThat(debugMessages.get(debugMessages.size() - 1))
                 .contains("URL parameters truncated for 1 additional unique request.url")
-                .contains("Data-Integrity#url_params_truncated");
+                .contains("Reference#url_params_truncated");
         assertThat(warnMessages).isEmpty();
     }
 
@@ -174,7 +174,7 @@ class UrlParameterTruncationLogTest {
         assertThat(line)
                 .contains("2 unique request.url")
                 .contains("dropped_url_params=10")
-                .contains("Data-Integrity#url_params_truncated")
+                .contains("Reference#url_params_truncated")
                 .doesNotContain("event.type=parameter_integrity_detail")
                 .doesNotContain("category=url_params_truncated")
                 .doesNotContain("https://example.test/a")

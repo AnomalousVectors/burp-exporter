@@ -866,7 +866,7 @@ public final class RepeaterTabsIndexReporter {
         }
         try {
             startIncrementalStartupTabWalk(generation, passNumber, delayMs);
-        } catch (Throwable t) {
+        } catch (RuntimeException t) {
             Logger.logErrorPanelOnly("[RepeaterTabs] Startup tab walk pass " + passNumber
                     + " startupSession=" + currentStartupSessionId()
                     + " failed: " + summarizeThrowable(t));

@@ -1,5 +1,6 @@
 package ai.anomalousvectors.tools.burp.utils.config;
 
+import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -349,7 +350,7 @@ public final class SecureCredentialStore {
         if (authType == null || authType.isBlank()) {
             return "None";
         }
-        return switch (authType.trim().toLowerCase()) {
+        return switch (authType.trim().toLowerCase(Locale.ROOT)) {
             case "basic" -> "Basic";
             case "api key", "apikey" -> "API key";
             case "bearer token", "bearer", "jwt" -> "Bearer token";

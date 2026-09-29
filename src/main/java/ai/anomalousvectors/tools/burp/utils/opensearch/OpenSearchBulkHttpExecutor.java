@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.utils.opensearch;
 
 import java.io.IOException;
 import java.net.URI;
+import java.util.Locale;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -312,7 +313,7 @@ final class OpenSearchBulkHttpExecutor {
      * Classifies common HC5 timeout messages so operators can tell lease waits from connect hangs.
      */
     private static String leaseOrConnectTimeoutHint(Throwable failure) {
-        String chain = OpenSearchLogFormat.describeExceptionChain(failure).toLowerCase();
+        String chain = OpenSearchLogFormat.describeExceptionChain(failure).toLowerCase(Locale.ROOT);
         if (chain.contains("timeout waiting for connection")
                 || chain.contains("connection request")
                 || chain.contains("connection leased")) {

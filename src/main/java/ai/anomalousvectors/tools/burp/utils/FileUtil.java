@@ -9,6 +9,7 @@ import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Small file utilities used by the UI and sinks. Keeps I/O concerns out of UI code.
@@ -179,7 +180,7 @@ public final class FileUtil {
      */
     public static File ensureJsonExtension(File f) {
         if (f == null) return null;
-        String nameLower = f.getName().toLowerCase();
+        String nameLower = f.getName().toLowerCase(Locale.ROOT);
         if (nameLower.endsWith(JSON_EXTENSION)) return f;
         File parent = f.getParentFile();
         return (parent == null)

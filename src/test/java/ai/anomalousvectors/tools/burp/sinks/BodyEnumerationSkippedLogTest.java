@@ -86,7 +86,7 @@ class BodyEnumerationSkippedLogTest {
                 .contains("Form fields may be missing from request.parameters")
                 .contains("Mis-gate Suspects")
                 .contains("No raw body data was lost")
-                .contains("Data-Integrity#misgate_binary")
+                .contains("Reference#misgate_binary")
                 .doesNotContain("Wiki -> Data Integrity -> Logging")
                 .doesNotContain("event.type=parameter_integrity_detail")
                 .doesNotContain("category=misgate_binary")
@@ -207,7 +207,7 @@ class BodyEnumerationSkippedLogTest {
         assertThat(warnMessages.get(0))
                 .contains("during stop")
                 .contains("unexpected gate outcome")
-                .contains("Data-Integrity#misgate_binary");
+                .contains("Reference#misgate_binary");
     }
 
     @Test
@@ -247,7 +247,7 @@ class BodyEnumerationSkippedLogTest {
                 .contains("2 request(s)")
                 .contains("during test")
                 .contains("unique_request_urls=2")
-                .contains("Data-Integrity#misgate_binary")
+                .contains("Reference#misgate_binary")
                 .doesNotContain("event.type=parameter_integrity_detail")
                 .doesNotContain("category=misgate_binary")
                 .doesNotContain("https://example.test/a")

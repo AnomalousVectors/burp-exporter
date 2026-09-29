@@ -22,8 +22,9 @@ public final class BurpRuntimeMetadata {
     /**
      * Primes cached metadata from the provided API when values are not already known.
      *
-     * <p>Safe to call multiple times. Failures are swallowed because callers use this helper
-     * to avoid turning lifecycle races into user-visible errors.</p>
+     * <p>Safe to call multiple times. Runtime failures are ignored because callers use this
+     * helper to avoid turning lifecycle races into user-visible errors. Fatal JVM errors remain
+     * visible to the host.</p>
      *
      * @param api current Montoya API handle; ignored when {@code null}
      */
@@ -111,7 +112,7 @@ public final class BurpRuntimeMetadata {
             }
             var version = burpSuite.version();
             return version != null ? String.valueOf(version) : null;
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return null;
         }
     }
@@ -123,7 +124,7 @@ public final class BurpRuntimeMetadata {
                 return null;
             }
             return project.id();
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return null;
         }
     }

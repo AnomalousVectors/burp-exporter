@@ -704,7 +704,7 @@ public final class FindingsIndexReporter {
                 return null;
             }
             return siteMap.issues();
-        } catch (Throwable t) {
+        } catch (RuntimeException t) {
             logIssuesAccessFailureOnce(t);
             return null;
         }
@@ -729,7 +729,7 @@ public final class FindingsIndexReporter {
             }
             var scope = api.scope();
             return scope != null && scope.isInScope(url);
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             return false;
         }
     }

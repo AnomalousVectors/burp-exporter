@@ -3,6 +3,7 @@ package ai.anomalousvectors.tools.burp.sinks;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.nio.charset.StandardCharsets;
 
@@ -912,7 +913,7 @@ public final class RequestResponseDocBuilder {
         if (type == null) {
             return null;
         }
-        return type.name().toLowerCase();
+        return type.name().toLowerCase(Locale.ROOT);
     }
 
     private static String bodyDerivedResponseField(AttributeType type, boolean trafficShape) {

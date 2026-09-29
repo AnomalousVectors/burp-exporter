@@ -8,10 +8,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Comparator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
@@ -81,6 +83,28 @@ class TrafficSpillFileQueueTest {
                         .anySatisfy(name -> assertThat(name).startsWith("burp-project-alpha-"));
             }
         } finally {
+            deleteRecursively(dir);
+        }
+    }
+
+    @Test
+    @ResourceLock("default-locale")
+    void offer_usesAsciiSequenceDigitsUnderNonLatinLocale() throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-locale");
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.forLanguageTag("ar-EG"));
+            TrafficSpillFileQueue queue = new TrafficSpillFileQueue(
+                    dir, 10, 1024 * 1024, "locale-project", 86_400_000L);
+
+            assertThat(queue.offer(Map.of("id", 8, "url", "https://locale.example"))).isTrue();
+            try (Stream<Path> files = Files.list(dir)) {
+                assertThat(files.map(path -> path.getFileName().toString()))
+                        .anySatisfy(name -> assertThat(name)
+                                .isEqualTo("locale-project-00000000000000000001.json"));
+            }
+        } finally {
+            Locale.setDefault(original);
             deleteRecursively(dir);
         }
     }

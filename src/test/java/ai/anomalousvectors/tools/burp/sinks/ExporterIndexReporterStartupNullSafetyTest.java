@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.sinks;
 
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.callStatic;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
@@ -47,11 +48,27 @@ class ExporterIndexReporterStartupNullSafetyTest {
         clearApiProvider();
     }
 
+    @Test
+    void sitemapHelper_doesNotSwallowErrors() {
+        AssertionError failure = new AssertionError("fatal host failure");
+        MontoyaApi api = throwingMontoyaApi(failure);
+
+        assertThatThrownBy(() -> callStatic(SitemapIndexReporter.class, "safeSiteMapItems", api))
+                .isSameAs(failure);
+    }
+
     private static MontoyaApi throwingMontoyaApi() {
+        return throwingMontoyaApi(null);
+    }
+
+    private static MontoyaApi throwingMontoyaApi(Throwable failure) {
         return (MontoyaApi) Proxy.newProxyInstance(
                 MontoyaApi.class.getClassLoader(),
                 new Class<?>[] { MontoyaApi.class },
                 (proxy, method, args) -> {
+                    if (failure != null) {
+                        throw failure;
+                    }
                     throw new NullPointerException("startup race: " + method.getName());
                 });
     }

@@ -2,9 +2,11 @@ package ai.anomalousvectors.tools.burp.ui;
 
 import ai.anomalousvectors.tools.burp.ui.log.LogStore;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -15,6 +17,19 @@ import static org.junit.jupiter.api.Assertions.*;
  * visible aggregation reflects the total repeat count.</p>
  */
 class LogStoreCompactionTest {
+
+    @Test
+    @ResourceLock("default-locale")
+    void levelParsing_isLocaleIndependent() {
+        Locale original = Locale.getDefault();
+        try {
+            Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+
+            assertEquals(LogStore.Level.INFO, LogStore.Level.fromString("info"));
+        } finally {
+            Locale.setDefault(original);
+        }
+    }
 
     /**
      * Ingesting identical (level, message) triples compacts into a replace decision

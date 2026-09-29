@@ -12,6 +12,14 @@ import org.junit.jupiter.api.Test;
 class ParameterIntegrityDetailReporterTest {
 
     @Test
+    void detailPointersUseReferenceWikiAnchors() {
+        assertThat(ParameterIntegrityDetailReporter.detailPointer("url_params_truncated"))
+                .endsWith("https://github.com/AnomalousVectors/burp-exporter/wiki/Reference#url_params_truncated");
+        assertThat(ParameterIntegrityDetailReporter.compressedWireSummaryPointer())
+                .endsWith("https://github.com/AnomalousVectors/burp-exporter/wiki/Reference#compressed_wire_body_params");
+    }
+
+    @Test
     void buildDetailDocs_chunksFullUrlLists() {
         Map<String, Integer> urls = new LinkedHashMap<>();
         for (int i = 0; i < 205; i++) {

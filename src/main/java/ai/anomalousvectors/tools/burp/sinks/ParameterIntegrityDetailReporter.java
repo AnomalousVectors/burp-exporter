@@ -23,8 +23,8 @@ final class ParameterIntegrityDetailReporter {
     static final int SAMPLE_URL_CAP = 10;
 
     private static final String SCHEMA_VERSION = "1";
-    private static final String WIKI_DATA_INTEGRITY_URL =
-            "https://github.com/AnomalousVectors/burp-exporter/wiki/Data-Integrity";
+    private static final String WIKI_REFERENCE_URL =
+            "https://github.com/AnomalousVectors/burp-exporter/wiki/Reference";
 
     enum UrlListPolicy {
         FULL,
@@ -94,7 +94,7 @@ final class ParameterIntegrityDetailReporter {
     }
 
     private static String wikiUrl(String anchor) {
-        return WIKI_DATA_INTEGRITY_URL + "#" + anchor;
+        return WIKI_REFERENCE_URL + "#" + anchor;
     }
 
     private static String bluf(String category) {

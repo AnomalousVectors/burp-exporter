@@ -12,6 +12,7 @@ import java.awt.RadialGradientPaint;
 import java.awt.RenderingHints;
 import java.awt.geom.Ellipse2D;
 import java.io.Serial;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Consumer;
 
@@ -95,7 +96,7 @@ public final class ConfigControlPanel {
 
         void setState(State state) {
             if (this.state != state) {
-                Logger.logTrace("[Control] indicator state=" + state.name().toLowerCase());
+                Logger.logTrace("[Control] indicator state=" + state.name().toLowerCase(Locale.ROOT));
                 this.state = state;
                 repaint();
             }

@@ -11,6 +11,7 @@ import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
@@ -162,7 +163,7 @@ final class TrafficSpillFileQueue {
             }
             ensureDirectoryExists();
             DiskSpaceGuard.ensureWritable(directory, payload.length, "traffic spill");
-            String name = String.format("%s-%020d.json", projectId, nextSequence++);
+            String name = String.format(Locale.ROOT, "%s-%020d.json", projectId, nextSequence++);
             Path target = directory.resolve(name);
             Path temp = directory.resolve(name + ".tmp");
             Files.write(temp, payload, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
@@ -494,7 +495,7 @@ final class TrafficSpillFileQueue {
                     return sanitizeProjectId(raw);
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (RuntimeException ignored) {
             // Keep spill path resilient during Burp startup lifecycle transitions.
         }
         return BurpRuntimeMetadata.projectIdOrUnknown();

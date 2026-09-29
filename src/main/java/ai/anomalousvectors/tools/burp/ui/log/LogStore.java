@@ -5,6 +5,7 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -20,7 +21,7 @@ public final class LogStore {
     public enum Level { TRACE, DEBUG, INFO, WARN, ERROR;
         public static Level fromString(String s) {
             if (s == null) return INFO;
-            try { return Level.valueOf(s.trim().toUpperCase()); }
+            try { return Level.valueOf(s.trim().toUpperCase(Locale.ROOT)); }
             catch (IllegalArgumentException ex) { return INFO; }
         }
     }
