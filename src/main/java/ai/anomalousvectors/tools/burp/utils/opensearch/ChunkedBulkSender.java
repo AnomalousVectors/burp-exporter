@@ -24,6 +24,7 @@ import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.export.ExportLineCodec;
@@ -574,9 +575,7 @@ public final class ChunkedBulkSender {
      * @return bulk endpoint URL
      */
     static String buildBulkUrl(String baseUrl, String indexName) {
-        String base = baseUrl == null ? "" : baseUrl.trim();
-        if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-        return base + "/" + indexName + "/_bulk";
+        return SearchEndpoint.parse(baseUrl).resolve("/" + indexName + "/_bulk").toString();
     }
 
     /**

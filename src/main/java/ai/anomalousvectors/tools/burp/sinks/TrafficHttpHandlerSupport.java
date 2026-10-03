@@ -1,6 +1,5 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -15,6 +14,7 @@ import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
@@ -132,16 +132,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             return false;
         }
         try {
-            URI uri = URI.create(baseUrl.trim());
-            String configHost = uri.getHost();
-            if (configHost == null) {
-                return false;
-            }
-            int configPort = uri.getPort();
-            if (configPort < 0) {
-                configPort = "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
-            }
-            return configHost.equalsIgnoreCase(requestHost) && configPort == requestPort;
+            SearchEndpoint endpoint = SearchEndpoint.parse(baseUrl);
+            return endpoint.host().equalsIgnoreCase(requestHost) && endpoint.effectivePort() == requestPort;
         } catch (Exception e) {
             return false;
         }

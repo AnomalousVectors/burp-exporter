@@ -1,9 +1,7 @@
 package ai.anomalousvectors.tools.burp.utils.search;
 
-import java.net.URI;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.Locale;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 
@@ -230,9 +228,7 @@ public final class SearchDeployment {
             return "";
         }
         try {
-            URI uri = URI.create(baseUrl.trim());
-            String host = uri.getHost();
-            return host == null ? "" : host.toLowerCase(Locale.ROOT);
+            return SearchEndpoint.parse(baseUrl).host();
         } catch (RuntimeException e) {
             return "";
         }

@@ -1,8 +1,8 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
-import java.net.URI;
-
 import org.apache.hc.core5.http.HttpHost;
+
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 
 /**
  * Helpers for classic database HTTP requests that must route through a pooled client with
@@ -21,9 +21,8 @@ public final class OpenSearchClassicHttpSupport {
      * @return host for classic {@code execute(host, request, ...)} routing
      */
     public static HttpHost hostForBaseUrl(String baseUrl) {
-        String normalized = baseUrl == null ? "" : baseUrl.trim().replaceAll("/+$", "");
-        URI uri = URI.create(normalized);
-        return new HttpHost(uri.getScheme(), uri.getHost(), uri.getPort());
+        SearchEndpoint endpoint = SearchEndpoint.parse(baseUrl);
+        return new HttpHost(endpoint.scheme(), endpoint.host(), endpoint.port());
     }
 
     /**

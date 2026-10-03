@@ -100,6 +100,7 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchTlsSupport;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDeployment;
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.BurpSuiteEdition;
 import net.miginfocom.swing.MigLayout;
@@ -1052,6 +1053,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             return;
         }
         RuntimeConfig.ExportRunToken runToken = RuntimeConfig.currentExportRunToken();
+        boolean filesSelected = fileSinkCheckbox.isSelected();
+        DestinationValidation destinationValidation = validateSelectedDestinationConfiguration();
+        SearchEndpoint selectedEndpoint = destinationValidation.searchEndpoint();
+        if (selectedEndpoint != null) {
+            selectedSearchUrlField().setText(selectedEndpoint.baseUrl());
+        }
         syncSelectedAuthStateFromUi();
         ai.anomalousvectors.tools.burp.utils.IndexNaming.ResolutionResult indexNamingResolution =
                 RuntimeConfig.prepareIndexNamesForCurrentRun();
@@ -1059,15 +1066,14 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             abortStartOnEdt("fix index naming before Start: " + String.join(" ", indexNamingResolution.errors()), uiCallbacks);
             return;
         }
-        boolean filesSelected = fileSinkCheckbox.isSelected();
-        boolean databaseSelected = isOpenSearchExportSelected();
+        boolean databaseSelected = isOpenSearchExportSelected() && selectedEndpoint != null;
         if (fileSinkCheckbox.isSelected() && !hasSelectedFileFormat()) {
             abortStartOnEdt(
                     "select at least one file format when Files export is enabled.",
                     uiCallbacks);
             return;
         }
-        List<String> startupIssues = validateSelectedDestinationConfiguration();
+        List<String> startupIssues = destinationValidation.issues();
         if (!RuntimeConfig.isAnyFileExportEnabled() && !databaseSelected) {
             String reason = startupIssues.isEmpty()
                     ? "configure at least one destination."
@@ -1075,7 +1081,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             abortStartOnEdt(reason, uiCallbacks);
             return;
         }
-        String url = selectedSearchUrlField().getText().trim();
+        String url = selectedEndpoint == null ? "" : selectedEndpoint.baseUrl();
         List<String> sources = List.copyOf(getSelectedSources());
         ExportStartupStatus.Snapshot startupSnapshot =
                 new ExportStartupStatus.Snapshot(filesSelected, databaseSelected);
@@ -1368,22 +1374,37 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         }
     }
 
-    private List<String> validateSelectedDestinationConfiguration() {
+    private record DestinationValidation(List<String> issues, SearchEndpoint searchEndpoint) {
+    }
+
+    private DestinationValidation validateSelectedDestinationConfiguration() {
         List<String> startupIssues = new ArrayList<>();
         if (fileSinkCheckbox.isSelected() && filePathField.getText().trim().isEmpty()) {
             recordStartIssue(startupIssues, "Files not started: root directory is blank.");
         }
         if (!databaseSinkCheckbox.isSelected()) {
-            return startupIssues;
+            return new DestinationValidation(List.copyOf(startupIssues), null);
         }
-        if (selectedSearchUrlField().getText().trim().isEmpty()) {
+        String configuredUrl = selectedSearchUrlField().getText();
+        if (configuredUrl == null || configuredUrl.trim().isEmpty()) {
             recordStartIssue(startupIssues, selectedSearchDestination() + " not started: base URL is blank.");
+            return new DestinationValidation(List.copyOf(startupIssues), null);
         }
         if (!RuntimeConfig.isSearchDestinationExportWired(selectedSearchDestinationKind())) {
             recordStartIssue(startupIssues,
                     selectedSearchDestination() + " is not wired for Start/export yet.");
+            return new DestinationValidation(List.copyOf(startupIssues), null);
         }
-        return startupIssues;
+        try {
+            return new DestinationValidation(
+                    List.copyOf(startupIssues),
+                    SearchEndpoint.parse(configuredUrl));
+        } catch (IllegalArgumentException e) {
+            recordStartIssue(
+                    startupIssues,
+                    selectedSearchDestination() + " not started: " + e.getMessage());
+            return new DestinationValidation(List.copyOf(startupIssues), null);
+        }
     }
 
     private void recordStartIssue(List<String> startupIssues, String issue) {
@@ -2119,12 +2140,21 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         elasticSearchAuthTypeCombo.addActionListener(sinkUpdater);
 
         testConnectionButton.addActionListener(e -> {
+            String configuredUrl = selectedSearchUrlField().getText();
+            SearchEndpoint endpoint;
+            try {
+                endpoint = SearchEndpoint.parse(configuredUrl);
+                selectedSearchUrlField().setText(endpoint.baseUrl());
+            } catch (IllegalArgumentException ex) {
+                syncSelectedAuthStateFromUi();
+                onDatabaseStatus("Testing ...");
+                controller().testConnectionAsync(selectedSearchDestinationKind(), configuredUrl);
+                return;
+            }
             if (selectedSearchDestinationKind() == ConfigState.SearchDestination.OPEN_SEARCH_AMAZON) {
                 syncAmazonRegionFromUrl();
             }
             syncSelectedAuthStateFromUi();
-            String url = selectedSearchUrlField().getText().trim();
-            if (url.isEmpty()) { onDatabaseStatus("✖ URL required"); return; }
             if (selectedSearchDestinationKind() == ConfigState.SearchDestination.OPEN_SEARCH_AMAZON
                     && !ensureAmazonDeploymentTypeResolvedForTest()) {
                 syncSelectedAuthStateFromUi();
@@ -2132,7 +2162,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             }
             emitTemporaryCredentialAdvisoryIfNeeded();
             onDatabaseStatus("Testing ...");
-            controller().testConnectionAsync(selectedSearchDestinationKind(), url);
+            controller().testConnectionAsync(selectedSearchDestinationKind(), endpoint.baseUrl());
         });
         importPinnedCertificateButton.addActionListener(e -> importPinnedCertificate());
         openSearchPasswordField.addActionListener(e -> {
@@ -3901,7 +3931,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         ));
         Tooltips.apply(openSearchUrlField, Tooltips.htmlRaw(
                 "<b>OpenSearch URL</b>",
-                "Base URL of the OpenSearch destination.",
+                "Root URL of the OpenSearch destination.",
+                "Do not include a path, query string, fragment, or embedded credentials.",
                 "",
                 "Examples:",
                 "&nbsp;&nbsp;<code>https://opensearch.url:9200</code>",
@@ -3909,7 +3940,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         ));
         Tooltips.apply(openSearchAmazonUrlField, Tooltips.htmlRaw(
                 "<b>Amazon OpenSearch URL</b>",
-                "Base URL of the Amazon OpenSearch destination.",
+                "Root URL of the Amazon OpenSearch destination.",
+                "Do not include a path, query string, fragment, or embedded credentials.",
                 "Hosted domains usually contain <code>.es.amazonaws.com</code>; serverless collections usually contain <code>.aoss.amazonaws.com</code>.",
                 "Region and deployment type are auto-detected from those hosts when possible.",
                 "",
@@ -3919,7 +3951,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         ));
         Tooltips.apply(elasticSearchUrlField, Tooltips.htmlRaw(
                 "<b>Elasticsearch URL</b>",
-                "Base URL of the Elasticsearch destination.",
+                "Root URL of the Elasticsearch destination.",
+                "Do not include a path, query string, fragment, or embedded credentials.",
                 "",
                 "Examples:",
                 "&nbsp;&nbsp;<code>https://my-serverless-elasticsearch-project.es.us-east-1.aws.elastic.cloud</code>",

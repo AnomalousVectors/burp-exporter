@@ -52,6 +52,13 @@ class OpenSearchConnectorTest {
     }
 
     @Test
+    void getClient_withEquivalentRootUrls_returnsSameCachedInstance() {
+        OpenSearchClient a = OpenSearchConnector.getClient("HTTPS://LOCALHOST:443/");
+        OpenSearchClient b = OpenSearchConnector.getClient("https://localhost");
+        assertThat(a).isSameAs(b);
+    }
+
+    @Test
     void getClient_withCredentials_returnsNonNull() {
         OpenSearchClient client = OpenSearchConnector.getClient(DUMMY_URL, "user", "pass");
         assertThat(client).isNotNull();
@@ -67,6 +74,15 @@ class OpenSearchConnectorTest {
     void getClassicHttpClient_withSameKey_returnsSameCachedInstance() {
         CloseableHttpClient a = OpenSearchConnector.getClassicHttpClient(DUMMY_URL, "user", "pass");
         CloseableHttpClient b = OpenSearchConnector.getClassicHttpClient(DUMMY_URL, "user", "pass");
+        assertThat(a).isSameAs(b);
+    }
+
+    @Test
+    void getClassicHttpClient_withEquivalentRootUrls_returnsSameCachedInstance() {
+        CloseableHttpClient a = OpenSearchConnector.getClassicHttpClient(
+                "http://LOCALHOST:80/", "user", "pass");
+        CloseableHttpClient b = OpenSearchConnector.getClassicHttpClient(
+                "http://localhost", "user", "pass");
         assertThat(a).isSameAs(b);
     }
 

@@ -165,7 +165,7 @@ public final class ConfigController {
         ConfigState.SearchDestination selected = destination == null
                 ? ConfigState.SearchDestination.OPEN_SEARCH
                 : destination;
-        Logger.logDebug("[Config] " + selected.displayName() + " test connection requested: " + url);
+        Logger.logDebug("[Config] " + selected.displayName() + " test connection requested.");
         new SwingWorker<String, Void>() {
             @Override protected String doInBackground() {
                 try {

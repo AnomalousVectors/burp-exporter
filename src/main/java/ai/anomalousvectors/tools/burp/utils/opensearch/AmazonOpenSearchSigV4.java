@@ -15,6 +15,7 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDeployment;
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 
 /**
  * Applies AWS Signature Version 4 headers to Amazon OpenSearch HTTP requests.
@@ -95,7 +96,7 @@ public final class AmazonOpenSearchSigV4 {
         }
         SigningContext context = resolveSigningContext(baseUrl);
         byte[] payload = body == null ? new byte[0] : body.clone();
-        URI endpoint = URI.create((baseUrl == null ? "" : baseUrl.trim()).replaceAll("/+$", ""));
+        URI endpoint = SearchEndpoint.parse(baseUrl).uri();
         try {
             Object unsigned = buildSdkRequest(method, path, endpoint, payload);
             Object signedRequest = signSdkRequest(unsigned, context, payload);

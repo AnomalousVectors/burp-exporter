@@ -380,7 +380,8 @@ public final class ConfigDestinationPanel {
 
         String baseUrlTip = Tooltips.htmlRaw(
                 "<b>Base URL</b>",
-                "HTTPS or HTTP base URL for the selected database destination.");
+                "HTTPS or HTTP root URL for the selected database destination.",
+                "Do not include a path, query string, fragment, or embedded credentials.");
         JLabel baseUrlLabel = Tooltips.label("Base URL:", baseUrlTip);
         baseUrlLabel.setName(baseUrlLabelName);
         Tooltips.apply(urlField, baseUrlTip);

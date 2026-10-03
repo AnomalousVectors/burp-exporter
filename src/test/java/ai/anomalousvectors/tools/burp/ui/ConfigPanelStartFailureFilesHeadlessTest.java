@@ -279,7 +279,7 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                     openSearchEnabled.doClick();
                 }
                 JTextField openSearchUrlField = JTextField.class.cast(get(p, "openSearchUrlField"));
-                openSearchUrlField.setText("https://[");
+                openSearchUrlField.setText("http://127.0.0.1:1");
                 ref.set(p);
             });
             ConfigPanel panel = Objects.requireNonNull(ref.get());

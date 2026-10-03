@@ -60,10 +60,29 @@ public final class SearchConnectionTester {
      * @throws NullPointerException if {@code destination} is null
      */
     public static SearchConnectionStatus safeTestConnection(ConfigState.SearchDestination destination, String baseUrl) {
+        SearchEndpoint endpoint;
+        try {
+            endpoint = SearchEndpoint.parse(baseUrl);
+        } catch (IllegalArgumentException e) {
+            String product = destination.displayName();
+            Logger.logWarnPanelOnly("[" + product + "] Test connection skipped: " + e.getMessage());
+            return new SearchConnectionStatus(
+                    product,
+                    false,
+                    "",
+                    "",
+                    "",
+                    e.getMessage(),
+                    "Failed",
+                    "Not tested",
+                    "Not tested");
+        }
+        String canonicalBaseUrl = endpoint.baseUrl();
         return switch (destination) {
-            case OPEN_SEARCH -> OpenSearchClientWrapper.safeTestConnection(baseUrl, OpenSearchAuth.fromRuntime());
-            case OPEN_SEARCH_AMAZON -> safeTestOpenSearchAmazonConnection(baseUrl);
-            case ELASTICSEARCH -> safeTestElasticsearchConnection(baseUrl);
+            case OPEN_SEARCH -> OpenSearchClientWrapper.safeTestConnection(
+                    canonicalBaseUrl, OpenSearchAuth.fromRuntime());
+            case OPEN_SEARCH_AMAZON -> safeTestOpenSearchAmazonConnection(canonicalBaseUrl);
+            case ELASTICSEARCH -> safeTestElasticsearchConnection(canonicalBaseUrl);
         };
     }
 

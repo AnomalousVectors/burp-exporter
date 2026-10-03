@@ -1,6 +1,5 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
-import java.net.URI;
 import java.util.concurrent.Future;
 
 import org.apache.hc.client5.http.async.methods.SimpleHttpRequest;
@@ -19,6 +18,7 @@ import org.apache.hc.core5.util.Timeout;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 
 /**
  * Performs a raw HTTP GET to the OpenSearch root (/) with the same auth, SSL, and
@@ -78,22 +78,24 @@ public final class OpenSearchRawGet {
      */
     public static RawGetResult performRawGet(String baseUrl, OpenSearchAuth auth) {
         OpenSearchAuth resolvedAuth = auth == null ? OpenSearchAuth.none() : auth;
-        String normalized = baseUrl == null ? "" : baseUrl.replaceFirst("^\\s+", "").trim().replaceAll("/+$", "");
         String authForLog = resolvedAuth.redactedAuthorizationForLog();
-        if (normalized.isEmpty()) {
+        SearchEndpoint endpoint;
+        try {
+            endpoint = SearchEndpoint.parse(baseUrl);
+        } catch (IllegalArgumentException e) {
             String reqLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", "/", null, authForLog);
-            return new RawGetResult(0, null, "Invalid base URL", "", reqLog, java.util.List.of());
+            return new RawGetResult(0, null, e.getMessage(), "", reqLog, java.util.List.of());
         }
         if (!resolvedAuth.isComplete()) {
-            String reqLog = OpenSearchLogFormat.formatRequestForLog("GET", "/", normalized + "/", null, authForLog);
+            String reqLog = OpenSearchLogFormat.formatRequestForLog(
+                    "GET", "/", endpoint.baseUrl(), null, authForLog);
             return new RawGetResult(0, null, resolvedAuth.validationMessage(), "", reqLog, java.util.List.of());
         }
-        String requestUri = normalized + "/";
+        String requestUri = endpoint.resolve("/").toString();
         boolean insecure = OpenSearchConnector.isInsecureEnabled();
         try {
-            URI uri = URI.create(requestUri);
-            HttpHost host = new HttpHost(uri.getScheme(), uri.getHost(), uri.getPort());
-            if ("https".equalsIgnoreCase(uri.getScheme())
+            HttpHost host = new HttpHost(endpoint.scheme(), endpoint.host(), endpoint.port());
+            if ("https".equals(endpoint.scheme())
                     && OpenSearchTlsSupport.isPinnedMode()
                     && !OpenSearchTlsSupport.hasPinnedCertificate()) {
                 Logger.logErrorPanelOnly("[OpenSearch] TLS mode requires a pinned certificate, but none is imported.");

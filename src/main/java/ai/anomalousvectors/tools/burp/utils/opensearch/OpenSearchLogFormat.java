@@ -1,9 +1,10 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
-import java.net.URI;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 
 /**
  * Shared formatting for search-database HTTP request/response logging.
@@ -54,11 +55,7 @@ public final class OpenSearchLogFormat {
             String method, String path, String baseUrl, String protocol, String redactedAuthorization) {
         String proto = protocol != null && !protocol.isBlank() ? protocol : PROTOCOL_UNKNOWN;
         try {
-            URI uri = URI.create(baseUrl.replaceFirst("^\\s+", "").trim());
-            String host = uri.getHost() != null ? uri.getHost() : "";
-            if (uri.getPort() > 0 && uri.getPort() != (uri.getScheme() != null && "https".equals(uri.getScheme()) ? 443 : 80)) {
-                host = host + ":" + uri.getPort();
-            }
+            String host = SearchEndpoint.parse(baseUrl).authority();
             StringBuilder sb = new StringBuilder();
             sb.append(method).append(" ").append(path).append(" ").append(proto).append("\nHost: ").append(host);
             if (redactedAuthorization != null && !redactedAuthorization.isBlank()) {

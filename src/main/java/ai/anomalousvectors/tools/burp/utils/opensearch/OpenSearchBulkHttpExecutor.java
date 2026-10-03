@@ -24,6 +24,7 @@ import org.apache.hc.core5.http.io.support.ClassicResponseBuilder;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 
@@ -164,8 +165,7 @@ final class OpenSearchBulkHttpExecutor {
             byte[] ndjson,
             OpenSearchAuth auth,
             BulkResponseHandler<T> handler) throws IOException {
-        String normalized = baseUrl == null ? "" : baseUrl.trim().replaceAll("/+$", "");
-        URI uri = URI.create(normalized + path);
+        URI uri = SearchEndpoint.parse(baseUrl).resolve(path);
         long requestId = beginRequest(indexName, path, ndjson.length, auth, "120000");
         long startedNanos = System.nanoTime();
         try {
