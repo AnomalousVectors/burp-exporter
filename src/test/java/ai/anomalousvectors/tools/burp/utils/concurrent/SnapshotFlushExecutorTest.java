@@ -128,6 +128,7 @@ class SnapshotFlushExecutorTest {
 
         ExportReporterLifecycle.stopAndClearPendingExportWork();
 
+        awaitThreadsStopped(firstRunThreads);
         assertThat(firstRunThreads).allMatch(thread -> !thread.isAlive());
         assertThat(SnapshotFlushExecutor.stats().flush().poolSize()).isZero();
         assertThat(SnapshotFlushExecutor.stats().dualSink().poolSize()).isZero();
@@ -140,6 +141,7 @@ class SnapshotFlushExecutorTest {
         assertThat(secondRunThreads).noneMatch(firstRunThreads::contains);
 
         ExportReporterLifecycle.stopAndClearSessionState();
+        awaitThreadsStopped(secondRunThreads);
         assertThat(secondRunThreads).allMatch(thread -> !thread.isAlive());
 
         RuntimeConfig.setExportRunning(true);
@@ -174,6 +176,17 @@ class SnapshotFlushExecutorTest {
         assertThat(coordinatorCompleted.await(5, TimeUnit.SECONDS)).isTrue();
         CompletableFuture.allOf(flush, dualSink).get(5, TimeUnit.SECONDS);
         return threads;
+    }
+
+    private static void awaitThreadsStopped(Iterable<Thread> threads) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+        for (Thread thread : threads) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0L) {
+                return;
+            }
+            thread.join(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining)));
+        }
     }
 
     private CompletableFuture<Void> supplyFlush(Runnable work) {
