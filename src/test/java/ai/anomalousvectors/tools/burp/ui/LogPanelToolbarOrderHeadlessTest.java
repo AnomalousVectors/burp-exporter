@@ -14,20 +14,18 @@ import org.junit.jupiter.api.Test;
 class LogPanelToolbarOrderHeadlessTest {
 
     @Test
-    void toolbarOrdersCopySaveBeforeClear_withoutVerticalSeparators() {
+    void toolbarOrdersCopyBeforeClear_withoutVerticalSeparators() {
         LogPanel panel = LogPanelTestHarness.newPanel();
 
         JButton copy = LogPanelTestHarness.button(panel, "log.copy");
-        JButton save = LogPanelTestHarness.button(panel, "log.save");
         JButton clear = LogPanelTestHarness.button(panel, "log.clear");
         JButton pause = LogPanelTestHarness.button(panel, "log.pause");
 
         assertThat(pause.getText()).isIn("Pause", "Unpause");
 
         Container actionSection = copy.getParent();
-        assertThat(actionSection).isSameAs(save.getParent());
         List<Component> actionComponents = Arrays.asList(actionSection.getComponents());
-        assertThat(actionComponents.indexOf(copy)).isLessThan(actionComponents.indexOf(save));
+        assertThat(actionComponents).containsExactly(copy);
 
         Container trailingSection = pause.getParent();
         assertThat(trailingSection).isSameAs(clear.getParent());

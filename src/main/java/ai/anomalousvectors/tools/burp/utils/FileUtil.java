@@ -239,7 +239,7 @@ public final class FileUtil {
         return p;
     }
 
-    private static long estimatedUtf8Bytes(String content) {
+    static long estimatedUtf8Bytes(String content) {
         return content == null ? 0L : content.getBytes(StandardCharsets.UTF_8).length;
     }
 }

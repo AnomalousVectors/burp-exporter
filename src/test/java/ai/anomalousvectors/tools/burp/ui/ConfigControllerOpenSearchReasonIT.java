@@ -32,8 +32,12 @@ class ConfigControllerOpenSearchReasonIT {
         TestUi ui = new TestUi(done);
         ConfigController cc = new ConfigController(ui);
 
-        cc.testConnectionAsync("http://127.0.0.1:1");
-        assertThat(done.await(3, TimeUnit.SECONDS)).isTrue();
-        assertThat(ui.osMsg).contains("Connection: Failed").containsAnyOf("Details:", "interrupted");
+        try {
+            cc.testConnectionAsync("http://127.0.0.1:1");
+            assertThat(done.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(ui.osMsg).contains("Connection: Failed").containsAnyOf("Details:", "interrupted");
+        } finally {
+            cc.close();
+        }
     }
 }

@@ -15,8 +15,6 @@ import java.awt.event.HierarchyEvent;
 import java.awt.event.HierarchyListener;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
-import java.io.File;
-import java.io.IOException;
 import java.io.Serial;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -31,7 +29,6 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
-import javax.swing.JFileChooser;
 import javax.swing.JLabel;
 import javax.swing.JMenuItem;
 import javax.swing.JPanel;
@@ -58,8 +55,6 @@ import ai.anomalousvectors.tools.burp.ui.text.HighlighterManager;
 import ai.anomalousvectors.tools.burp.ui.text.IndentedWrappedTextAreaUI;
 import ai.anomalousvectors.tools.burp.ui.text.RegexIndicatorBinder;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
-import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
-import ai.anomalousvectors.tools.burp.utils.FileUtil;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -68,7 +63,7 @@ import ai.anomalousvectors.tools.burp.utils.text.TextSearchEngine;
 import net.miginfocom.swing.MigLayout;
 
 /**
- * Log view with level filter, pause autoscroll, clear/copy/save, text filter (case/regex,
+ * Log view with level filter, pause autoscroll, clear/copy, text filter (case/regex,
  * optional exclude via ! toggle), search (case/regex, highlight all, match count), and duplicate compaction.
  *
  * <p><strong>Design:</strong> Coordinates a {@link LogStore} (model) with a {@link LogRenderer} (view).
@@ -188,7 +183,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
      */
     private final transient Timer searchRecomputeTimer;
 
-    /** Constructs and wires the UI (EDT). */
+    /** Constructs and wires the UI. Caller must invoke on the EDT. */
     public LogPanel() {
         setLayout(new BorderLayout());
         setPreferredSize(new Dimension(1200, 600));
@@ -203,7 +198,6 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
         logTextPane.setBackground(UIManager.getColor("TextArea.background"));
         logTextPane.setForeground(UIManager.getColor("TextArea.foreground"));
         renderer = new LogRenderer(logTextPane);
-
         // Highlight painter uses LAF color to integrate visually with theme.
         Color sel = UIManager.getColor("TextField.selectionBackground");
         if (sel == null) sel = UIManager.getColor("TextArea.selectionBackground");
@@ -260,13 +254,10 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
         clearBtn.setName("log.clear");
         JButton copyBtn = new Tooltips.HtmlButton("Copy");
         copyBtn.setName("log.copy");
-        JButton saveBtn = new Tooltips.HtmlButton("Save");
-        saveBtn.setName("log.save");
         ButtonStyles.normalize(searchPrevBtn);
         ButtonStyles.normalize(searchNextBtn);
         ButtonStyles.normalize(clearBtn);
         ButtonStyles.normalize(copyBtn);
-        ButtonStyles.normalize(saveBtn);
         ButtonStyles.normalize(pauseAutoscrollBtn);
         pinPauseButtonWidth();
 
@@ -275,8 +266,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
                 searchNextBtn,
                 pauseAutoscrollBtn,
                 clearBtn,
-                copyBtn,
-                saveBtn
+                copyBtn
         );
 
         // Build toolbar: five compact sections with equal flex gaps between them.
@@ -310,7 +300,6 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
         JPanel actionSection = new JPanel(new MigLayout(MIG_TOOLBAR_SECTION, "", "[]"));
         actionSection.add(copyBtn);
-        actionSection.add(saveBtn, GAP4);
 
         JPanel trailingSection = new JPanel(new MigLayout(MIG_TOOLBAR_SECTION + ", fillx", "", "[]"));
         trailingSection.add(pauseAutoscrollBtn);
@@ -415,8 +404,6 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
         });
 
         copyBtn.addActionListener(e -> copySelectionOrAll());
-        saveBtn.addActionListener(e -> saveVisible());
-
         // Regex indicators (✓/✖). Binder enforces fixed width and glyph-safe font.
         searchIndicatorBinding = RegexIndicatorBinder.bind(
                 searchField, searchRegexToggle, searchCaseToggle, true, searchRegexIndicator
@@ -524,15 +511,13 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
      * @param pauseAutoscrollBtn pause/unpause autoscroll button
      * @param clearBtn      clear action button
      * @param copyBtn       copy action button
-     * @param saveBtn       save action button
      */
     private void assignToolTips(
             JButton searchPrevBtn,
             JButton searchNextBtn,
             JButton pauseAutoscrollBtn,
             JButton clearBtn,
-            JButton copyBtn,
-            JButton saveBtn
+            JButton copyBtn
     ) {
         Tooltips.apply(levelCombo, Tooltips.html("Minimum level to display."));
         Tooltips.apply(pauseAutoscrollBtn, Tooltips.html(
@@ -553,7 +538,6 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
         Tooltips.apply(clearBtn, Tooltips.html("Clear log pane."));
         Tooltips.apply(copyBtn, Tooltips.html("Copy log to clipboard."));
-        Tooltips.apply(saveBtn, Tooltips.html("Save log to file."));
     }
 
     /**
@@ -1130,45 +1114,17 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
         }
     }
 
-    /**
-     * Saves the currently visible log to a user-selected file.
-     *
-     * <p>Caller must invoke on the EDT.</p>
-     */
-    private void saveVisible() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Save Log");
-        String ts = java.time.format.DateTimeFormatter
-                .ofPattern("yyyyMMdd-HHmmss")
-                .format(java.time.LocalDateTime.now());
-        chooser.setSelectedFile(new File("burp-exporter-" + ts + ".log"));
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
-
-        File out = chooser.getSelectedFile();
-        try {
-            String text = logTextPane.getDocument().getText(0, logTextPane.getDocument().getLength());
-            FileUtil.writeStringCreateDirs(out.toPath(), text);
-        } catch (DiskSpaceGuard.LowDiskSpaceException ex) {
-            Logger.logError("[LogPanel] Save failed: " + ex.userMessage());
-        } catch (IOException | javax.swing.text.BadLocationException ex) {
-            Logger.logError("[LogPanel] Save failed: " + ex.getMessage());
-        }
-    }
-
     private JPopupMenu buildContextMenu() {
         JPopupMenu menu = new JPopupMenu();
         JMenuItem copySel = new JMenuItem("Copy selection");
         JMenuItem copyLine = new JMenuItem("Copy current line");
         JMenuItem copyAll = new JMenuItem("Copy all");
-        JMenuItem saveVisible = new JMenuItem("Save visible");
         copySel.addActionListener(e -> copySelection());
         copyLine.addActionListener(e -> copyCurrentLine());
         copyAll.addActionListener(e -> copyAll());
         menu.add(copySel);
         menu.add(copyLine);
         menu.add(copyAll);
-        menu.addSeparator();
-        menu.add(saveVisible);
         return menu;
     }
 }

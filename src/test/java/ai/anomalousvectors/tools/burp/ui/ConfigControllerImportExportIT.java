@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
+import ai.anomalousvectors.tools.burp.utils.WholeFileSave;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigJsonMapper;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -40,7 +41,7 @@ class ConfigControllerImportExportIT {
             }
 
             CountDownLatch exp = exportDone;
-            if (exp != null && message.startsWith("Export")) {
+            if (exp != null && (message.startsWith("Exported") || message.startsWith("Export failed"))) {
                 exp.countDown();
             }
 
@@ -69,21 +70,24 @@ class ConfigControllerImportExportIT {
 
         TestUi ui = new TestUi();
         ConfigController cc = new ConfigController(ui);
+        try {
+            CountDownLatch exportDone = new CountDownLatch(1);
+            ui.setExportLatch(exportDone);
 
-        CountDownLatch exportDone = new CountDownLatch(1);
-        ui.setExportLatch(exportDone);
+            cc.exportConfigAsync(tmp, json, WholeFileSave.Replacement.REPLACE_EXISTING);
+            assertThat(exportDone.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(ui.control).contains("Exported");
 
-        cc.exportConfigAsync(tmp, json);
-        assertThat(exportDone.await(3, TimeUnit.SECONDS)).isTrue();
-        assertThat(ui.control).contains("Exported");
+            CountDownLatch importDone = new CountDownLatch(1);
+            ui.control = null;
+            ui.setImportLatch(importDone);
 
-        CountDownLatch importDone = new CountDownLatch(1);
-        ui.control = null;
-        ui.setImportLatch(importDone);
-
-        cc.importConfigAsync(tmp);
-        assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
-        assertThat(ui.control).contains("Imported");
+            cc.importConfigAsync(tmp);
+            assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(ui.control).contains("Imported");
+        } finally {
+            cc.close();
+        }
     }
 
     @Test
@@ -105,11 +109,15 @@ class ConfigControllerImportExportIT {
         CountDownLatch importDone = new CountDownLatch(1);
         ui.setImportLatch(importDone);
 
-        cc.importConfigAsync(tmp);
-        assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
-        assertThat(ui.control).contains("Import failed:");
-        assertThat(ui.control).contains("sinks.database");
-        assertThat(ui.control).contains("sinks.database.openSearch.url");
+        try {
+            cc.importConfigAsync(tmp);
+            assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(ui.control).contains("Import failed:");
+            assertThat(ui.control).contains("sinks.database");
+            assertThat(ui.control).contains("sinks.database.openSearch.url");
+        } finally {
+            cc.close();
+        }
     }
 
     @Test
@@ -135,12 +143,16 @@ class ConfigControllerImportExportIT {
         CountDownLatch importDone = new CountDownLatch(1);
         ui.setImportLatch(importDone);
 
-        cc.importConfigAsync(tmp);
-        assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
-        assertThat(ui.control).contains("Imported configuration from:");
-        assertThat(ui.control).contains("not recognized and were skipped");
-        assertThat(ui.control).contains("sinks.files.limit");
-        assertThat(ui.control).contains("All other settings were applied");
+        try {
+            cc.importConfigAsync(tmp);
+            assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(ui.control).contains("Imported configuration from:");
+            assertThat(ui.control).contains("not recognized and were skipped");
+            assertThat(ui.control).contains("sinks.files.limit");
+            assertThat(ui.control).contains("All other settings were applied");
+        } finally {
+            cc.close();
+        }
     }
 
     @Test
@@ -164,11 +176,12 @@ class ConfigControllerImportExportIT {
             DiskSpaceGuard.resetForTests();
             DiskSpaceGuard.setUsableSpaceOverride(path -> DiskSpaceGuard.MIN_FREE_BYTES - 1);
 
-            cc.exportConfigAsync(tmp, json);
+            cc.exportConfigAsync(tmp, json, WholeFileSave.Replacement.REPLACE_EXISTING);
             assertThat(exportDone.await(3, TimeUnit.SECONDS)).isTrue();
             assertThat(ui.control).isEqualTo("Export failed: Write cancelled due to low disk space");
         } finally {
             DiskSpaceGuard.resetForTests();
+            cc.close();
         }
     }
 }

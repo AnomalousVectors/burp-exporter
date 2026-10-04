@@ -22,19 +22,14 @@ class LogPanelContextMenuHeadlessTest {
         // 0: "Copy selection"
         // 1: "Copy current line"
         // 2: "Copy all"
-        // 3: separator
-        // 4: "Save visible"
-        assertThat(menu.getComponentCount()).isGreaterThanOrEqualTo(5);
+        assertThat(menu.getComponentCount()).isEqualTo(3);
 
         JMenuItem i0 = (JMenuItem) menu.getComponent(0);
         JMenuItem i1 = (JMenuItem) menu.getComponent(1);
         JMenuItem i2 = (JMenuItem) menu.getComponent(2);
-        // index 3 is a JSeparator
-        JMenuItem i4 = (JMenuItem) menu.getComponent(4);
 
         assertThat(i0.getText()).isEqualTo("Copy selection");
         assertThat(i1.getText()).isEqualTo("Copy current line");
         assertThat(i2.getText()).isEqualTo("Copy all");
-        assertThat(i4.getText()).isEqualTo("Save visible");
     }
 }

@@ -32,8 +32,12 @@ class ConfigControllerOpenSearchErrorIT {
         TestUi ui = new TestUi(done);
         ConfigController cc = new ConfigController(ui);
 
-        cc.testConnectionAsync("http://127.0.0.1:1"); // expected to fail quickly
-        assertThat(done.await(3, TimeUnit.SECONDS)).isTrue();
-        assertThat(ui.osMsg).contains("Connection: Failed").contains("Details:").isNotEmpty();
+        try {
+            cc.testConnectionAsync("http://127.0.0.1:1"); // expected to fail quickly
+            assertThat(done.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(ui.osMsg).contains("Connection: Failed").contains("Details:").isNotEmpty();
+        } finally {
+            cc.close();
+        }
     }
 }

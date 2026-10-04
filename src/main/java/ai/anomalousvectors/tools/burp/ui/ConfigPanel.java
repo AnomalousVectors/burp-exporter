@@ -1740,7 +1740,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         }
     }
 
-    /* ----------------------- Import plumbing (not Ui) ----------------------- */
+    /* ----------------------- Import plumbing ----------------------- */
 
     /**
      * Applies an imported state to the UI.
@@ -1751,6 +1751,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      *
      * @param state imported configuration; must not be {@code null}
      */
+    @Override
     public void onImportResult(ConfigState.State state) {
         Runnable r = () -> {
             settingsCheckbox.setSelected(state.dataSources().contains(ConfigKeys.SRC_SETTINGS));
@@ -3661,7 +3662,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * Prompts for a save location and exports the current config to JSON asynchronously.
      *
      * <p>EDT only. Uses {@link FileUtil#ensureJsonExtension(java.io.File)} to normalize the file
-     * name before delegating to {@link ConfigController#exportConfigAsync(java.nio.file.Path, String)}.</p>
+     * name and confirms replacement before delegating to
+     * {@link ConfigController#exportConfigAsync(java.nio.file.Path, String,
+     * ai.anomalousvectors.tools.burp.utils.WholeFileSave.Replacement)}.</p>
      */
     private void exportConfig() {
         ConfigState.State currentState = buildCurrentState();
@@ -3681,7 +3684,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         int result = chooser.showSaveDialog(this);
         if (result != JFileChooser.APPROVE_OPTION) { onControlStatus("Export cancelled."); return; }
         Path out = FileUtil.ensureJsonExtension(chooser.getSelectedFile()).toPath();
-        controller().exportConfigAsync(out, json);
+        var replacement = WholeFileSaveDialogs.confirmReplacement(this, out);
+        if (replacement.isEmpty()) {
+            onControlStatus("Export cancelled.");
+            return;
+        }
+        controller().exportConfigAsync(out, json, replacement.get());
     }
 
     /**
@@ -4010,6 +4018,22 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             controller = new ConfigController(this);
         }
         return controller;
+    }
+
+    /**
+     * Cancels Config UI operations when Burp removes this panel from the display hierarchy.
+     *
+     * <p>A later action after reattachment lazily creates a fresh controller. Ordinary Export
+     * Stop does not invoke this lifecycle hook and therefore does not cancel Config operations.</p>
+     */
+    @Override
+    public void removeNotify() {
+        ConfigController current = controller;
+        controller = null;
+        if (current != null) {
+            current.close();
+        }
+        super.removeNotify();
     }
 
     /** Rebuild transient collaborators after deserialization. */

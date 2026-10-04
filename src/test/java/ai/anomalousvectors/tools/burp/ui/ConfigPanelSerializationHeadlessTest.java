@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.testutils.Reflect;
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
+import ai.anomalousvectors.tools.burp.utils.WholeFileSave;
 
 /**
  * Validates that a restored {@link ConfigPanel} recreates its transient controller
@@ -43,21 +44,28 @@ class ConfigPanelSerializationHeadlessTest {
 
         // Drive Export through the fresh controller on the restored panel.
         ConfigController ctrl = controllerOf(restored);
-        ctrl.exportConfigAsync(TestPathSupport.createFile("config-panel-serialization", ".json"), "{}");
+        try {
+            ctrl.exportConfigAsync(
+                    TestPathSupport.createFile("config-panel-serialization", ".json"),
+                    "{}",
+                    WholeFileSave.Replacement.REPLACE_EXISTING);
 
-        // Await the creation and population of the control text area.
-        AtomicReference<JTextArea> areaRef = new AtomicReference<>();
-        await(() -> {
-            JTextArea ta = (JTextArea) findFirst(wrapper, JTextArea.class);
-            if (ta == null) return false;
-            areaRef.set(ta);
-            String txt = ta.getText();
-            return txt != null && !txt.isBlank();
-        });
+            // Await the creation and population of the control text area.
+            AtomicReference<JTextArea> areaRef = new AtomicReference<>();
+            await(() -> {
+                JTextArea ta = (JTextArea) findFirst(wrapper, JTextArea.class);
+                if (ta == null) return false;
+                areaRef.set(ta);
+                String txt = ta.getText();
+                return txt != null && txt.contains("Exported configuration");
+            });
 
-        JTextArea controlArea = areaRef.get();
-        assertThat(controlArea).as("the control status area").isNotNull();
-        assertThat(controlArea.getText()).contains("Exported configuration");
+            JTextArea controlArea = areaRef.get();
+            assertThat(controlArea).as("the control status area").isNotNull();
+            assertThat(controlArea.getText()).contains("Exported configuration");
+        } finally {
+            ctrl.close();
+        }
     }
 
     // ---- helpers ----
