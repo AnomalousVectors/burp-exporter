@@ -75,6 +75,7 @@ class StartupSnapshotCoordinatorTest {
         StartupSnapshotCoordinator.cancelRun(oldToken);
         StartupSnapshotCoordinator.activateRun(oldToken);
         assertThat(StartupSnapshotCoordinator.awaitIdle(oldToken, 2_000L)).isTrue();
+        assertThat(StartupSnapshotCoordinator.shutdownRun(oldToken, 2_000L)).isTrue();
 
         RuntimeConfig.setExportRunning(true);
         ExportRunToken newToken = RuntimeConfig.currentExportRunToken();
@@ -96,6 +97,7 @@ class StartupSnapshotCoordinatorTest {
     void cancelRunMakesActiveStepObserveStopAndAwaitIdleCompletes() throws Exception {
         RuntimeConfig.setExportRunning(true);
         ExportRunToken token = RuntimeConfig.currentExportRunToken();
+        StartupSnapshotCoordinator.beginRun(token);
         CountDownLatch started = new CountDownLatch(1);
         CountDownLatch exited = new CountDownLatch(1);
         StartupSnapshotCoordinator.submit(
@@ -109,6 +111,7 @@ class StartupSnapshotCoordinatorTest {
                     }
                     exited.countDown();
                 });
+        StartupSnapshotCoordinator.activateRun(token);
 
         assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
         RuntimeConfig.setExportRunning(false);

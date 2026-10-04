@@ -21,6 +21,8 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.testutils.Reflect;
 import ai.anomalousvectors.tools.burp.ui.ConfigPanel;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
+import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
@@ -29,9 +31,13 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
  * Proves that every extension-owned background worker terminates deterministically when its
  * {@code stop()} / {@code shutdown} entry point is invoked.
  *
- * <p>Covers the five owners enumerated during the BApp Store acceptance-criteria audit:
+ * <p>This class covers the five owners enumerated during the initial BApp Store
+ * acceptance-criteria audit:
  * {@link TrafficHttpHandlerSupport}, {@link TrafficExportQueue}, {@link ProxyHistoryIndexReporter},
- * {@link IndexingRetryCoordinator}, and {@link ConfigPanel}'s static startup executor.</p>
+ * {@link IndexingRetryCoordinator}, and {@link ConfigPanel}'s static startup executor. The
+ * run-scoped {@link StartupSnapshotCoordinator} and both {@link SnapshotFlushExecutor} pool
+ * families have their coordinated Stop/Start/unload/reload coverage in the concurrent lifecycle
+ * tests.</p>
  */
 class WorkerShutdownTest {
 

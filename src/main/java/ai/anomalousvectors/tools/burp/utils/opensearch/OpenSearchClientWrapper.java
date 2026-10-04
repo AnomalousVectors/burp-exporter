@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.RejectedExecutionException;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -320,10 +321,11 @@ public class OpenSearchClientWrapper {
         return ExportRunContext.call(
                 token,
                 () -> pushPreparedBulkForRun(
-                        baseUrl, indexName, indexKey, preparedDocuments));
+                        token, baseUrl, indexName, indexKey, preparedDocuments));
     }
 
     private static BulkPushOutcome pushPreparedBulkForRun(
+            RuntimeConfig.ExportRunToken token,
             String baseUrl,
             String indexName,
             String indexKey,
@@ -337,7 +339,8 @@ public class OpenSearchClientWrapper {
                 && baseUrl != null
                 && !baseUrl.isBlank();
         if (fileActive && openSearchActive) {
-            return pushPreparedBulkDualSink(baseUrl, indexName, indexKey, preparedDocuments, attempted);
+            return pushPreparedBulkDualSink(
+                    token, baseUrl, indexName, indexKey, preparedDocuments, attempted);
         }
         if (fileActive) {
             long fileStartNs = System.nanoTime();
@@ -349,6 +352,7 @@ public class OpenSearchClientWrapper {
     }
 
     private static BulkPushOutcome pushPreparedBulkDualSink(
+            RuntimeConfig.ExportRunToken token,
             String baseUrl,
             String indexName,
             String indexKey,
@@ -374,14 +378,24 @@ public class OpenSearchClientWrapper {
                     fileFlushMs,
                     openSearchOutcome.openSearchFlushMs());
         }
-        CompletableFuture<Long> fileFuture = CompletableFuture.supplyAsync(() -> {
-            long startNs = System.nanoTime();
-            FileExportService.emitPreparedChunk(preparedDocuments);
-            return (System.nanoTime() - startNs) / 1_000_000L;
-        }, SnapshotFlushExecutor.dualSinkExecutor());
-        CompletableFuture<BulkPushOutcome> openSearchFuture = CompletableFuture.supplyAsync(
-                () -> pushPreparedBulkOpenSearchOnly(baseUrl, indexName, indexKey, preparedDocuments, attempted),
-                SnapshotFlushExecutor.dualSinkExecutor());
+        CompletableFuture<Long> fileFuture;
+        CompletableFuture<BulkPushOutcome> openSearchFuture;
+        try {
+            fileFuture = SnapshotFlushExecutor.supplyDualSinkAsync(token, () -> {
+                long startNs = System.nanoTime();
+                FileExportService.emitPreparedChunk(preparedDocuments);
+                return (System.nanoTime() - startNs) / 1_000_000L;
+            });
+            openSearchFuture = SnapshotFlushExecutor.supplyDualSinkAsync(
+                    token,
+                    () -> pushPreparedBulkOpenSearchOnly(
+                            baseUrl, indexName, indexKey, preparedDocuments, attempted));
+        } catch (RejectedExecutionException e) {
+            if (!RuntimeConfig.isExportRunActive(token)) {
+                return BulkPushOutcome.empty();
+            }
+            throw e;
+        }
         try {
             long fileFlushMs = fileFuture.get();
             BulkPushOutcome openSearchOutcome = openSearchFuture.get();

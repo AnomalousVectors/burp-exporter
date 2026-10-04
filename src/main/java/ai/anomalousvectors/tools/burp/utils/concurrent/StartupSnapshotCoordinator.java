@@ -6,6 +6,7 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -53,11 +54,9 @@ public final class StartupSnapshotCoordinator {
     private static final long TARGET_DEADBAND_MS = 2_250L;
     private static final long SEVERE_OVERRUN_MS = TARGET_SLICE_MS * 3L;
     private static final double PROFILE_WEIGHT = 0.25d;
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread thread = new Thread(r, "burp-exporter-startup-snapshot");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private static ExecutorService executor;
+    private static ExportRunToken activeRun;
+    private static long workerGeneration;
     private static int nextLane;
     private static boolean workerScheduled;
     private static QueuedStep runningStep;
@@ -86,6 +85,9 @@ public final class StartupSnapshotCoordinator {
             return;
         }
         synchronized (LOCK) {
+            if (!claimRunLocked(token)) {
+                return;
+            }
             heldRun = token;
             nextLane = 0;
             resetSliceTargetsLocked();
@@ -131,6 +133,9 @@ public final class StartupSnapshotCoordinator {
         }
         String name = stepName == null || stepName.isBlank() ? lane.name() : stepName.trim();
         synchronized (LOCK) {
+            if (!claimRunLocked(token)) {
+                return;
+            }
             QUEUES.get(lane).addLast(new QueuedStep(token, name, step));
             if (!token.equals(heldRun)) {
                 scheduleWorkerLocked();
@@ -271,35 +276,129 @@ public final class StartupSnapshotCoordinator {
     }
 
     /**
-     * Clears queued work, dispatch holds, and adaptive profiles for deterministic tests.
+     * Stops the coordinator executor when {@code token} still owns it.
      *
-     * <p>This test seam does not interrupt a step that is already running or clear its
-     * {@code runningStep} marker; callers must first ensure active work has completed.</p>
+     * <p>Queued work is discarded and a running step is interrupted through executor shutdown.
+     * The executor reference is detached before waiting so a later Start can create a fresh worker.
+     * Repeated calls are harmless.</p>
+     *
+     * @param token run whose coordinator should stop
+     * @param timeoutMs maximum termination wait in milliseconds
+     * @return {@code true} when the retired executor terminated within the budget
+     */
+    public static boolean shutdownRun(ExportRunToken token, long timeoutMs) {
+        ExecutorService retired;
+        synchronized (LOCK) {
+            if (activeRun == null || token == null || !token.equals(activeRun)) {
+                return true;
+            }
+            activeRun = null;
+            heldRun = null;
+            for (ArrayDeque<QueuedStep> queue : QUEUES.values()) {
+                queue.clear();
+            }
+            retired = executor;
+            executor = null;
+            runningStep = null;
+            workerScheduled = false;
+            workerGeneration++;
+            LOCK.notifyAll();
+        }
+        if (retired == null) {
+            return true;
+        }
+        retired.shutdownNow();
+        if (timeoutMs <= 0L) {
+            return retired.isTerminated();
+        }
+        try {
+            return retired.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    /**
+     * Stops the executor and clears coordinator state for deterministic tests.
      */
     public static void resetForTests() {
+        ExecutorService retired;
         synchronized (LOCK) {
+            activeRun = null;
             for (ArrayDeque<QueuedStep> queue : QUEUES.values()) {
                 queue.clear();
             }
             heldRun = null;
+            retired = executor;
+            executor = null;
+            runningStep = null;
+            workerScheduled = false;
+            workerGeneration++;
             nextLane = 0;
             resetSliceTargetsLocked();
             LOCK.notifyAll();
         }
+        Workers.awaitExecutorShutdown(retired, Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS);
+        SnapshotFlushExecutor.resetForTests();
     }
 
     private static void scheduleWorkerLocked() {
-        if (workerScheduled || heldRun != null || !hasAnyQueuedLocked()) {
+        if (workerScheduled
+                || heldRun != null
+                || activeRun == null
+                || !RuntimeConfig.isExportRunActive(activeRun)
+                || !hasAnyQueuedLocked()) {
             return;
         }
+        if (executor == null) {
+            executor = newCoordinatorExecutor();
+        }
         workerScheduled = true;
-        EXECUTOR.execute(StartupSnapshotCoordinator::drain);
+        long generation = workerGeneration;
+        try {
+            executor.execute(() -> drain(generation));
+        } catch (RejectedExecutionException e) {
+            workerScheduled = false;
+            if (RuntimeConfig.isExportRunActive(activeRun)) {
+                throw e;
+            }
+        }
     }
 
-    private static void drain() {
+    private static boolean claimRunLocked(ExportRunToken token) {
+        if (token.equals(activeRun)) {
+            return true;
+        }
+        if (activeRun != null && RuntimeConfig.isExportRunActive(activeRun)) {
+            return false;
+        }
+        ExecutorService retired = executor;
+        executor = null;
+        for (ArrayDeque<QueuedStep> queue : QUEUES.values()) {
+            queue.clear();
+        }
+        heldRun = null;
+        runningStep = null;
+        workerScheduled = false;
+        workerGeneration++;
+        activeRun = token;
+        nextLane = 0;
+        resetSliceTargetsLocked();
+        if (retired != null) {
+            retired.shutdownNow();
+        }
+        LOCK.notifyAll();
+        return true;
+    }
+
+    private static void drain(long generation) {
         while (true) {
             QueuedStep step;
             synchronized (LOCK) {
+                if (generation != workerGeneration) {
+                    return;
+                }
                 removeStaleLocked();
                 if (heldRun != null) {
                     workerScheduled = false;
@@ -326,10 +425,23 @@ public final class StartupSnapshotCoordinator {
                 }
             }
             synchronized (LOCK) {
-                runningStep = null;
+                if (generation != workerGeneration) {
+                    return;
+                }
+                if (runningStep == step) {
+                    runningStep = null;
+                }
                 LOCK.notifyAll();
             }
         }
+    }
+
+    private static ExecutorService newCoordinatorExecutor() {
+        return Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "burp-exporter-startup-snapshot");
+            thread.setDaemon(true);
+            return thread;
+        });
     }
 
     private static void awaitAuthorizationRecovery(ExportRunToken token) {

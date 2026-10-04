@@ -8,11 +8,14 @@ import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
+import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
+import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
 
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -94,11 +97,43 @@ public final class ExportReporterLifecycle {
         TrafficLiveAttributionSummary.clearRunState();
         clearRepeaterRunState();
         TrafficExportQueue.stopWorker();
+        shutdownSnapshotWorkers(token, Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS);
         TrafficExportQueue.clearPendingWork();
         IndexingRetryCoordinator.getInstance().stopDrainThread();
         IndexingRetryCoordinator.getInstance().clearPendingWork();
         FileExportService.validateRunArtifacts();
         FileExportService.resetForRuntime();
+    }
+
+    /**
+     * Stops all run-scoped snapshot executors within one shared termination budget.
+     *
+     * <p>The coordinator retires first so it cannot submit more chunk work while the two flush
+     * pools are stopping. Repeated calls and calls for a run that no longer owns the workers are
+     * harmless.</p>
+     *
+     * @param token run whose snapshot workers should stop
+     * @param timeoutMs total termination budget in milliseconds
+     * @return {@code true} when the coordinator and both flush pools terminated in time
+     */
+    public static boolean shutdownSnapshotWorkers(ExportRunToken token, long timeoutMs) {
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        boolean coordinatorStopped = StartupSnapshotCoordinator.shutdownRun(
+                token,
+                remainingMillis(deadline));
+        boolean flushPoolsStopped = SnapshotFlushExecutor.shutdownRun(
+                token,
+                remainingMillis(deadline));
+        return coordinatorStopped && flushPoolsStopped;
+    }
+
+    private static long remainingMillis(long deadlineNanos) {
+        long remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0L) {
+            return 0L;
+        }
+        return Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remaining));
     }
 
     /**

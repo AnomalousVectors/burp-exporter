@@ -88,8 +88,9 @@ import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileUtil;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
-import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
+import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
+import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigJsonMapper;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -860,7 +861,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                         forceAborted = true;
                         RuntimeConfig.requestExportStopForceAbort();
                         Logger.logWarnPanelOnly(
-                                "[Export] Startup snapshot cancellation exceeded the Stop UX budget.");
+                                    "[Export] Startup snapshot cancellation exceeded the Stop UX budget.");
                     }
                 }
                 boolean trafficDrained = isStopForceAbortRequested()
@@ -876,6 +877,15 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 }
                 RuntimeConfig.setExportRunning(false);
                 TrafficExportQueue.stopWorker(RuntimeConfig.remainingExportStopBudgetMs());
+                long snapshotShutdownMs = Math.max(
+                        Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS,
+                        RuntimeConfig.remainingExportStopBudgetMs());
+                if (!ExportReporterLifecycle.shutdownSnapshotWorkers(stoppedRun, snapshotShutdownMs)) {
+                    forceAborted = true;
+                    RuntimeConfig.requestExportStopForceAbort();
+                    Logger.logWarnPanelOnly(
+                            "[Export] Snapshot workers did not terminate within the shutdown budget.");
+                }
                 TrafficLiveAttributionSummary.logAndClearForCurrentRun();
                 postStopProgress(callbacks, ExportShutdownStatus.clearingQueuedTrafficMessage(snapshot));
                 ExportReporterLifecycle.clearRepeaterRunState();
@@ -1096,6 +1106,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 + summarizeSelectedDestinations(filesSelected, databaseSelected) + ".");
         emitTemporaryCredentialAdvisoryIfNeeded();
         RuntimeConfig.setExportRunning(true);
+        SnapshotFlushExecutor.beginRun(runToken);
         StartupSnapshotCoordinator.beginRun(runToken);
         RepeaterTabsIndexReporter.clearRunState();
         TrafficStartupBacklogSummary.startForCurrentRun(runToken);

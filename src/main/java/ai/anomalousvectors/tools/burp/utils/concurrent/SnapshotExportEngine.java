@@ -393,6 +393,9 @@ public final class SnapshotExportEngine {
         if (!RuntimeConfig.isExportRunActive(token)) {
             return new Result(0, 0, 0, 0, 0L, 0L, 0L, 0L, initialChunkTarget, Math.max(1, buildWorkers));
         }
+        if (!SnapshotFlushExecutor.beginRun(token)) {
+            return new Result(0, 0, 0, 0, 0L, 0L, 0L, 0L, initialChunkTarget, Math.max(1, buildWorkers));
+        }
         RunCancellation cancellation = new RunCancellation(Thread.currentThread());
         ACTIVE_RUNS.put(token.generation(), cancellation);
         boolean acquired = false;
@@ -874,7 +877,8 @@ public final class SnapshotExportEngine {
             }
             int currentTarget = chunkTarget;
             int sequence = assignSequence++;
-            CompletableFuture<FlushOutcome> future = CompletableFuture.supplyAsync(
+            CompletableFuture<FlushOutcome> future = SnapshotFlushExecutor.supplyFlushAsync(
+                    token,
                     () -> {
                         cancellation.flushStarted();
                         try {
@@ -891,8 +895,7 @@ public final class SnapshotExportEngine {
                         } finally {
                             cancellation.flushFinished();
                         }
-                    },
-                    SnapshotFlushExecutor.flushExecutor());
+                    });
             future = future.exceptionally(error -> isLive(token, cancellation)
                     ? failureFlushOutcome(snapshot, currentTarget, error)
                     : null);
