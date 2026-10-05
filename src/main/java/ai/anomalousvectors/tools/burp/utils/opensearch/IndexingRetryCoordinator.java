@@ -31,6 +31,7 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.export.SearchBodyPrefixFitter;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionStatus;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionTester;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Coordinates search-database retries and bounded fallback queues for failed writes.
@@ -894,7 +895,7 @@ public final class IndexingRetryCoordinator {
         consecutiveFailures.set(0);
         String detail = status == null || status.message() == null || status.message().isBlank()
                 ? "capacity pressure"
-                : status.message();
+                : SearchDiagnosticText.singleLine(status.message(), 180);
         BulkRateLimitBackoff.noteCapacityProbeFailure(detail);
         int queued = queue.totalSize();
         Logger.logWarnPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
@@ -904,7 +905,7 @@ public final class IndexingRetryCoordinator {
                 + " inFlightFlushes=" + BulkByteBudget.maxInFlightFlushes()
                 + " cooldownActive=" + BulkRateLimitBackoff.isCoolingDown()
                 + " pressureStreak=" + BulkRateLimitBackoff.pressureStreak()
-                + " detail=" + detail.replace('\n', ' ').strip() + ".");
+                + " detail=" + detail + ".");
     }
 
     /**
@@ -1145,11 +1146,11 @@ public final class IndexingRetryCoordinator {
         SearchRecoveryBootstrap.RecoveryPreparation preparation =
                 recoveryPreparer.prepare(baseUrl, identityChanged, token);
         if (!preparation.ready()) {
-            authorizationFailureDetail = preparation.detail();
+            authorizationFailureDetail = SearchDiagnosticText.singleLine(preparation.detail(), 180);
             scheduleNextAuthorizationProbe(attempt);
             Logger.logWarnPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
                     + " Authorization returned, but index revalidation is not ready:"
-                    + " detail=" + preparation.detail()
+                    + " detail=" + authorizationFailureDetail
                     + " nextProbeInMs=" + Math.max(0L, nextAuthorizationProbeAtMs - System.currentTimeMillis())
                     + ".");
             postAuthorizationPauseStatus();
@@ -1215,8 +1216,7 @@ public final class IndexingRetryCoordinator {
         if (status == null || status.message() == null || status.message().isBlank()) {
             return "authorization rejected";
         }
-        String detail = status.message().replace('\r', ' ').replace('\n', ' ').strip();
-        return detail.length() <= 180 ? detail : detail.substring(0, 177) + "...";
+        return SearchDiagnosticText.singleLine(status.message(), 180);
     }
 
     private static String normalizeClusterUuid(String clusterUuid) {
@@ -1409,12 +1409,10 @@ public final class IndexingRetryCoordinator {
         String cause = "unknown";
         if (result != null && result.failedItems != null && !result.failedItems.isEmpty()) {
             OpenSearchClientWrapper.FailedItem first = result.failedItems.get(0);
-            String type = first.type() == null ? "" : first.type().trim();
-            String reason = first.reason() == null ? "" : first.reason().trim();
+            String type = SearchDiagnosticText.singleLine(first.type(), 80);
+            String reason = SearchDiagnosticText.singleLine(first.reason(), 160);
             cause = type.isEmpty() ? reason : (reason.isEmpty() ? type : type + ": " + reason);
-            if (cause.length() > 160) {
-                cause = cause.substring(0, 157) + "...";
-            }
+            cause = SearchDiagnosticText.singleLine(cause, 160);
         } else if (result != null && result.breakdown() != null && result.breakdown().failed() > 0) {
             cause = "bulk_item_failures=" + result.breakdown().failed();
         } else {

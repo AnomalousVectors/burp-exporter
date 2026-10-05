@@ -17,6 +17,7 @@ import org.apache.hc.core5.ssl.SSLContextBuilder;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Shared TLS helpers for OpenSearch connectivity, pin import, and trust-mode enforcement.
@@ -279,8 +280,8 @@ public final class OpenSearchTlsSupport {
     /**
      * Returns a trust summary for a destination's failed connection.
      *
-     * <p>The returned string may include {@code detail} verbatim when it appears TLS-related.
-     * Callers must not pass credentials or other secrets in the detail.</p>
+     * <p>The returned string may include a bounded, redacted form of {@code detail} when it appears
+     * TLS-related.</p>
      *
      * @param baseUrl attempted base URL
      * @param detail failure detail; {@code null} becomes blank
@@ -296,7 +297,7 @@ public final class OpenSearchTlsSupport {
         if (ConfigState.OPEN_SEARCH_TLS_PINNED.equals(mode) && !hasPinnedCertificate(destination)) {
             return "Pinned certificate not imported";
         }
-        String safeDetail = detail == null ? "" : detail;
+        String safeDetail = SearchDiagnosticText.singleLine(detail, 512);
         if (looksLikeTrustFailure(safeDetail)) {
             return "Failed: " + safeDetail;
         }

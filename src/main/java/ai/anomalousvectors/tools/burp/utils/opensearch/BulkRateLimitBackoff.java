@@ -14,6 +14,7 @@ import org.apache.hc.core5.http.HttpResponse;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Backoff for search-database bulk HTTP rate limiting and capacity pressure.
@@ -475,14 +476,8 @@ public final class BulkRateLimitBackoff {
     }
 
     private static String truncateDetail(String detail) {
-        if (detail == null || detail.isBlank()) {
-            return "none";
-        }
-        String oneLine = detail.replace('\n', ' ').replace('\r', ' ').strip();
-        if (oneLine.length() <= 160) {
-            return oneLine;
-        }
-        return oneLine.substring(0, 157) + "...";
+        String safe = SearchDiagnosticText.singleLine(detail, 160);
+        return safe.isBlank() ? "none" : safe;
     }
 
     private static boolean extendHardDeadline(long deadlineNanos) {

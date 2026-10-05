@@ -2,9 +2,7 @@ package ai.anomalousvectors.tools.burp.sinks;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.PrintWriter;
 import java.io.StringReader;
-import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -16,7 +14,6 @@ import jakarta.json.Json;
 import jakarta.json.JsonException;
 import jakarta.json.JsonReader;
 import jakarta.json.JsonObject;
-import jakarta.json.JsonWriter;
 import jakarta.json.stream.JsonParser;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.client5.http.classic.methods.HttpHead;
@@ -42,6 +39,7 @@ import ai.anomalousvectors.tools.burp.utils.config.SearchMappingResources;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDeployment;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 import ai.anomalousvectors.tools.burp.utils.search.SearchIndexMappingAdapter;
 
 /**
@@ -252,11 +250,8 @@ public class OpenSearchSink {
             );
 
         } catch (IOException | RuntimeException e) {
-            Logger.logErrorPanelOnly("[" + databaseName + "] Exception while creating index: " + fullIndexName);
-            if (jsonBody != null) Logger.logErrorPanelOnly("[" + databaseName + "] Mapping JSON: " + compactJson(jsonBody));
-            StringWriter sw = new StringWriter();
-            e.printStackTrace(new PrintWriter(sw));
-            Logger.logErrorPanelOnly(sw.toString().stripTrailing());
+            Logger.logErrorPanelOnly("[" + databaseName + "] Exception while creating index "
+                    + fullIndexName + ": " + SearchDiagnosticText.exceptionChain(e));
             String reason = conciseRootCause(e);
             return new IndexResult(shortName, fullIndexName, IndexResult.Status.FAILED, reason);
         }
@@ -311,10 +306,8 @@ public class OpenSearchSink {
             });
         } catch (IOException | RuntimeException e) {
             Logger.logErrorPanelOnly("[" + RuntimeConfig.searchDestinationDisplayName()
-                    + "] Exception while creating index: " + fullIndexName);
-            StringWriter sw = new StringWriter();
-            e.printStackTrace(new PrintWriter(sw));
-            Logger.logErrorPanelOnly(sw.toString().stripTrailing());
+                    + "] Exception while creating index " + fullIndexName + ": "
+                    + SearchDiagnosticText.exceptionChain(e));
             return new IndexResult(shortName, fullIndexName, IndexResult.Status.FAILED, conciseRootCause(e));
         }
     }
@@ -616,19 +609,6 @@ public class OpenSearchSink {
         return ConfigState.DEPLOYMENT_SERVERLESS.equals(resolved);
     }
 
-    /** Serializes mapping JSON to a single line so error logs do not clutter. */
-    private static String compactJson(String json) {
-        if (json == null || json.isBlank()) return json;
-        try (JsonReader reader = Json.createReader(new StringReader(json));
-             StringWriter sw = new StringWriter();
-             JsonWriter writer = Json.createWriter(sw)) {
-            writer.write(reader.read());
-            return sw.toString();
-        } catch (Exception e) {
-            return json;
-        }
-    }
-
     /** Compact root-cause message, capped for UI status. */
     private static String conciseRootCause(Throwable t) {
         Throwable c = t;
@@ -639,12 +619,9 @@ public class OpenSearchSink {
     }
 
     private static String conciseDetail(String detail) {
-        String msg = detail == null || detail.isBlank() ? "unknown error" : detail;
-        msg = msg.replaceAll("[\\r\\n]+", " ").trim();
-        if (msg.length() > 300) {
-            msg = msg.substring(0, 300);
-        }
-        return msg;
+        return SearchDiagnosticText.singleLine(
+                detail == null || detail.isBlank() ? "unknown error" : detail,
+                300);
     }
 
     /**

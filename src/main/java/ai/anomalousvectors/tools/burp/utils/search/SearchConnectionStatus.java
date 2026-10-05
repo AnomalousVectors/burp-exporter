@@ -25,6 +25,20 @@ public record SearchConnectionStatus(
         String trustStatus) {
 
     /**
+     * Normalizes all destination-provided values before they can reach the Config status panel.
+     */
+    public SearchConnectionStatus {
+        productName = SearchDiagnosticText.singleLine(productName, 128);
+        distribution = SearchDiagnosticText.singleLine(distribution, 128);
+        version = SearchDiagnosticText.singleLine(version, 128);
+        clusterUuid = SearchDiagnosticText.singleLine(clusterUuid, 256);
+        message = SearchDiagnosticText.singleLine(message, 1_024);
+        connectionStatus = SearchDiagnosticText.singleLine(connectionStatus, 128);
+        authenticationStatus = SearchDiagnosticText.singleLine(authenticationStatus, 128);
+        trustStatus = SearchDiagnosticText.singleLine(trustStatus, 512);
+    }
+
+    /**
      * Creates a status when the destination does not expose a cluster identity.
      *
      * @param productName operator-facing destination name

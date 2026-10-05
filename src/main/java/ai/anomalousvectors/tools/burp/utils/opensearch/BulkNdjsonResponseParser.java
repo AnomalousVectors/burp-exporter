@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Parses search database bulk NDJSON HTTP response bodies into success and per-item failure details.
@@ -19,8 +20,8 @@ import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
  * <p>Shared by {@link PreparedBulkSender} and {@link ChunkedBulkSender} so snapshot, live, and
  * retry paths emit identical failure logging.</p>
  *
- * <p>Stateless and safe for concurrent callers. Item failure reasons are length-bounded by the
- * logging facade but are not secret-redacted; response bodies must not contain credentials.</p>
+ * <p>Stateless and safe for concurrent callers. Item failure reasons pass through the shared
+ * destination-diagnostic boundary before logging.</p>
  */
 public final class BulkNdjsonResponseParser {
 
@@ -91,7 +92,8 @@ public final class BulkNdjsonResponseParser {
             return parseItems((ArrayNode) items, indexName, responseErrors(root));
         } catch (IOException | RuntimeException e) {
             Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
-                    + " BulkNdjsonResponseParser parse failed: " + e.getMessage());
+                    + " BulkNdjsonResponseParser parse failed: "
+                    + SearchDiagnosticText.singleLine(e.getMessage(), 512));
             return new ParsedBulk(BulkOutcomeBreakdown.empty(), List.of(), null, 0);
         }
     }
@@ -106,7 +108,10 @@ public final class BulkNdjsonResponseParser {
         if (parsed == null || !parsed.hasOutcomeFlagMismatch()) {
             return;
         }
-        String effectiveIndex = indexName == null || indexName.isBlank() ? "unknown" : indexName;
+        String effectiveIndex = SearchDiagnosticText.singleLine(indexName, 256);
+        if (effectiveIndex.isBlank()) {
+            effectiveIndex = "unknown";
+        }
         Logger.logWarnPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
                 + " Bulk response outcome mismatch:"
                 + " requestId=" + requestId
@@ -123,7 +128,10 @@ public final class BulkNdjsonResponseParser {
         int failed = 0;
         List<OpenSearchClientWrapper.FailedItem> failedItems = new ArrayList<>();
         int logged = 0;
-        String effectiveIndex = indexName == null || indexName.isBlank() ? "unknown" : indexName;
+        String effectiveIndex = SearchDiagnosticText.singleLine(indexName, 256);
+        if (effectiveIndex.isBlank()) {
+            effectiveIndex = "unknown";
+        }
 
         for (int i = 0; i < items.size(); i++) {
             JsonNode item = items.get(i);
@@ -149,7 +157,7 @@ public final class BulkNdjsonResponseParser {
                 String reason = err != null && err.has("reason") ? err.get("reason").asText() : "unknown";
                 failedItems.add(new OpenSearchClientWrapper.FailedItem(i, type, reason));
                 if (logged < MAX_LOGGED_FAILURES) {
-                    Logger.logError(OpenSearchClientWrapper.formatBulkItemFailure(effectiveIndex, i, type, reason));
+                    Logger.logDebug(OpenSearchClientWrapper.formatBulkItemFailure(effectiveIndex, i, type, reason));
                     logged++;
                 }
             }
@@ -157,7 +165,7 @@ public final class BulkNdjsonResponseParser {
 
         int totalFailed = failedItems.size();
         if (totalFailed > MAX_LOGGED_FAILURES) {
-            Logger.logError(RuntimeConfig.searchDestinationLogPrefix()
+            Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
                     + " Bulk item failure summary: index=" + effectiveIndex
                     + " additional=" + (totalFailed - MAX_LOGGED_FAILURES)
                     + " totalFailed=" + totalFailed);

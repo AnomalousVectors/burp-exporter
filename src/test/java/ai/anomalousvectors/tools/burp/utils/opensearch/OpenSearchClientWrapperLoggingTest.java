@@ -70,6 +70,29 @@ class OpenSearchClientWrapperLoggingTest {
     }
 
     @Test
+    void failureTrustSummary_normalizesAndRedactsTlsDetail() {
+        RuntimeConfig.updateState(null);
+        String previousOverride = System.getProperty("OPENSEARCH_INSECURE");
+        System.clearProperty("OPENSEARCH_INSECURE");
+        try {
+            String summary = OpenSearchTlsSupport.failureTrustSummary(
+                    "https://opensearch.url:9200",
+                    "SSL failure\r\n[ERROR] forged X-Api-Key: echoed-secret");
+
+            assertThat(summary)
+                    .contains("Failed: SSL failure", "X-Api-Key:", "***")
+                    .doesNotContain("\r", "\n", "echoed-secret");
+        } finally {
+            if (previousOverride == null) {
+                System.clearProperty("OPENSEARCH_INSECURE");
+            } else {
+                System.setProperty("OPENSEARCH_INSECURE", previousOverride);
+            }
+            RuntimeConfig.updateState(null);
+        }
+    }
+
+    @Test
     void logPushOutcome_whenExportStopped_benignShutdown_emitsTraceWithCause() throws Exception {
         Logger.resetState();
         Logger.registerListener(listener);

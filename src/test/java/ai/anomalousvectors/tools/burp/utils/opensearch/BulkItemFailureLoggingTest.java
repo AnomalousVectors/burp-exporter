@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Verifies the per-item bulk-failure observability contract: per-item bulk failures emit a single structured
- * ERROR log line with {@code index=}, {@code op=}, {@code type=}, and {@code reason=} tokens.
+ * DEBUG log line with {@code index=}, {@code op=}, {@code type=}, and {@code reason=} tokens.
  * Covers both the chunked traffic path ({@link ChunkedBulkSender#parseBulkResponse}) and the
  * shared formatter used by {@link OpenSearchClientWrapper}.
  */
@@ -47,7 +47,7 @@ class BulkItemFailureLoggingTest {
                 ChunkedBulkSender.parseBulkResponse(body, 2, List.of(), "tool-burp-traffic"));
 
         assertThat(events).anySatisfy(e -> {
-            assertThat(e.level()).isEqualToIgnoringCase("error");
+            assertThat(e.level()).isEqualToIgnoringCase("debug");
             assertThat(e.message())
                     .contains("[OpenSearch] Bulk item failure:")
                     .contains("index=tool-burp-traffic")
@@ -103,6 +103,21 @@ class BulkItemFailureLoggingTest {
         assertThat(formatted)
                 .contains("type=unknown")
                 .contains("reason=unknown");
+    }
+
+    @Test
+    void formatBulkItemFailure_normalizesLinesAndRemovesFieldValuePreview() {
+        String formatted = OpenSearchClientWrapper.formatBulkItemFailure(
+                "idx\r\nforged-index",
+                0,
+                "mapper\nforged-type",
+                "failed\r\n[ERROR] forged; Preview of field's value: 'captured-secret'");
+
+        assertThat(formatted)
+                .doesNotContain("\r", "\n", "captured-secret")
+                .contains("index=idx forged-index")
+                .contains("type=mapper forged-type")
+                .contains("Preview of field's value: ***");
     }
 
     private record LoggedEvent(String level, String message) {

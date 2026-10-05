@@ -18,6 +18,7 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Periodically pushes exporter stats snapshots to the Exporter index.
@@ -243,7 +244,9 @@ public final class ExporterIndexStatsReporter {
             lastPeriodicFailureDetail = null;
             return ExporterStatsPushOutcome.success();
         } catch (RuntimeException e) {
-            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            String msg = SearchDiagnosticText.singleLine(
+                    e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
+                    1_024);
             if (finalSnapshot || shouldLogPeriodicFailure(RuntimeConfig.isSearchActive(), msg)) {
                 Logger.logWarnPanelOnly(statsFailurePrefix(kind)
                         + "Exporter stats: push failed"

@@ -25,6 +25,7 @@ import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.export.ExportLineCodec;
@@ -306,7 +307,9 @@ public final class ChunkedBulkSender {
                         attemptedTrafficRoutes);
             } catch (IOException | RuntimeException e) {
                 long attemptedBytes = attemptedBytesRef.get();
-                String reason = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                String reason = SearchDiagnosticText.singleLine(
+                        e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
+                        1_024);
                 if (ExportRunContext.allowsRunMutation()) {
                     Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
                             + " ChunkedBulkSender push failed for " + indexName + ": " + reason);
@@ -450,11 +453,8 @@ public final class ChunkedBulkSender {
     }
 
     private static String clampReason(String reason) {
-        if (reason == null || reason.isBlank()) {
-            return "unknown";
-        }
-        String trimmed = reason.trim().replace('\n', ' ');
-        return trimmed.length() <= 160 ? trimmed : trimmed.substring(0, 157) + "...";
+        String safe = SearchDiagnosticText.singleLine(reason, 160);
+        return safe.isBlank() ? "unknown" : safe;
     }
 
     private static Result executeRequest(
@@ -504,7 +504,7 @@ public final class ChunkedBulkSender {
             if (status < 200 || status >= 300) {
                 Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
                         + " ChunkedBulkSender bulk request failed: "
-                        + OpenSearchLogFormat.formatStatusAndIndentedBody(status, responseBody));
+                        + OpenSearchLogFormat.formatStatusAndBodyPreview(status, responseBody));
                 String detail = responseBody != null && responseBody.contains("request body is required")
                         ? " Search database reported an empty bulk request body."
                         : "";

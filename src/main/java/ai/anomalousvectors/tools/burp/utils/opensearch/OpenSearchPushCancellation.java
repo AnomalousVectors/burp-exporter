@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.utils.opensearch;
 
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Classifies OpenSearch push outcomes that are expected when the user stops export or pooled
@@ -77,8 +78,7 @@ public final class OpenSearchPushCancellation {
     /**
      * Returns a short description for TRACE logs when a bulk/document push was cancelled during Stop.
      *
-     * <p>Exception messages are returned verbatim and are not secret-redacted. Callers must use the
-     * result only when the transport exception cannot contain credentials or request bodies.</p>
+     * <p>Exception messages pass through the shared destination-diagnostic boundary.</p>
      *
      * @param throwable push failure; may be {@code null}
      * @return human-readable suffix (never {@code null})
@@ -103,7 +103,9 @@ public final class OpenSearchPushCancellation {
             root = root.getCause();
         }
         String message = root.getMessage();
-        return message == null ? root.getClass().getSimpleName() : message;
+        return SearchDiagnosticText.singleLine(
+                message == null ? root.getClass().getSimpleName() : message,
+                512);
     }
 
     private static boolean matchesBenignShutdownMessage(String message) {

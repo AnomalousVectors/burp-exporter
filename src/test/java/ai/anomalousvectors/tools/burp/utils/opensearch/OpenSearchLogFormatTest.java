@@ -1,6 +1,10 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
+import java.nio.charset.StandardCharsets;
+
 import org.junit.jupiter.api.Test;
+
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -60,8 +64,9 @@ class OpenSearchLogFormatTest {
     }
 
     @Test
-    void buildRawResponseWithHeaders_withNullProtocol_usesVersionUnknown() {
-        String raw = OpenSearchLogFormat.buildRawResponseWithHeaders("", null, 0, "SSLHandshakeException", null);
+    void buildResponsePreviewWithHeaders_withNullProtocol_usesVersionUnknown() {
+        String raw = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
+                "", null, 0, "SSLHandshakeException", null);
         assertThat(raw).startsWith("HTTP (version unknown) 0 SSLHandshakeException");
     }
 
@@ -76,12 +81,33 @@ class OpenSearchLogFormatTest {
     }
 
     @Test
-    void buildRawResponseWithHeaders_usesHeaderLinesWhenProvided() {
-        String raw = OpenSearchLogFormat.buildRawResponseWithHeaders("{}", "HTTP/2.0", 200, "OK", java.util.List.of("Content-Type: application/json", "X-Foo: bar"));
+    void buildResponsePreviewWithHeaders_usesHeaderLinesWhenProvided() {
+        String raw = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
+                "{}",
+                "HTTP/2.0",
+                200,
+                "OK",
+                java.util.List.of("Content-Type: application/json", "X-Foo: bar"));
         assertThat(raw).startsWith("HTTP/2.0 200 OK");
         assertThat(raw).contains("Content-Type: application/json");
         assertThat(raw).contains("X-Foo: bar");
-        assertThat(raw).contains("\n\n{}");
+        assertThat(raw).contains("\n\nBody preview:\n{}");
+    }
+
+    @Test
+    void buildResponsePreviewWithHeaders_boundsCompleteDiagnostic() {
+        String raw = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
+                "body".repeat(4_000),
+                "HTTP/2.0",
+                502,
+                "Bad Gateway",
+                java.util.stream.IntStream.range(0, 100)
+                        .mapToObj(index -> "X-Large-" + index + ": " + "v".repeat(1_000))
+                        .toList());
+
+        assertThat(raw.getBytes(StandardCharsets.UTF_8).length)
+                .isLessThanOrEqualTo(SearchDiagnosticText.RESPONSE_DIAGNOSTIC_BYTES);
+        assertThat(raw).endsWith("... [truncated]");
     }
 
     @Test
@@ -95,19 +121,20 @@ class OpenSearchLogFormatTest {
     }
 
     @Test
-    void formatStatusAndIndentedBody_indentsMultilineHtml() {
-        String formatted = OpenSearchLogFormat.formatStatusAndIndentedBody(
+    void formatStatusAndBodyPreview_indentsMultilineHtml() {
+        String formatted = OpenSearchLogFormat.formatStatusAndBodyPreview(
                 504,
                 "<html>\n<head><title>504 Gateway Time-out</title></head>\n</html>\n");
         assertThat(formatted).startsWith("504\n");
+        assertThat(formatted).contains("\n  Body preview:");
         assertThat(formatted).contains("\n  <html>");
         assertThat(formatted).contains("\n  <head><title>504 Gateway Time-out</title></head>");
         assertThat(formatted).doesNotContain("\n<html>");
     }
 
     @Test
-    void formatStatusAndIndentedBody_statusOnlyWhenBodyBlank() {
-        assertThat(OpenSearchLogFormat.formatStatusAndIndentedBody(502, "  ")).isEqualTo("502");
-        assertThat(OpenSearchLogFormat.formatStatusAndIndentedBody(500, null)).isEqualTo("500");
+    void formatStatusAndBodyPreview_statusOnlyWhenBodyBlank() {
+        assertThat(OpenSearchLogFormat.formatStatusAndBodyPreview(502, "  ")).isEqualTo("502");
+        assertThat(OpenSearchLogFormat.formatStatusAndBodyPreview(500, null)).isEqualTo("500");
     }
 }

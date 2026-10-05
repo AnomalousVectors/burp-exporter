@@ -1,7 +1,5 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -23,6 +21,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionStatus;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 
@@ -88,7 +87,7 @@ public class OpenSearchClientWrapper {
         // do not log a reconstructed request or response.
         if (result.statusCode() > 0) {
             Logger.logDebug("[OpenSearch] Request:\n" + OpenSearchLogFormat.indentRaw(result.requestForLog()));
-            String responseLog = OpenSearchLogFormat.buildRawResponseWithHeaders(
+            String responseLog = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
                     result.body(), result.protocol(), result.statusCode(),
                     result.reasonPhrase() != null ? result.reasonPhrase() : "",
                     result.responseHeaderLines());
@@ -127,9 +126,10 @@ public class OpenSearchClientWrapper {
             return status;
         }
 
-        String msg = result.statusCode() == 0
+        String rawMessage = result.statusCode() == 0
                 ? (result.reasonPhrase() != null ? result.reasonPhrase() : "Connection failed")
                 : "HTTP " + result.statusCode() + (result.reasonPhrase() != null && !result.reasonPhrase().isBlank() ? " " + result.reasonPhrase() : "");
+        String msg = SearchDiagnosticText.singleLine(rawMessage, 1_024);
         String trustStatus = OpenSearchTlsSupport.failureTrustSummary(baseUrl, msg);
         Logger.logErrorPanelOnly("[OpenSearch] Connection failed for " + baseUrl + ": " + msg
                 + " | tlsMode=" + OpenSearchTlsSupport.currentTlsMode()
@@ -177,8 +177,9 @@ public class OpenSearchClientWrapper {
     /**
      * Tests connectivity and converts runtime failures into a failed status result.
      *
-     * <p>Failure stack traces and summaries are logged. Authentication values are represented only
-     * by redacted labels; callers must not include credentials in {@code baseUrl}.</p>
+     * <p>A bounded exception-chain summary is logged without a complete stack trace.
+     * Authentication values are represented only by redacted labels; callers must not include
+     * credentials in {@code baseUrl}.</p>
      *
      * @param baseUrl database base URL
      * @param auth authentication descriptor; {@code null} selects no authentication
@@ -188,13 +189,13 @@ public class OpenSearchClientWrapper {
         try {
             return testConnection(baseUrl, auth);
         } catch (RuntimeException e) {
-            String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-            StringWriter sw = new StringWriter();
-            e.printStackTrace(new PrintWriter(sw));
-            Logger.logErrorPanelOnly(sw.toString().stripTrailing());
+            String msg = SearchDiagnosticText.singleLine(
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(),
+                    1_024);
             String trustStatus = OpenSearchTlsSupport.failureTrustSummary(baseUrl, msg);
             Logger.logErrorPanelOnly("[OpenSearch] safeTestConnection threw for " + baseUrl
-                    + ": " + msg + " | tlsMode=" + OpenSearchTlsSupport.currentTlsMode()
+                    + ": " + OpenSearchLogFormat.describeExceptionChain(e)
+                    + " | tlsMode=" + OpenSearchTlsSupport.currentTlsMode()
                     + " | trust=" + trustStatus);
             return new SearchConnectionStatus(
                     "OpenSearch",
@@ -264,7 +265,7 @@ public class OpenSearchClientWrapper {
      * Outcome of a shutdown-tolerant single-document push.
      *
      * @param success whether the document reached the configured sink
-     * @param failureDetail unredacted root failure message when unsuccessful; may be {@code null}
+     * @param failureDetail root failure message when unsuccessful; may be {@code null}
      */
     public record ShutdownDocumentPushResult(boolean success, String failureDetail) {
 
@@ -280,9 +281,7 @@ public class OpenSearchClientWrapper {
         /**
          * Returns a non-blank failure reason.
          *
-         * <p>The stored detail is returned verbatim and is not secret-redacted. Callers must not log
-         * it unless the originating transport guarantees that it contains no credentials or request
-         * body.</p>
+         * <p>The stored detail passes through the shared destination-diagnostic boundary.</p>
          *
          * @return detail string or a generic fallback when blank
          */
@@ -290,7 +289,7 @@ public class OpenSearchClientWrapper {
             if (failureDetail == null || failureDetail.isBlank()) {
                 return "OpenSearch push returned false";
             }
-            return failureDetail;
+            return SearchDiagnosticText.singleLine(failureDetail, 1_024);
         }
     }
 
@@ -435,6 +434,7 @@ public class OpenSearchClientWrapper {
         String reason = failure == null || failure.getMessage() == null || failure.getMessage().isBlank()
                 ? (failure == null ? "unknown failure" : failure.getClass().getSimpleName())
                 : failure.getMessage();
+        reason = SearchDiagnosticText.singleLine(reason, 1_024);
         Logger.logWarnPanelOnly(prefix + " " + operation + " failed for " + indexName + ": " + reason);
     }
 
@@ -543,21 +543,21 @@ public class OpenSearchClientWrapper {
     }
 
     /**
-     * Formats one per-item bulk failure as a single structured ERROR log line.
+     * Formats one per-item bulk failure as a single structured DEBUG log line.
      *
      * <p>Format is line-stable so log greps and tests can rely on it. Reason is clamped to
-     * avoid a single pathological doc flooding the log panel. The method does not redact arbitrary
-     * server reason text; callers must not supply credentials or request bodies as {@code reason}.</p>
+     * avoid a single pathological document flooding the log panel. Known credentials and common
+     * echoed-value patterns pass through the shared destination-diagnostic boundary.</p>
      */
     static String formatBulkItemFailure(String indexName, int opIndex, String type, String reason) {
-        String clampedReason = reason == null ? "unknown" : reason;
-        if (clampedReason.length() > 500) {
-            clampedReason = clampedReason.substring(0, 497) + "...";
-        }
-        return RuntimeConfig.searchDestinationLogPrefix() + " Bulk item failure: index=" + indexName
+        String safeIndex = SearchDiagnosticText.singleLine(indexName, 256);
+        String safeType = SearchDiagnosticText.singleLine(type, 128);
+        String safeReason = SearchDiagnosticText.singleLine(reason, 500);
+        return RuntimeConfig.searchDestinationLogPrefix() + " Bulk item failure: index="
+                + (safeIndex.isBlank() ? "unknown" : safeIndex)
                 + " op=" + opIndex
-                + " type=" + (type == null || type.isBlank() ? "unknown" : type)
-                + " reason=" + clampedReason;
+                + " type=" + (safeType.isBlank() ? "unknown" : safeType)
+                + " reason=" + (safeReason.isBlank() ? "unknown" : safeReason);
     }
 
     /**

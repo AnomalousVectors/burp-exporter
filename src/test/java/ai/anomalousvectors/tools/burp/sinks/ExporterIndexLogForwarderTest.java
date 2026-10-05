@@ -5,8 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
+
+import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.Test;
 
@@ -14,10 +18,12 @@ import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
+import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.opensearch.BulkNdjsonResponseParser;
 
 class ExporterIndexLogForwarderTest {
 
@@ -190,9 +196,84 @@ class ExporterIndexLogForwarderTest {
         }
     }
 
+    @Test
+    void destinationDiagnostic_reachesPanelAndExporterFileAsSameSanitizedEvent() throws Exception {
+        ExporterIndexLogForwarder forwarder = null;
+        Logger.LogListener panelListener = null;
+        try {
+            Path root = TestPathSupport.createDirectory("exporter-log-diagnostic-boundary");
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_SETTINGS, ConfigKeys.SRC_EXPORTER),
+                    ConfigKeys.SCOPE_ALL,
+                    List.of(),
+                    new ConfigState.Sinks(true, root.toString(), false, true,
+                            false, "https://opensearch.url:9200", "", "", false),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                    ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                    null));
+            RuntimeConfig.setExportRunning(true);
+            RuntimeConfig.setExportStarting(false);
+            List<String> panelEvents = new CopyOnWriteArrayList<>();
+            panelListener = (level, message) -> {
+                if ("DEBUG".equals(level) && message.contains("Bulk item failure:")) {
+                    panelEvents.add(message);
+                }
+            };
+            forwarder = new ExporterIndexLogForwarder();
+            Logger.registerListener(panelListener);
+            Logger.registerListener(forwarder);
+
+            BulkNdjsonResponseParser.parse(
+                    "{\"errors\":true,\"items\":[{\"index\":{\"status\":400,\"error\":{"
+                            + "\"type\":\"mapper_parsing_exception\","
+                            + "\"reason\":\"bad\\r\\nforged password=echoed-secret\"}}}]}",
+                    "tool-burp-exporter");
+            SwingUtilities.invokeAndWait(() -> {});
+
+            Path ndjsonPath = root.resolve(
+                    IndexNaming.indexNameForShortName("exporter") + ".ndjson");
+            awaitFileContains(ndjsonPath, "Bulk item failure:");
+            assertThat(panelEvents).singleElement().satisfies(message -> {
+                assertThat(message)
+                        .doesNotContain("\r", "\n", "echoed-secret")
+                        .contains("password=***");
+                assertThat(Files.readString(ndjsonPath))
+                        .contains(message)
+                        .doesNotContain("echoed-secret");
+            });
+        } finally {
+            if (panelListener != null) {
+                Logger.unregisterListener(panelListener);
+            }
+            if (forwarder != null) {
+                Logger.unregisterListener(forwarder);
+                forwarder.stop();
+            }
+            Logger.resetState();
+            RuntimeConfig.setExportRunning(false);
+            BurpRuntimeMetadata.clear();
+            MontoyaApiProvider.set(null);
+        }
+    }
+
     private static ExecutorService workerOf(ExporterIndexLogForwarder forwarder) throws Exception {
         Field field = ExporterIndexLogForwarder.class.getDeclaredField("worker");
         field.setAccessible(true);
         return (ExecutorService) field.get(forwarder);
+    }
+
+    private static void awaitFileContains(Path path, String expected) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3L);
+        while (System.nanoTime() < deadline) {
+            if (Files.exists(path) && Files.readString(path).contains(expected)) {
+                return;
+            }
+            TimeUnit.MILLISECONDS.sleep(25L);
+        }
+        assertThat(path).exists();
+        assertThat(Files.readString(path)).contains(expected);
     }
 }

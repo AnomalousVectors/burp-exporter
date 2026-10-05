@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDeployment;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Operator-facing Amazon OpenSearch capacity-pressure diagnostics.
@@ -49,8 +50,7 @@ final class AmazonOpenSearchPressureLog {
      * Logs a throttled WARN when Amazon bulk transport fails without an HTTP status
      * (timeouts, failed-to-respond, connection resets).
      *
-     * <p>The detail is emitted after length clamping but is not secret-redacted. Callers must pass
-     * a single-line transport summary that contains no credentials or request body.</p>
+     * <p>The detail passes through the shared destination-diagnostic boundary before logging.</p>
      *
      * @param detail exception message or short cause; may be blank
      * @param indexName target index; blank becomes {@code unknown}
@@ -69,10 +69,9 @@ final class AmazonOpenSearchPressureLog {
                 || lower.contains("broken pipe"))) {
             return;
         }
-        String symptom = detail == null || detail.isBlank() ? "transport failure" : detail.trim();
-        if (symptom.length() > 160) {
-            symptom = symptom.substring(0, 157) + "...";
-        }
+        String symptom = SearchDiagnosticText.singleLine(
+                detail == null || detail.isBlank() ? "transport failure" : detail,
+                160);
         maybeLog(symptom, indexName, pathLabel);
     }
 

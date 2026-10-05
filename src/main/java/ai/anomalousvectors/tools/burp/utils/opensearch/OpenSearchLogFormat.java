@@ -5,6 +5,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Shared formatting for search-database HTTP request/response logging.
@@ -15,8 +16,8 @@ import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
  * <p>Protocol reflects actual HTTP version when known; otherwise {@code HTTP (version unknown)}
  * (for example SSL failure before any response).</p>
  *
- * <p>Stateless and thread-safe. Header helpers redact known credential-bearing headers, but
- * arbitrary bodies and exception messages are not secret-scanned.</p>
+ * <p>Stateless and thread-safe. Destination-provided text is normalized, known session
+ * credentials are redacted, and response bodies are emitted only as bounded previews.</p>
  */
 public final class OpenSearchLogFormat {
 
@@ -73,33 +74,45 @@ public final class OpenSearchLogFormat {
     }
 
     /**
-     * Builds a response string from status, pre-redacted headers, and body.
+     * Builds a safe response diagnostic from status, pre-redacted headers, and a body preview.
      *
-     * <p>Header lines and body are appended verbatim. Callers must redact sensitive header values
-     * with {@link #shouldRedactHeader(String)} before passing them and must decide whether the
-     * response body is appropriate to log.</p>
+     * <p>Header lines are normalized and bounded. The body is redacted and limited by
+     * {@link SearchDiagnosticText#RESPONSE_BODY_PREVIEW_BYTES}; complete bodies are never emitted.
+     * Callers must still classify known credential-bearing headers with
+     * {@link #shouldRedactHeader(String)} before passing them.</p>
      *
-     * @param body response body; {@code null} becomes blank
+     * @param body response body used only for a bounded preview; {@code null} becomes blank
      * @param protocol negotiated protocol, or blank when unknown
      * @param statusCode HTTP status code
      * @param reasonPhrase HTTP reason phrase; {@code null} becomes blank
      * @param headerLines pre-redacted header lines; empty adds a JSON content-type placeholder
-     * @return formatted multi-line response
+     * @return formatted multi-line response diagnostic
      */
-    public static String buildRawResponseWithHeaders(String body, String protocol, int statusCode, String reasonPhrase, List<String> headerLines) {
-        String proto = protocol != null && !protocol.isBlank() ? protocol : PROTOCOL_UNKNOWN;
-        String b = (body != null ? body : "").stripTrailing();
+    public static String buildResponsePreviewWithHeaders(
+            String body,
+            String protocol,
+            int statusCode,
+            String reasonPhrase,
+            List<String> headerLines) {
+        String proto = protocol != null && !protocol.isBlank()
+                ? SearchDiagnosticText.singleLine(protocol, 64)
+                : PROTOCOL_UNKNOWN;
+        String reason = SearchDiagnosticText.singleLine(reasonPhrase, 256);
+        String preview = SearchDiagnosticText.responseBodyPreview(body);
         StringBuilder sb = new StringBuilder();
-        sb.append(proto).append(" ").append(statusCode).append(" ").append(reasonPhrase != null ? reasonPhrase : "");
+        sb.append(proto).append(" ").append(statusCode).append(" ").append(reason);
         if (headerLines != null && !headerLines.isEmpty()) {
             for (String line : headerLines) {
-                sb.append("\n").append(line);
+                sb.append("\n").append(SearchDiagnosticText.headerLine(line));
             }
         } else {
             sb.append("\nContent-Type: application/json");
         }
-        sb.append("\n\n").append(b);
-        return sb.toString();
+        if (!preview.isEmpty()) {
+            sb.append("\n\nBody preview:\n").append(preview);
+        }
+        return SearchDiagnosticText.multiLine(
+                sb.toString(), SearchDiagnosticText.RESPONSE_DIAGNOSTIC_BYTES);
     }
 
     /**
@@ -183,60 +196,36 @@ public final class OpenSearchLogFormat {
     }
 
     /**
-     * Formats an HTTP failure status and response body for DEBUG logs.
+     * Formats an HTTP failure status and bounded response-body preview for DEBUG logs.
      *
-     * <p>Puts the status on the first line, then indents the body with {@link #indentRaw(String)}
+     * <p>Puts the status on the first line, then labels and indents the preview with
+     * {@link #indentRaw(String)}
      * so multi-line HTML gateway pages and JSON errors match Test Connection {@code Response:}
      * formatting instead of flush-left lines that look like new log entries.</p>
      *
      * @param status HTTP status code
-     * @param responseBody response entity text; {@code null}/blank yields status only
-     * @return status, or status plus indented body
+     * @param responseBody response entity text used only for a bounded preview;
+     *        {@code null}/blank yields status only
+     * @return status, or status plus labeled and indented preview
      */
-    public static String formatStatusAndIndentedBody(int status, String responseBody) {
-        String body = responseBody == null ? "" : responseBody.stripTrailing();
-        if (body.isEmpty()) {
+    public static String formatStatusAndBodyPreview(int status, String responseBody) {
+        String preview = SearchDiagnosticText.responseBodyPreview(responseBody);
+        if (preview.isEmpty()) {
             return Integer.toString(status);
         }
-        return status + "\n" + indentRaw(body);
+        return status + "\n" + indentRaw("Body preview:\n" + preview);
     }
 
     /**
      * Formats a bounded exception chain for transport diagnostics without stack-trace noise.
      *
-     * <p>Exception messages are normalized and length-bounded but not secret-redacted. Callers must
-     * ensure the exception chain does not contain credentials or request bodies before logging the
-     * result.</p>
+     * <p>Exception messages are normalized, known-secret-redacted, and byte-bounded by the shared
+     * destination-diagnostic policy.</p>
      *
      * @param failure exception chain root; may be {@code null}
      * @return bounded single-line description
      */
     static String describeExceptionChain(Throwable failure) {
-        if (failure == null) {
-            return "unknown";
-        }
-        StringBuilder detail = new StringBuilder(256);
-        Throwable current = failure;
-        int depth = 0;
-        while (current != null && depth < 5) {
-            if (detail.length() > 0) {
-                detail.append(" <- ");
-            }
-            detail.append(current.getClass().getSimpleName());
-            String message = current.getMessage();
-            if (message != null && !message.isBlank()) {
-                detail.append(": ").append(message.trim().replace('\n', ' ').replace('\r', ' '));
-            }
-            Throwable cause = current.getCause();
-            if (cause == current) {
-                break;
-            }
-            current = cause;
-            depth++;
-        }
-        if (current != null) {
-            detail.append(" <- ...");
-        }
-        return detail.length() <= 600 ? detail.toString() : detail.substring(0, 597) + "...";
+        return SearchDiagnosticText.exceptionChain(failure);
     }
 }

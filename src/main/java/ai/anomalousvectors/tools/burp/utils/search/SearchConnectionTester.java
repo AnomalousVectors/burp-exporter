@@ -65,14 +65,15 @@ public final class SearchConnectionTester {
             endpoint = SearchEndpoint.parse(baseUrl);
         } catch (IllegalArgumentException e) {
             String product = destination.displayName();
-            Logger.logWarnPanelOnly("[" + product + "] Test connection skipped: " + e.getMessage());
+            String message = SearchDiagnosticText.singleLine(e.getMessage(), 1_024);
+            Logger.logWarnPanelOnly("[" + product + "] Test connection skipped: " + message);
             return new SearchConnectionStatus(
                     product,
                     false,
                     "",
                     "",
                     "",
-                    e.getMessage(),
+                    message,
                     "Failed",
                     "Not tested",
                     "Not tested");
@@ -122,7 +123,7 @@ public final class SearchConnectionTester {
             RawHttpResult result = performElasticsearchRootGet(restClient, baseUrl, auth);
             if (result.statusCode() > 0) {
                 Logger.logDebug("[Elasticsearch] Request:\n" + OpenSearchLogFormat.indentRaw(result.requestForLog()));
-                String responseLog = OpenSearchLogFormat.buildRawResponseWithHeaders(
+                String responseLog = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
                         result.body(), result.protocol(), result.statusCode(), result.reasonPhrase(),
                         result.responseHeaderLines());
                 Logger.logDebug("[Elasticsearch] Response:\n" + OpenSearchLogFormat.indentRaw(responseLog));
@@ -396,7 +397,7 @@ public final class SearchConnectionTester {
             } catch (ParseException e) {
                 throw new IOException("Failed to parse Amazon OpenSearch response.", e);
             }
-            String responseLog = OpenSearchLogFormat.buildRawResponseWithHeaders(
+            String responseLog = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
                     body, response.getVersion() == null ? null : response.getVersion().toString(),
                     status, response.getReasonPhrase(), List.of());
             Logger.logDebug("[Amazon OpenSearch] Response:\n" + OpenSearchLogFormat.indentRaw(responseLog));
@@ -589,7 +590,7 @@ public final class SearchConnectionTester {
         if (rawMessage == null) {
             return typeName;
         }
-        String cleanedMessage = rawMessage.replaceAll("[\\r\\n]+", " ").trim();
+        String cleanedMessage = SearchDiagnosticText.singleLine(rawMessage, 1_024);
         if (cleanedMessage.isEmpty() || cleanedMessage.indexOf('@') > 0) {
             return typeName;
         }

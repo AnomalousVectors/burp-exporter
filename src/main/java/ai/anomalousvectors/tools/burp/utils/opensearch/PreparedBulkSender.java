@@ -17,6 +17,7 @@ import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedBulkBodies;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.export.SearchBodyPrefixFitter;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
  * Posts pre-serialized snapshot bulk NDJSON without rebuilding document maps on the flush thread.
@@ -271,7 +272,9 @@ public final class PreparedBulkSender {
                             + " refits=" + postWaitRefits);
         } catch (IOException | RuntimeException e) {
             logPushFailure(indexName, e);
-            String reason = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+            String reason = SearchDiagnosticText.singleLine(
+                    e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(),
+                    1_024);
             return failedBulkResult(fitted.size(), "transport_exception", reason);
         }
     }
@@ -322,7 +325,7 @@ public final class PreparedBulkSender {
         }
         Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
                 + " PreparedBulkSender bulk request failed: "
-                + OpenSearchLogFormat.formatStatusAndIndentedBody(status, responseBody));
+                + OpenSearchLogFormat.formatStatusAndBodyPreview(status, responseBody));
         String detail = responseBody != null && responseBody.contains("request body is required")
                 ? " Search database reported an empty bulk request body."
                 : "";
@@ -457,9 +460,9 @@ public final class PreparedBulkSender {
                     + OpenSearchPushCancellation.cancelledPushLogSuffix(e) + ")");
             return;
         }
-        // Transport messages are not secret-redacted; request bodies and credentials must never be
-        // included when transport exceptions are constructed.
-        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        String msg = SearchDiagnosticText.singleLine(
+                e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(),
+                1_024);
         Logger.logWarnPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
                 + " Prepared bulk failed for " + indexName + ": " + msg);
         AmazonOpenSearchPressureLog.maybeNoteTransportPressure(msg, indexName, "Prepared bulk");

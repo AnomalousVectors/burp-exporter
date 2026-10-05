@@ -29,6 +29,7 @@ import org.opensearch.client.transport.httpclient5.ApacheHttpClient5TransportBui
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 
 /**
@@ -320,7 +321,9 @@ public final class OpenSearchConnector {
                 failures.incrementAndGet();
                 Logger.logDebug("[OpenSearch] OpenSearchConnector failed to close transport for "
                         + redactKey(entry.getKey()) + ": "
-                        + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                        + SearchDiagnosticText.singleLine(
+                                e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(),
+                                512));
             }
         }
 
@@ -331,7 +334,9 @@ public final class OpenSearchConnector {
                 failures.incrementAndGet();
                 Logger.logDebug("[OpenSearch] OpenSearchConnector failed to close classic client for "
                         + redactKey(entry.getKey()) + ": "
-                        + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                        + SearchDiagnosticText.singleLine(
+                                e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(),
+                                512));
             }
         }
 
@@ -342,7 +347,9 @@ public final class OpenSearchConnector {
                 failures.incrementAndGet();
                 Logger.logDebug("[OpenSearch] OpenSearchConnector failed to close async client for "
                         + redactKey(entry.getKey()) + ": "
-                        + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
+                        + SearchDiagnosticText.singleLine(
+                                e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage(),
+                                512));
             }
         }
 
