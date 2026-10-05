@@ -52,7 +52,7 @@ public final class ExportAdmissionController {
     /** Per-index doc safety rail (bytes remain primary). */
     public static final int RETRY_DOC_SAFETY_RAIL = 50_000;
 
-    /** Absolute byte ceiling for the traffic-spill share of managed storage. */
+    /** Per-project absolute byte ceiling for the traffic-spill share of managed storage. */
     public static final long SPILL_ABSOLUTE_CEILING_BYTES =
             DiskSpaceGuard.TRAFFIC_SPILL_MAX_BYTES;
     /** Fraction of usable free space (above reserve) allowed for spill. */

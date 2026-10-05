@@ -19,10 +19,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
-import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths;
-import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
+import ai.anomalousvectors.tools.burp.utils.ManagedStorageQuota;
 import ai.anomalousvectors.tools.burp.utils.StringKeyedMaps;
 
 /**
@@ -125,7 +124,11 @@ class ProxyCorrelationSpool {
             if (completedTokens.contains(entry.token())) {
                 return PersistResult.STORED;
             }
-            Files.createDirectories(directory);
+            if (ManagedDiskPaths.isManagedPath(directory)) {
+                ManagedDiskPaths.ensureManagedDirectory(directory);
+            } else {
+                Files.createDirectories(directory);
+            }
             Path target = pathForToken(entry.token());
             long replacedBytes = Files.exists(target) ? Files.size(target) : 0L;
             boolean newFile = !Files.exists(target);
@@ -136,13 +139,42 @@ class ProxyCorrelationSpool {
             }
             DiskSpaceGuard.ensureWritable(directory, payload.length, "Proxy correlation spool");
             Path temporary = target.resolveSibling(target.getFileName() + ".tmp");
-            Files.write(
-                    temporary,
-                    payload,
-                    StandardOpenOption.CREATE,
-                    StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE);
-            moveAtomically(temporary, target);
+            discardTemporaryBeforeWrite(temporary);
+            try (ManagedStorageQuota.Reservation quota = ManagedStorageQuota.reserve(
+                    directory,
+                    ManagedStorageQuota.Category.PROXY_CORRELATION,
+                    projectId,
+                    payload.length,
+                    maxBytes)) {
+                if (!quota.accepted()) {
+                    recordFailure("[ProxyCorrelation] Durable correlation spool reached its project byte limit.");
+                    return PersistResult.REJECTED_LIMIT;
+                }
+                try {
+                    Files.write(
+                            temporary,
+                            payload,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING,
+                            StandardOpenOption.WRITE);
+                    if (ManagedDiskPaths.isActiveInstancePath(temporary)) {
+                        ManagedDiskPaths.secureManagedFile(temporary);
+                    }
+                    moveAtomically(temporary, target);
+                    quota.commit();
+                } catch (IOException e) {
+                    try {
+                        if (Files.exists(temporary) && !Files.deleteIfExists(temporary)) {
+                            quota.commit();
+                        }
+                    } catch (IOException cleanupFailure) {
+                        quota.commit();
+                        e.addSuppressed(cleanupFailure);
+                    }
+                    throw e;
+                }
+            }
+            releaseQuota(replacedBytes);
             filesByToken.put(entry.token(), target);
             totalBytes = totalBytes - replacedBytes + payload.length;
             return PersistResult.STORED;
@@ -220,7 +252,9 @@ class ProxyCorrelationSpool {
             totalBytes = Math.max(0L, totalBytes - bytes);
             if (originalMoved) {
                 try {
-                    Files.deleteIfExists(delivered);
+                    if (Files.deleteIfExists(delivered)) {
+                        releaseQuota(bytes);
+                    }
                 } catch (IOException e) {
                     Logger.logWarnPanelOnly("[ProxyCorrelation] Delivered spool tombstone will be "
                             + "removed on the next initialization: error=" + failureKind(e));
@@ -344,6 +378,7 @@ class ProxyCorrelationSpool {
         } catch (IOException e) {
             failures++;
         }
+        releaseQuota(bytesDeleted);
         return new DiscardResult(filesDeleted, bytesDeleted, failures);
     }
 
@@ -422,34 +457,11 @@ class ProxyCorrelationSpool {
     }
 
     private static String resolveProjectId() {
-        try {
-            var api = MontoyaApiProvider.get();
-            if (api != null && api.project() != null) {
-                String raw = api.project().id();
-                if (raw != null && !raw.isBlank()) {
-                    return sanitizeProjectId(raw);
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // Runtime metadata remains available during normal unload transitions.
-        }
-        return BurpRuntimeMetadata.projectIdOrUnknown();
+        return ManagedDiskPaths.currentProjectId();
     }
 
     private static String sanitizeProjectId(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return BurpRuntimeMetadata.UNKNOWN_PROJECT_ID;
-        }
-        StringBuilder result = new StringBuilder(raw.length());
-        for (int index = 0; index < raw.length(); index++) {
-            char value = raw.charAt(index);
-            result.append(Character.isLetterOrDigit(value) || value == '-' || value == '_'
-                    ? Character.toLowerCase(value)
-                    : '-');
-        }
-        String normalized = result.toString().replaceAll("-{2,}", "-");
-        normalized = normalized.replaceAll("^-+", "").replaceAll("-+$", "");
-        return normalized.isBlank() ? BurpRuntimeMetadata.UNKNOWN_PROJECT_ID : normalized;
+        return ManagedDiskPaths.sanitizeProjectId(raw);
     }
 
     void moveAtomically(Path source, Path target) throws IOException {
@@ -482,5 +494,28 @@ class ProxyCorrelationSpool {
 
     private static String failureKind(Throwable failure) {
         return failure == null ? "unknown" : failure.getClass().getSimpleName();
+    }
+
+    private void releaseQuota(long bytes) {
+        try {
+            ManagedStorageQuota.release(
+                    directory,
+                    ManagedStorageQuota.Category.PROXY_CORRELATION,
+                    projectId,
+                    bytes);
+        } catch (IOException e) {
+            recordFailure("[ProxyCorrelation] Unable to update project quota after deletion: error="
+                    + failureKind(e));
+        }
+    }
+
+    private void discardTemporaryBeforeWrite(Path temporary) throws IOException {
+        if (!Files.exists(temporary)) {
+            return;
+        }
+        long bytes = Files.size(temporary);
+        if (Files.deleteIfExists(temporary)) {
+            releaseQuota(bytes);
+        }
     }
 }

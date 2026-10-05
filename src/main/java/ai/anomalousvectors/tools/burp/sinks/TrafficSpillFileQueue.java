@@ -21,13 +21,12 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
-import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.Version;
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
-import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths;
+import ai.anomalousvectors.tools.burp.utils.ManagedStorageQuota;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
@@ -171,8 +170,38 @@ final class TrafficSpillFileQueue {
             String name = String.format(Locale.ROOT, "%s-%020d.json", projectId, nextSequence++);
             Path target = directory.resolve(name);
             Path temp = directory.resolve(name + ".tmp");
-            Files.write(temp, payload, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-            Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            try (ManagedStorageQuota.Reservation quota = ManagedStorageQuota.reserve(
+                    directory,
+                    ManagedStorageQuota.Category.TRAFFIC_SPILL,
+                    projectId,
+                    payload.length,
+                    maxBytes)) {
+                if (!quota.accepted()) {
+                    return OfferResult.REJECTED_LIMIT;
+                }
+                try {
+                    Files.write(
+                            temp,
+                            payload,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING);
+                    if (ManagedDiskPaths.isActiveInstancePath(temp)) {
+                        ManagedDiskPaths.secureManagedFile(temp);
+                    }
+                    Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    quota.commit();
+                } catch (IOException e) {
+                    try {
+                        if (Files.exists(temp) && !Files.deleteIfExists(temp)) {
+                            quota.commit();
+                        }
+                    } catch (IOException cleanupFailure) {
+                        quota.commit();
+                        e.addSuppressed(cleanupFailure);
+                    }
+                    throw e;
+                }
+            }
             files.addLast(target);
             totalBytes += payload.length;
             return OfferResult.QUEUED;
@@ -248,6 +277,7 @@ final class TrafficSpillFileQueue {
                 try {
                     payload = Files.readAllBytes(file);
                     Files.deleteIfExists(file);
+                    releaseQuota(payload.length);
                 } catch (IOException e) {
                     Logger.logError("[TrafficSpill] Read/delete failed: " + e.getMessage());
                     continue;
@@ -274,6 +304,7 @@ final class TrafficSpillFileQueue {
                 try {
                     payload = Files.readAllBytes(file);
                     Files.deleteIfExists(file);
+                    releaseQuota(payload.length);
                 } catch (IOException e) {
                     Logger.logError("[TrafficSpill] Read/delete failed: " + e.getMessage());
                     continue;
@@ -375,6 +406,7 @@ final class TrafficSpillFileQueue {
             }
             files.clear();
             totalBytes = 0;
+            releaseQuota(bytesDeleted);
             return new DiscardResult(filesDeleted, bytesDeleted, failures);
         } finally {
             lock.unlock();
@@ -446,6 +478,7 @@ final class TrafficSpillFileQueue {
                 }
             }
             if (startupDiscardedCount > 0L) {
+                releaseQuota(startupDiscardedBytes);
                 Logger.logInfoPanelOnly("[TrafficSpill] Discarded " + startupDiscardedCount
                         + " abandoned spill documents (" + startupDiscardedBytes + " bytes) from "
                         + directoryPath() + ".");
@@ -458,7 +491,11 @@ final class TrafficSpillFileQueue {
     }
 
     private void ensureDirectoryExists() throws IOException {
-        Files.createDirectories(directory);
+        if (ManagedDiskPaths.isManagedPath(directory)) {
+            ManagedDiskPaths.ensureManagedDirectory(directory);
+        } else {
+            Files.createDirectories(directory);
+        }
     }
 
     private TrafficQueueEntry readEntryForPurge(Path file) {
@@ -503,36 +540,11 @@ final class TrafficSpillFileQueue {
     }
 
     private static String resolveProjectId() {
-        try {
-            var api = MontoyaApiProvider.get();
-            if (api != null && api.project() != null) {
-                String raw = api.project().id();
-                if (raw != null && !raw.isBlank()) {
-                    return sanitizeProjectId(raw);
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // Keep spill path resilient during Burp startup lifecycle transitions.
-        }
-        return BurpRuntimeMetadata.projectIdOrUnknown();
+        return ManagedDiskPaths.currentProjectId();
     }
 
     private static String sanitizeProjectId(String raw) {
-        if (raw == null || raw.isBlank()) {
-            return BurpRuntimeMetadata.UNKNOWN_PROJECT_ID;
-        }
-        StringBuilder sb = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            if (Character.isLetterOrDigit(c) || c == '-' || c == '_') {
-                sb.append(Character.toLowerCase(c));
-            } else {
-                sb.append('-');
-            }
-        }
-        String normalized = sb.toString().replaceAll("-{2,}", "-");
-        normalized = normalized.replaceAll("^-+", "").replaceAll("-+$", "");
-        return normalized.isBlank() ? BurpRuntimeMetadata.UNKNOWN_PROJECT_ID : normalized;
+        return ManagedDiskPaths.sanitizeProjectId(raw);
     }
 
     private Map<String, Object> buildSpillEnvelope(Map<String, Object> document) {
@@ -660,6 +672,7 @@ final class TrafficSpillFileQueue {
             long fileBytes = Files.exists(path) ? Files.size(path) : 0;
             if (Files.deleteIfExists(path)) {
                 totalBytes = Math.max(0, totalBytes - fileBytes);
+                releaseQuota(fileBytes);
             }
         } catch (IOException ignored) {
             // Keep best-effort retention cleanup non-fatal.
@@ -672,7 +685,10 @@ final class TrafficSpillFileQueue {
                 String name = tmp.getFileName().toString();
                 String targetName = name.substring(0, name.length() - ".tmp".length());
                 if (isOwnedSpillFile(tmp.resolveSibling(targetName))) {
-                    Files.deleteIfExists(tmp);
+                    long bytes = sizeOf(tmp);
+                    if (Files.deleteIfExists(tmp)) {
+                        releaseQuota(bytes);
+                    }
                 }
             }
         } catch (IOException ignored) {
@@ -696,5 +712,18 @@ final class TrafficSpillFileQueue {
             }
         }
         return true;
+    }
+
+    private void releaseQuota(long bytes) {
+        try {
+            ManagedStorageQuota.release(
+                    directory,
+                    ManagedStorageQuota.Category.TRAFFIC_SPILL,
+                    projectId,
+                    bytes);
+        } catch (IOException e) {
+            Logger.logWarnPanelOnly("[TrafficSpill] Unable to update project quota after deletion: error="
+                    + e.getClass().getSimpleName() + ".");
+        }
     }
 }

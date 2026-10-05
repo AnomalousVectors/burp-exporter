@@ -1,5 +1,6 @@
 package ai.anomalousvectors.tools.burp;
 
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 
 import javax.swing.SwingUtilities;
@@ -18,6 +19,7 @@ import ai.anomalousvectors.tools.burp.ui.ConfigPanel;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.ProductInfo;
 import ai.anomalousvectors.tools.burp.utils.Version;
@@ -70,6 +72,7 @@ public class Exporter implements BurpExtension {
 
             MontoyaApiProvider.set(api);
             BurpRuntimeMetadata.prime(api);
+            initializeManagedStorage();
             Tooltips.configureSharedToolTipManager();
             logForwarder = new ExporterIndexLogForwarder();
             Logger.registerListener(logForwarder);
@@ -160,6 +163,12 @@ public class Exporter implements BurpExtension {
         // closeAll() already ran.
         OpenSearchConnector.closeAll();
         ConfigPanel.shutdownStartupExecutor();
+        ManagedDiskPaths.CleanupResult managedCleanup = ManagedDiskPaths.closeInstance();
+        if (!managedCleanup.complete()) {
+            Logger.logWarnPanelOnly("[ManagedStorage] Unable to remove all current-instance "
+                    + "temporary artifacts during unload: failures="
+                    + managedCleanup.failures() + ".");
+        }
         if (initialized) {
             initialized = false;
             String unloadLine = ProductInfo.EXTENSION_NAME + " unloaded.";
@@ -169,6 +178,28 @@ public class Exporter implements BurpExtension {
 
         safeDeregister(unloadRegistration);
         unloadRegistration = null;
+    }
+
+    private static void initializeManagedStorage() {
+        try {
+            ManagedDiskPaths.CleanupResult cleanup = ManagedDiskPaths.initialize();
+            if (cleanup.filesDeleted() > 0L) {
+                Logger.logInfoPanelOnly("[ManagedStorage] Discarded " + cleanup.filesDeleted()
+                        + " abandoned temporary artifacts (" + cleanup.bytesDeleted() + " bytes).");
+            }
+            if (cleanup.activeInstancesSkipped() > 0L) {
+                Logger.logDebug("[ManagedStorage] Preserved " + cleanup.activeInstancesSkipped()
+                        + " active instance director"
+                        + (cleanup.activeInstancesSkipped() == 1L ? "y." : "ies."));
+            }
+            if (!cleanup.complete()) {
+                Logger.logWarnPanelOnly("[ManagedStorage] Unable to remove all abandoned "
+                        + "temporary artifacts: failures=" + cleanup.failures() + ".");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException(
+                    "Managed temporary storage failed validation: " + e.getMessage(), e);
+        }
     }
 
     private void registerUi(MontoyaApi api, String tabTitle) {

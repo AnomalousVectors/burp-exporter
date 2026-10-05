@@ -220,7 +220,7 @@ public final class FileUtil {
     /**
      * Create a temp file and write UTF-8 content to it.
      *
-     * <p>The file is created under {@link ManagedDiskPaths#managedRootDirectory()} so
+     * <p>The file is created under {@link ManagedDiskPaths#temporaryFilesDirectory()} so
      * exporter-managed temporary files remain grouped under one discoverable root. This method also
      * applies the shared low-disk guard before creating the file.</p>
      *
@@ -231,12 +231,22 @@ public final class FileUtil {
      * @throws IOException when creation or write fails
      */
     public static Path writeTempFile(String prefix, String suffix, String content) throws IOException {
-        Path root = ManagedDiskPaths.managedRootDirectory();
-        java.nio.file.Files.createDirectories(root);
+        Path root = ManagedDiskPaths.temporaryFilesDirectory();
+        ManagedDiskPaths.ensureManagedDirectory(root);
         DiskSpaceGuard.ensureWritable(root, estimatedUtf8Bytes(content), "temporary file");
         Path p = java.nio.file.Files.createTempFile(root, prefix, suffix);
-        java.nio.file.Files.writeString(p, content, StandardCharsets.UTF_8);
-        return p;
+        try {
+            ManagedDiskPaths.secureManagedFile(p);
+            java.nio.file.Files.writeString(p, content, StandardCharsets.UTF_8);
+            return p;
+        } catch (IOException e) {
+            try {
+                java.nio.file.Files.deleteIfExists(p);
+            } catch (IOException cleanupFailure) {
+                e.addSuppressed(cleanupFailure);
+            }
+            throw e;
+        }
     }
 
     static long estimatedUtf8Bytes(String content) {
