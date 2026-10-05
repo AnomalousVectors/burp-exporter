@@ -259,21 +259,18 @@ class ExportStatsTest {
         long enqueuedBefore = ExportStats.getTrafficSpillEnqueued();
         long dequeuedBefore = ExportStats.getTrafficSpillDequeued();
         long droppedBefore = ExportStats.getTrafficSpillDrops();
-        long recoveredBefore = ExportStats.getTrafficSpillRecovered();
         long prunedBefore = ExportStats.getTrafficSpillExpiredPruned();
         long reasonBefore = ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest");
 
         ExportStats.recordTrafficSpillEnqueued(3);
         ExportStats.recordTrafficSpillDequeued(2);
         ExportStats.recordTrafficSpillDrop(1);
-        ExportStats.recordTrafficSpillRecovered(4);
         ExportStats.recordTrafficSpillExpiredPruned(5);
         ExportStats.recordTrafficDropReason("spill_rejected_drop_oldest", 6);
 
         assertThat(ExportStats.getTrafficSpillEnqueued()).isEqualTo(enqueuedBefore + 3);
         assertThat(ExportStats.getTrafficSpillDequeued()).isEqualTo(dequeuedBefore + 2);
         assertThat(ExportStats.getTrafficSpillDrops()).isEqualTo(droppedBefore + 1);
-        assertThat(ExportStats.getTrafficSpillRecovered()).isEqualTo(recoveredBefore + 4);
         assertThat(ExportStats.getTrafficSpillExpiredPruned()).isEqualTo(prunedBefore + 5);
         assertThat(ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")).isEqualTo(reasonBefore + 6);
     }

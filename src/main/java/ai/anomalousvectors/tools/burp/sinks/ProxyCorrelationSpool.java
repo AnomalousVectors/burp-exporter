@@ -7,16 +7,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Consumer;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -30,12 +26,12 @@ import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.StringKeyedMaps;
 
 /**
- * Durable store for live Proxy documents still awaiting their exact Proxy History row.
+ * Run-scoped disk store for live Proxy documents still awaiting their exact Proxy History row.
  *
  * <p>Each token owns one JSON file. Atomic replacement is attempted, with replace-existing fallback
- * on filesystems that do not support atomic moves. Files remain until the bound document is accepted
- * by {@link TrafficExportQueue}, allowing unresolved exchanges to survive Stop and extension
- * restart. Thread-safe.</p>
+ * on filesystems that do not support atomic moves. Files remain until the bound document is
+ * accepted by {@link TrafficExportQueue} or the current export run ends. Artifacts left by an
+ * interrupted process are discarded during initialization and are never replayed. Thread-safe.</p>
  */
 class ProxyCorrelationSpool {
 
@@ -57,6 +53,12 @@ class ProxyCorrelationSpool {
             boolean bound,
             boolean cleanupComplete) { }
 
+    record DiscardResult(long filesDeleted, long bytesDeleted, long failures) {
+        boolean complete() {
+            return failures == 0L;
+        }
+    }
+
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     private static final String SCHEMA_VERSION = "1";
@@ -72,9 +74,9 @@ class ProxyCorrelationSpool {
     private final ReentrantLock lock = new ReentrantLock();
     private final Map<String, Path> filesByToken = new LinkedHashMap<>();
     /*
-     * Protected by lock. Completion guards prevent a concurrent Stop-persistence snapshot from
-     * recreating a document after destination handoff. The bounded set covers at most the spool's
-     * configured file ceiling and discards guards in insertion order.
+     * Protected by lock. Completion guards prevent a concurrent active-run persistence operation
+     * from recreating a document after destination handoff. The bounded set covers at most the
+     * spool's configured file ceiling and discards guards in insertion order.
      */
     private final Set<String> completedTokens = new LinkedHashSet<>();
     private long totalBytes;
@@ -151,35 +153,6 @@ class ProxyCorrelationSpool {
             recordFailure("[ProxyCorrelation] Unable to persist unresolved document: error="
                     + failureKind(e));
             return PersistResult.FAILED;
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    List<StoredEntry> recover() {
-        List<StoredEntry> recovered = new ArrayList<>();
-        recoverEach(recovered::add);
-        return recovered;
-    }
-
-    int recoverEach(Consumer<StoredEntry> consumer) {
-        lock.lock();
-        try {
-            int recovered = 0;
-            for (Map.Entry<String, Path> file : new ArrayList<>(filesByToken.entrySet())) {
-                try {
-                    Map<String, Object> envelope = JSON.readValue(Files.readAllBytes(file.getValue()), MAP_TYPE);
-                    StoredEntry entry = parseEnvelope(envelope);
-                    if (!file.getKey().equals(entry.token())) {
-                        throw new IOException("token does not match file name");
-                    }
-                    consumer.accept(entry);
-                    recovered++;
-                } catch (IOException | RuntimeException e) {
-                    quarantineCorruptFile(file.getValue(), e);
-                }
-            }
-            return recovered;
         } finally {
             lock.unlock();
         }
@@ -300,20 +273,23 @@ class ProxyCorrelationSpool {
         }
     }
 
-    void clearForTests() {
+    DiscardResult discardAll() {
         lock.lock();
         try {
-            for (Path path : filesByToken.values()) {
-                try {
-                    Files.deleteIfExists(path);
-                } catch (IOException e) {
-                    Logger.logError("[ProxyCorrelation] Test spool cleanup failed: error="
-                            + failureKind(e));
-                }
-            }
+            DiscardResult result = discardOwnedArtifactsLocked();
             filesByToken.clear();
             completedTokens.clear();
             totalBytes = 0L;
+            return result;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    void clearForTests() {
+        discardAll();
+        lock.lock();
+        try {
             permanentFailures.set(0L);
             lastFailureLogMs.set(Long.MIN_VALUE);
             suppressedFailureLogs.set(0L);
@@ -328,43 +304,58 @@ class ProxyCorrelationSpool {
             if (!Files.isDirectory(directory)) {
                 return;
             }
-            try (DirectoryStream<Path> temporaryFiles =
-                    Files.newDirectoryStream(directory, projectId + FILE_TOKEN_SEPARATOR + "*.json.tmp")) {
-                for (Path temporary : temporaryFiles) {
-                    Files.deleteIfExists(temporary);
-                }
+            DiscardResult discarded = discardOwnedArtifactsLocked();
+            if (discarded.filesDeleted() > 0L) {
+                Logger.logInfoPanelOnly("[ProxyCorrelation] Discarded "
+                        + discarded.filesDeleted() + " abandoned spool artifacts ("
+                        + discarded.bytesDeleted() + " bytes)." );
             }
-            try (DirectoryStream<Path> deliveredFiles =
-                    Files.newDirectoryStream(directory, projectId + FILE_TOKEN_SEPARATOR + "*.json.delivered")) {
-                for (Path delivered : deliveredFiles) {
-                    String deliveredName = delivered.getFileName().toString();
-                    String originalName = deliveredName.substring(
-                            0, deliveredName.length() - ".delivered".length());
-                    Files.deleteIfExists(delivered.resolveSibling(originalName));
-                    Files.deleteIfExists(delivered);
-                }
+            if (!discarded.complete()) {
+                recordFailure("[ProxyCorrelation] Unable to discard all abandoned spool artifacts: "
+                        + "failures=" + discarded.failures());
             }
-            List<Path> paths = new ArrayList<>();
-            try (DirectoryStream<Path> stream =
-                    Files.newDirectoryStream(directory, projectId + FILE_TOKEN_SEPARATOR + "*.json")) {
-                for (Path path : stream) {
-                    paths.add(path);
-                }
-            }
-            paths.sort(Comparator.comparing(path -> path.getFileName().toString()));
-            for (Path path : paths) {
-                String name = path.getFileName().toString();
-                int tokenStart = projectId.length() + FILE_TOKEN_SEPARATOR.length();
-                String token = name.substring(tokenStart, name.length() - ".json".length());
-                filesByToken.put(token, path);
-                totalBytes += Files.size(path);
-            }
-        } catch (IOException e) {
-            recordFailure("[ProxyCorrelation] Unable to initialize durable spool: error="
-                    + failureKind(e));
         } finally {
             lock.unlock();
         }
+    }
+
+    private DiscardResult discardOwnedArtifactsLocked() {
+        long filesDeleted = 0L;
+        long bytesDeleted = 0L;
+        long failures = 0L;
+        if (!Files.isDirectory(directory)) {
+            return new DiscardResult(0L, 0L, 0L);
+        }
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory)) {
+            for (Path path : stream) {
+                if (!isOwnedArtifact(path)) {
+                    continue;
+                }
+                try {
+                    long bytes = Files.size(path);
+                    if (Files.deleteIfExists(path)) {
+                        filesDeleted++;
+                        bytesDeleted += bytes;
+                    }
+                } catch (IOException e) {
+                    failures++;
+                }
+            }
+        } catch (IOException e) {
+            failures++;
+        }
+        return new DiscardResult(filesDeleted, bytesDeleted, failures);
+    }
+
+    private boolean isOwnedArtifact(Path path) {
+        String name = path.getFileName().toString();
+        if (!name.startsWith(projectId + FILE_TOKEN_SEPARATOR)) {
+            return false;
+        }
+        return name.endsWith(".json")
+                || name.endsWith(".json.tmp")
+                || name.endsWith(".json.delivered")
+                || name.endsWith(".json.corrupt");
     }
 
     private Map<String, Object> envelope(StoredEntry entry) {
@@ -470,21 +461,6 @@ class ProxyCorrelationSpool {
                     StandardCopyOption.REPLACE_EXISTING);
         } catch (AtomicMoveNotSupportedException e) {
             Files.move(source, target, StandardCopyOption.REPLACE_EXISTING);
-        }
-    }
-
-    private void quarantineCorruptFile(Path path, Exception failure) {
-        recordFailure("[ProxyCorrelation] Corrupt durable spool entry was quarantined: error="
-                + failureKind(failure));
-        try {
-            long bytes = Files.exists(path) ? Files.size(path) : 0L;
-            Path quarantine = path.resolveSibling(path.getFileName() + ".corrupt");
-            Files.move(path, quarantine, StandardCopyOption.REPLACE_EXISTING);
-            filesByToken.values().remove(path);
-            totalBytes = Math.max(0L, totalBytes - bytes);
-        } catch (IOException e) {
-            Logger.logError("[ProxyCorrelation] Unable to quarantine corrupt entry: error="
-                    + failureKind(e));
         }
     }
 

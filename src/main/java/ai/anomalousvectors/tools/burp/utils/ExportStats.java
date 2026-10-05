@@ -916,9 +916,7 @@ public final class ExportStats {
     private static final AtomicLong trafficSpillDequeued = new AtomicLong(0);
     /** Count of traffic documents dropped because spill storage rejected them. */
     private static final AtomicLong trafficSpillDrops = new AtomicLong(0);
-    /** Count of spill documents discovered on startup and available for replay. */
-    private static final AtomicLong trafficSpillRecovered = new AtomicLong(0);
-    /** Count of spill files pruned by retention policy before replay. */
+    /** Count of spill files pruned by retention policy before active-run dequeue. */
     private static final AtomicLong trafficSpillExpiredPruned = new AtomicLong(0);
     /** Reason-coded drop counters for extreme traffic handling diagnostics. */
     private static final ReasonCounterSet trafficDropReasons = new ReasonCounterSet();
@@ -1069,22 +1067,6 @@ public final class ExportStats {
     /** Returns total traffic documents dropped due to spill rejection this session. */
     public static long getTrafficSpillDrops() {
         return trafficSpillDrops.get();
-    }
-
-    /**
-     * Records one or more spill documents recovered on startup.
-     *
-     * @param count recovered spill document count; ignored if {@code <= 0}
-     */
-    public static void recordTrafficSpillRecovered(long count) {
-        if (count > 0) {
-            trafficSpillRecovered.addAndGet(count);
-        }
-    }
-
-    /** Returns total spill documents recovered on startup this session. */
-    public static long getTrafficSpillRecovered() {
-        return trafficSpillRecovered.get();
     }
 
     /**
@@ -1953,7 +1935,6 @@ public final class ExportStats {
         trafficSpillEnqueued.set(0);
         trafficSpillDequeued.set(0);
         trafficSpillDrops.set(0);
-        trafficSpillRecovered.set(0);
         trafficSpillExpiredPruned.set(0);
         trafficDropReasons.clear();
         trafficToolSourceFallbacks.set(0);

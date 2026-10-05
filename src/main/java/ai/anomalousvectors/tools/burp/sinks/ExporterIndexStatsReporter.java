@@ -466,8 +466,8 @@ public final class ExporterIndexStatsReporter {
         spill.put("count", TrafficExportQueue.getCurrentSpillSize());
         spill.put("bytes", TrafficExportQueue.getCurrentSpillBytes());
         spill.put("oldest_age_ms", TrafficExportQueue.getCurrentSpillOldestAgeMs());
-        spill.put("recovered_count", TrafficExportQueue.getRecoveredSpillCount());
-        spill.put("recovered_bytes", TrafficExportQueue.getRecoveredSpillBytes());
+        spill.put("startup_discarded_count", TrafficExportQueue.getStartupDiscardedSpillCount());
+        spill.put("startup_discarded_bytes", TrafficExportQueue.getStartupDiscardedSpillBytes());
         return spill;
     }
 

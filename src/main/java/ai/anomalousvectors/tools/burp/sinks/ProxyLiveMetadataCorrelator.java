@@ -14,7 +14,6 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.LongSupplier;
@@ -84,6 +83,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     private static final Map<String, DeferredEntry> PENDING = new LinkedHashMap<>();
     private static final Map<Integer, DeferredEntry> PENDING_BY_PROXY_MESSAGE_ID = new HashMap<>();
     private static final Map<Integer, DeferredEntry> PENDING_BY_HTTP_MESSAGE_ID = new HashMap<>();
+    private static final Map<Long, Integer> IN_FLIGHT_RESPONSES = new HashMap<>();
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-proxy-token-reconcile");
     private static final AtomicBoolean COALESCE_SCHEDULED = new AtomicBoolean();
@@ -91,10 +91,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     private static final AtomicBoolean WORK_QUEUED = new AtomicBoolean();
     private static final AtomicLong WAKE_EPOCH = new AtomicLong();
     private static final AtomicLong RECONCILE_EPOCH = new AtomicLong();
-    private static final AtomicLong ACTIVE_PERSIST_WORKERS = new AtomicLong();
-    private static final AtomicReference<Thread> LAST_PERSIST_WORKER = new AtomicReference<>();
-    private static final AtomicBoolean PERSIST_RERUN_REQUESTED = new AtomicBoolean();
-
     private static final AtomicLong ELIGIBLE_TOTAL = new AtomicLong();
     private static final AtomicLong BOUND_TOTAL = new AtomicLong();
     private static final AtomicLong DURABLE_TOTAL = new AtomicLong();
@@ -118,8 +114,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
 
     private static volatile boolean intakeOpen;
     private static volatile boolean handoffOpen;
-    private static int inFlightResponses;
-    private static long lateFinalizationGeneration;
     private static volatile boolean schedulerEnabled = true;
     private static volatile long generation;
     private static volatile long durableThresholdMs = DEFAULT_DURABLE_THRESHOLD_MS;
@@ -142,11 +136,11 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     }
 
     /**
-     * Opens token intake for a new export run and rehydrates unresolved durable entries.
+     * Opens token intake for a new export run after discarding any stale run state.
      *
-     * <p>Safe to call more than once. Existing in-memory entries are retained, and recovered
-     * entries are merged by token. Disk recovery and worker creation complete before callbacks can
-     * observe the run as open.</p>
+     * <p>Safe to call more than once. A new run never replays unresolved work from a stopped or
+     * interrupted run. Stale in-memory and on-disk correlation state is discarded before callbacks
+     * can observe the run as open.</p>
      */
     public static void openRun() {
         OWNER.lock();
@@ -169,15 +163,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         HISTORY_PRIME_PENDING.set(schedulerEnabled);
         RECONCILE_EPOCH.incrementAndGet();
         reconcileOwner = new ReentrantLock();
-        int recoveredCount = spool.recoverEach(stored -> {
-            DeferredEntry entry = DeferredEntry.recovered(stored);
-            OWNER.lock();
-            try {
-                PENDING.putIfAbsent(entry.token, entry);
-            } finally {
-                OWNER.unlock();
-            }
-        });
+        discardPendingState();
         OWNER.lock();
         try {
             if (intakeOpen) {
@@ -188,8 +174,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             intakeOpen = true;
             handoffOpen = true;
             Logger.logInfoPanelOnly("[ProxyCorrelation] Run opened: generation=" + generation
-                    + ", pending=" + PENDING.size()
-                    + ", recoveredFromDisk=" + recoveredCount
+                    + ", pending=0"
                     + ", pendingDurable=" + spool.count()
                     + ", markerSource=http_handler"
                     + ", durableThresholdMs=" + durableThresholdMs + ".");
@@ -197,9 +182,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             OWNER.unlock();
         }
         requestImmediateWake();
-        if (recoveredCount > 0) {
-            scheduleDelayedWake(COLD_RETRY_MS);
-        }
     }
 
     /**
@@ -222,142 +204,70 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     }
 
     /**
-     * Closes worker handoff and asynchronously persists unresolved entries.
+     * Closes worker handoff and discards unresolved entries from the current run.
      *
-     * <p>Stop never waits for History, spool, or destination I/O. Work already admitted to the
-     * export queue is drained by the export lifecycle; unresolved correlation state remains outside
-     * that queue and is persisted by a daemon worker. The method can wait up to
-     * {@link #STOP_WAIT_MS} for response callbacks admitted before intake closed. Caller must not
-     * invoke on the EDT.</p>
+     * <p>Work already admitted to the traffic queue is handled by the export lifecycle. This method
+     * waits up to {@link #STOP_WAIT_MS} for response callbacks admitted before intake closed, then
+     * removes marker state, memory state, and run-owned spool files without making them eligible for
+     * a later Start. Caller must not invoke on the EDT.</p>
+     *
+     * @return {@code true} when all run-owned spool artifacts were deleted
      */
-    public static void closeAndDrainRun() {
+    public static boolean closeAndDiscardRun() {
+        return closeAndDiscardRun(STOP_WAIT_MS);
+    }
+
+    /**
+     * Closes worker handoff and discards unresolved entries within a caller-owned wait budget.
+     *
+     * @param timeoutMs maximum wait for already admitted response callbacks
+     * @return {@code true} when all run-owned spool artifacts were deleted
+     */
+    public static boolean closeAndDiscardRun(long timeoutMs) {
         closeIntake();
         long closingGeneration = generation;
-        boolean responsesDrained = awaitInFlightResponses(closingGeneration);
-        if (responsesDrained) {
-            retireRequestOnlyMarkers(closingGeneration);
-        }
+        awaitInFlightResponses(closingGeneration, timeoutMs);
         handoffOpen = false;
         RECONCILE_EPOCH.incrementAndGet();
         WAKE_EPOCH.incrementAndGet();
         SCHEDULER.stop();
         COALESCE_SCHEDULED.set(false);
         WORK_QUEUED.set(false);
-        persistPendingAsynchronously(Long.MIN_VALUE);
+        retireRequestOnlyMarkers(closingGeneration);
+        return discardPendingState();
     }
 
-    private static void persistPendingAsynchronously(long targetGeneration) {
-        Thread worker = new Thread(
-                () -> {
-                    try {
-                        List<DeferredEntry> unresolved;
-                        OWNER.lock();
-                        try {
-                            unresolved = List.copyOf(PENDING.values());
-                        } finally {
-                            OWNER.unlock();
-                        }
-                        for (DeferredEntry entry : unresolved) {
-                            if (targetGeneration == Long.MIN_VALUE
-                                    || entry.generation == targetGeneration) {
-                                entry.ensureEstimatedBytes();
-                                persist(entry);
-                            }
-                        }
-                    } finally {
-                        ACTIVE_PERSIST_WORKERS.decrementAndGet();
-                        LAST_PERSIST_WORKER.compareAndSet(Thread.currentThread(), null);
-                        if (PERSIST_RERUN_REQUESTED.getAndSet(false)) {
-                            persistPendingAsynchronously(Long.MIN_VALUE);
-                        }
-                    }
-                },
-                "burp-exporter-proxy-stop-persist");
-        worker.setDaemon(true);
-        while (true) {
-            Thread existing = LAST_PERSIST_WORKER.get();
-            if (existing != null && existing.isAlive()) {
-                PERSIST_RERUN_REQUESTED.set(true);
-                return;
-            }
-            if (LAST_PERSIST_WORKER.compareAndSet(existing, worker)) {
-                break;
-            }
-        }
-        ACTIVE_PERSIST_WORKERS.incrementAndGet();
-        worker.start();
-    }
-
-    /**
-     * Waits within a caller-owned shutdown budget for asynchronous correlation persistence.
-     *
-     * <p>Caller must not invoke on the EDT. Interruption restores the interrupt flag and returns
-     * {@code false}.</p>
-     *
-     * @param timeoutMs maximum wait in milliseconds; non-positive values perform an immediate probe
-     * @return {@code true} when no Stop-persistence worker remains active
-     */
-    public static boolean awaitPendingPersistence(long timeoutMs) {
-        if (timeoutMs <= 0L) {
-            Thread worker = LAST_PERSIST_WORKER.get();
-            return (worker == null || !worker.isAlive())
-                    && ACTIVE_PERSIST_WORKERS.get() == 0L
-                    && !PERSIST_RERUN_REQUESTED.get();
-        }
-        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
-        while (true) {
-            Thread worker = LAST_PERSIST_WORKER.get();
-            if ((worker == null || !worker.isAlive())
-                    && ACTIVE_PERSIST_WORKERS.get() == 0L
-                    && !PERSIST_RERUN_REQUESTED.get()) {
-                return true;
-            }
-            long remainingNanos = deadline - System.nanoTime();
-            if (remainingNanos <= 0L) {
-                return false;
-            }
-            if (worker == null) {
-                Thread.onSpinWait();
-                continue;
-            }
-            try {
-                long waitMs = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
-                worker.join(waitMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
-        }
-    }
-
-    private static boolean awaitInFlightResponses(long closingGeneration) {
-        long remainingNanos = TimeUnit.MILLISECONDS.toNanos(STOP_WAIT_MS);
+    private static boolean awaitInFlightResponses(long closingGeneration, long timeoutMs) {
+        long waitMs = Math.min(STOP_WAIT_MS, Math.max(0L, timeoutMs));
+        long remainingNanos = TimeUnit.MILLISECONDS.toNanos(waitMs);
         OWNER.lock();
         try {
-            while (inFlightResponses > 0 && remainingNanos > 0L) {
+            while (inFlightResponsesLocked(closingGeneration) > 0 && remainingNanos > 0L) {
                 try {
                     remainingNanos = RESPONSES_DRAINED.awaitNanos(remainingNanos);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
-                    lateFinalizationGeneration = closingGeneration;
                     return false;
                 }
             }
-            if (inFlightResponses > 0) {
-                lateFinalizationGeneration = closingGeneration;
+            int remainingResponses = inFlightResponsesLocked(closingGeneration);
+            if (remainingResponses > 0) {
                 Logger.logWarnPanelOnly(
                         "[ProxyCorrelation] Stop timed out waiting for HTTP response callbacks: "
                                 + "generation=" + closingGeneration
-                                + ", inFlightResponses=" + inFlightResponses
-                                + ", waitMs=" + STOP_WAIT_MS
-                                + "; late callbacks will finalize and persist asynchronously.");
+                                + ", inFlightResponses=" + remainingResponses
+                                + ", waitMs=" + waitMs
+                                + "; late callbacks will be discarded.");
                 return false;
             }
-            lateFinalizationGeneration = 0L;
             return true;
         } finally {
             OWNER.unlock();
         }
+    }
+
+    private static int inFlightResponsesLocked(long responseGeneration) {
+        return IN_FLIGHT_RESPONSES.getOrDefault(responseGeneration, 0);
     }
 
     private static void retireRequestOnlyMarkers(long retiringGeneration) {
@@ -387,6 +297,38 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         }
     }
 
+    private static boolean discardPendingState() {
+        List<DeferredEntry> pending;
+        List<LiveToken> live;
+        OWNER.lock();
+        try {
+            pending = List.copyOf(PENDING.values());
+            live = LIVE_TOKENS_BY_TOKEN.values().stream().distinct().toList();
+            PENDING.clear();
+            PENDING_BY_PROXY_MESSAGE_ID.clear();
+            PENDING_BY_HTTP_MESSAGE_ID.clear();
+            PROXY_LIVE_TOKENS.clear();
+            HTTP_LIVE_TOKENS.clear();
+            LIVE_TOKENS_BY_TOKEN.clear();
+        } finally {
+            OWNER.unlock();
+        }
+        for (DeferredEntry entry : pending) {
+            cleanupAnnotations(entry.cleanupTargetsSnapshot(), entry.token);
+        }
+        for (LiveToken token : live) {
+            cleanupAnnotations(token.annotations, token.token);
+        }
+        historySource.reset();
+        ProxyCorrelationSpool.DiscardResult discarded = spool.discardAll();
+        if (!discarded.complete()) {
+            Logger.logWarnPanelOnly(
+                    "[ProxyCorrelation] Unable to discard all run-owned spool artifacts: failures="
+                            + discarded.failures() + ". Abandoned files will not be replayed.");
+        }
+        return discarded.complete();
+    }
+
     /**
      * Admits one global HTTP response callback to the current correlation generation.
      *
@@ -401,7 +343,9 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             if (!intakeOpen) {
                 return ResponseLease.inactive();
             }
-            inFlightResponses++;
+            IN_FLIGHT_RESPONSES.compute(
+                    generation, (responseGeneration, responseCount) ->
+                            responseCount == null ? 1 : responseCount + 1);
             return new ResponseLease(generation, true);
         } finally {
             OWNER.unlock();
@@ -772,9 +716,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         return Math.max(0L, spool.permanentFailures() - SPOOL_FAILURE_BASELINE.get());
     }
 
-    /**
-     * Returns eligible live Proxy documents in the current run, including recovered pending work.
-     */
+    /** Returns eligible live Proxy documents observed in the current run. */
     public static long eligibleTotal() {
         return ELIGIBLE_TOTAL.get();
     }
@@ -1178,11 +1120,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             dueEntries.removeIf(entry -> freshRescanDue.contains(entry)
                     && nowNanos < entry.finalResponseDeadlineNanos);
         }
-        Set<DeferredEntry> fullHistoryChecked =
-                allHistoryBatch.status == LookupStatus.LOOKUP_FAILED
-                        ? Set.of()
-                        : new HashSet<>(freshRescanDue);
-
         for (DeferredEntry entry : entries) {
             if (reconcileEpoch != RECONCILE_EPOCH.get()) {
                 return;
@@ -1195,8 +1132,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                     rowsByToken.getOrDefault(entry.token, List.of()),
                     nowNanos,
                     reconcileEpoch,
-                    source,
-                    fullHistoryChecked.contains(entry));
+                    source);
         }
     }
 
@@ -1262,8 +1198,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             List<ProxyHttpRequestResponse> rows,
             long nowNanos,
             long reconcileEpoch,
-            HistorySource source,
-            boolean fullHistoryChecked) {
+            HistorySource source) {
         if (reconcileEpoch != RECONCILE_EPOCH.get()) {
             return;
         }
@@ -1346,12 +1281,8 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         }
         if (!entry.cleanupComplete) {
             if (history == null) {
-                if (entry.bound && entry.recovered && fullHistoryChecked) {
-                    entry.cleanupComplete = true;
-                } else {
-                    entry.scheduleRetry(nowNanos);
-                    return;
-                }
+                entry.scheduleRetry(nowNanos);
+                return;
             } else if (!cleanupBoundEntry(entry, history)) {
                 entry.scheduleRetry(nowNanos);
                 return;
@@ -1387,7 +1318,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             OWNER.unlock();
         }
         source.forget(entry.token);
-        spool.complete(entry.token, ACTIVE_PERSIST_WORKERS.get() > 0L);
+        spool.complete(entry.token, false);
         if (hasHistoryId(entry.document)) {
             BOUND_TOTAL.incrementAndGet();
         }
@@ -1644,6 +1575,10 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
 
     private static boolean persist(DeferredEntry entry) {
         synchronized (entry) {
+            if (!handoffOpen || entry.generation != generation) {
+                spool.complete(entry.token, false);
+                return false;
+            }
             if (entry.durable && entry.document == null) {
                 return true;
             }
@@ -1787,7 +1722,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
                 + ", lookupFailures=" + LOOKUP_FAILURES.get()
                 + ", cleanupFailures=" + CLEANUP_FAILURES.get()
                 + ", spoolFailures=" + spoolFailures()
-                + ", inFlightResponses=" + inFlightResponses
+                + ", inFlightResponses=" + inFlightResponsesLocked(generation)
                 + ", explicitFailures=" + EXPLICIT_FAILURES.get() + ".");
     }
 
@@ -1818,33 +1753,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         }
     }
 
-    static void dropMemoryForRestartTest() {
-        intakeOpen = false;
-        RECONCILE_EPOCH.incrementAndGet();
-        WAKE_EPOCH.incrementAndGet();
-        SCHEDULER.stop();
-        reconcileOwner = new ReentrantLock();
-        OWNER.lock();
-        try {
-            handoffOpen = false;
-            PROXY_LIVE_TOKENS.clear();
-            HTTP_LIVE_TOKENS.clear();
-            LIVE_TOKENS_BY_TOKEN.clear();
-            RETIRED_HTTP_MESSAGE_IDS.clear();
-            RETIRED_TOKENS.clear();
-            PENDING.clear();
-            PENDING_BY_PROXY_MESSAGE_ID.clear();
-            PENDING_BY_HTTP_MESSAGE_ID.clear();
-            inFlightResponses = 0;
-            lateFinalizationGeneration = 0L;
-            COALESCE_SCHEDULED.set(false);
-            HISTORY_PRIME_PENDING.set(false);
-            WORK_QUEUED.set(false);
-        } finally {
-            OWNER.unlock();
-        }
-    }
-
     static int pendingCountForTest() {
         OWNER.lock();
         try {
@@ -1866,10 +1774,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         } finally {
             OWNER.unlock();
         }
-    }
-
-    static void awaitPendingPersistenceForTest() {
-        awaitPendingPersistence(2_000L);
     }
 
     static void enableSchedulerForTests() {
@@ -1905,7 +1809,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     }
 
     static void resetForTests() {
-        awaitPendingPersistenceForTest();
         intakeOpen = false;
         RECONCILE_EPOCH.incrementAndGet();
         WAKE_EPOCH.incrementAndGet();
@@ -1925,8 +1828,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             PENDING.clear();
             PENDING_BY_PROXY_MESSAGE_ID.clear();
             PENDING_BY_HTTP_MESSAGE_ID.clear();
-            inFlightResponses = 0;
-            lateFinalizationGeneration = 0L;
+            IN_FLIGHT_RESPONSES.clear();
             previousSpool = spool;
             historySource = new BurpHistorySource();
             offerSink = TrafficExportQueue::offerAccepted;
@@ -1958,9 +1860,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             HISTORY_PRIME_PENDING.set(false);
             WORK_QUEUED.set(false);
             WAKE_EPOCH.set(0L);
-            LAST_PERSIST_WORKER.set(null);
-            ACTIVE_PERSIST_WORKERS.set(0L);
-            PERSIST_RERUN_REQUESTED.set(false);
         } finally {
             OWNER.unlock();
         }
@@ -2028,7 +1927,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
     /**
      * Reads only Proxy History rows appended since the previous fresh lookup.
      *
-     * <p>The first lookup scans the current snapshot once. Recovered durable entries use an
+     * <p>The first lookup scans the current snapshot once. Active-run durable entries may use an
      * explicit all-History lookup on their independent cold schedule. A changed or cleared History
      * invalidates the append cursor and causes one safe rescan.</p>
      */
@@ -2187,9 +2086,9 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
 
     static final class ResponseLease implements AutoCloseable {
         /*
-         * Closing is idempotent. An active lease decrements in-flight response accounting and
-         * signals Stop waiters. A lease that outlives the Stop wait may also retire its original
-         * generation's markers and request asynchronous persistence.
+         * Closing is idempotent. An active lease decrements its generation's in-flight response
+         * accounting and signals Stop waiters. A lease that outlives Stop cannot publish or persist
+         * work into a later run.
          */
         private static final ResponseLease INACTIVE = new ResponseLease(0L, false);
 
@@ -2212,23 +2111,17 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             if (!active || !closed.compareAndSet(false, true)) {
                 return;
             }
-            long finalizeGeneration = 0L;
             OWNER.lock();
             try {
-                inFlightResponses = Math.max(0, inFlightResponses - 1);
-                if (inFlightResponses == 0) {
+                int remaining = Math.max(0, inFlightResponsesLocked(generation) - 1);
+                if (remaining == 0) {
+                    IN_FLIGHT_RESPONSES.remove(generation);
                     RESPONSES_DRAINED.signalAll();
-                    if (lateFinalizationGeneration == generation) {
-                        finalizeGeneration = generation;
-                        lateFinalizationGeneration = 0L;
-                    }
+                } else {
+                    IN_FLIGHT_RESPONSES.put(generation, remaining);
                 }
             } finally {
                 OWNER.unlock();
-            }
-            if (finalizeGeneration > 0L) {
-                retireRequestOnlyMarkers(finalizeGeneration);
-                persistPendingAsynchronously(finalizeGeneration);
             }
         }
     }
@@ -2259,8 +2152,8 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         /*
          * Identity and source metadata are immutable. Reconciliation serializes binding, cleanup,
          * retry scheduling, and History ownership. Volatile durability/state fields are also read
-         * by asynchronous Stop persistence and Stats. A durable entry is persisted again after
-         * binding and cleanup before destination handoff.
+         * by Stats. A durable entry is persisted again after binding and cleanup before destination
+         * handoff.
          */
         private final String token;
         private final int messageId;
@@ -2271,7 +2164,6 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         private volatile Map<String, Object> document;
         private final List<Annotations> cleanupTargets;
         private volatile long estimatedBytes;
-        private final boolean recovered;
         private volatile boolean durable;
         private volatile boolean bound;
         private volatile boolean cleanupComplete;
@@ -2324,50 +2216,14 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
             this.responseToBeSentBytes = live == null ? null : live.responseToBeSentBytes;
             this.responseToBeSent = live == null ? null : live.responseToBeSent;
             this.responseToBeSentObserved = live != null && live.responseToBeSentObserved;
-            this.recovered = false;
             this.nextLookupAtNanos = createdAtNanos;
             this.nextDurabilityAttemptAtNanos = createdAtNanos
                     + TimeUnit.MILLISECONDS.toNanos(durableThresholdMs);
         }
 
-        private DeferredEntry(
-                ProxyCorrelationSpool.StoredEntry stored,
-                long recoveredAtNanos) {
-            this.token = stored.token();
-            this.messageId = stored.messageId();
-            this.listenerPort = stored.listenerPort();
-            this.generation = stored.generation();
-            this.requestSentMs = stored.requestSentMs();
-            this.createdAtEpochMs = stored.createdAtEpochMs();
-            this.document = null;
-            this.cleanupTargets = new ArrayList<>();
-            this.expectFinalResponse = false;
-            this.finalResponseDeadlineNanos = recoveredAtNanos;
-            this.proxyMessageId = null;
-            this.upstreamResponseBytes = null;
-            this.requestReceivedBytes = null;
-            this.requestToBeSentBytes = null;
-            this.recovered = true;
-            this.durable = true;
-            this.bound = stored.bound();
-            this.cleanupComplete = stored.cleanupComplete();
-            this.nextLookupAtNanos = recoveredAtNanos
-                    + TimeUnit.MILLISECONDS.toNanos(COLD_RETRY_MS);
-            this.nextDurabilityAttemptAtNanos = Long.MAX_VALUE;
-        }
-
-        private static DeferredEntry recovered(ProxyCorrelationSpool.StoredEntry stored) {
-            return new DeferredEntry(stored, monotonicNanos.getAsLong());
-        }
-
         private void scheduleRetry(long nowNanos) {
-            long delayMs;
-            if (recovered) {
-                delayMs = COLD_RETRY_MS;
-            } else {
-                int index = Math.min(lookupAttempts, FRESH_RETRY_MS.length - 1);
-                delayMs = FRESH_RETRY_MS[index];
-            }
+            int index = Math.min(lookupAttempts, FRESH_RETRY_MS.length - 1);
+            long delayMs = FRESH_RETRY_MS[index];
             lookupAttempts++;
             nextLookupAtNanos = nowNanos + TimeUnit.MILLISECONDS.toNanos(delayMs);
         }
@@ -2378,7 +2234,7 @@ public final class ProxyLiveMetadataCorrelator implements ProxyRequestHandler, P
         }
 
         private boolean coldLane() {
-            return recovered || durable;
+            return durable;
         }
 
         private boolean readyForFinalResponse(long nowNanos) {

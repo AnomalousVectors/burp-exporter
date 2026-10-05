@@ -34,6 +34,8 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.MockedStatic;
 
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
@@ -64,9 +66,12 @@ class ProxyLiveMetadataCorrelatorTest {
     private final List<ProxyHttpRequestResponse> history = new ArrayList<>();
     private final List<Map<String, Object>> offered = new ArrayList<>();
     private ProxyCorrelationSpool testSpool;
+    private ConfigState.State previousRuntimeState;
 
     @BeforeEach
     void setUp() {
+        previousRuntimeState = RuntimeConfig.getState();
+        RuntimeConfig.updateState(proxyTrafficState(tempDir));
         RuntimeConfig.setExportRunning(false);
         testSpool = new ProxyCorrelationSpool(tempDir.resolve("correlation"), 10_000_000L);
         configure(testSpool);
@@ -78,6 +83,7 @@ class ProxyLiveMetadataCorrelatorTest {
         RuntimeConfig.setExportRunning(false);
         ProxyLiveMetadataCorrelator.resetForTests();
         MontoyaApiProvider.set(null);
+        RuntimeConfig.updateState(previousRuntimeState);
     }
 
     @Test
@@ -1098,93 +1104,28 @@ class ProxyLiveMetadataCorrelatorTest {
     }
 
     @Test
-    void restartRehydratesAndBindsDurableDocument() {
-        configure(testSpool, 0L);
-        MutableAnnotations live = mutableAnnotations("");
-        ProxyLiveMetadataCorrelator.registerLiveTokenForTest(51, TOKEN_A, 8080, live.value);
-        Map<String, Object> document = liveDocument(51);
-        ProxyLiveMetadataCorrelator.deferUntilHistoryBound(document, live.value, 51, SENT_MS);
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-
-        ProxyLiveMetadataCorrelator.dropMemoryForRestartTest();
-        ProxyCorrelationSpool recoveredSpool =
-                new ProxyCorrelationSpool(tempDir.resolve("correlation"), 10_000_000L);
-        configure(recoveredSpool);
-        history.add(historyRow(
-                82_001,
+    void openRun_discardsPreexistingDurableStateWithoutReplay() {
+        ProxyLiveMetadataCorrelator.closeIntake();
+        ProxyCorrelationSpool.StoredEntry abandoned = new ProxyCorrelationSpool.StoredEntry(
+                TOKEN_A,
+                51,
                 8080,
-                mutableAnnotations(ProxyCorrelationToken.marker(TOKEN_A)).value,
-                13,
-                34));
+                1L,
+                SENT_MS,
+                SENT_MS,
+                liveDocument(51),
+                false,
+                false);
+        assertThat(testSpool.persist(abandoned))
+                .isEqualTo(ProxyCorrelationSpool.PersistResult.STORED);
+
         ProxyLiveMetadataCorrelator.openRun();
-        monotonicNanos.addAndGet(Duration.ofMinutes(1).toNanos());
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
 
-        assertThat(offered).hasSize(1);
-        assertThat(historyId(offered.get(0))).isEqualTo(82_001);
-        assertThat(recoveredSpool.count()).isZero();
-    }
-
-    @Test
-    void recoveredDurableEntry_usesColdLaneInsteadOfEveryReconciliationPass() {
-        configure(testSpool, 0L);
-        MutableAnnotations live = mutableAnnotations("");
-        ProxyLiveMetadataCorrelator.registerLiveTokenForTest(52, TOKEN_A, 8080, live.value);
-        ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
-                liveDocument(52), live.value, 52, SENT_MS);
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-        ProxyLiveMetadataCorrelator.dropMemoryForRestartTest();
-        ProxyCorrelationSpool recoveredSpool =
-                new ProxyCorrelationSpool(tempDir.resolve("correlation"), 10_000_000L);
-        configure(recoveredSpool);
-        ProxyLiveMetadataCorrelator.openRun();
-
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-        monotonicNanos.addAndGet(Duration.ofSeconds(59).toNanos());
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-
-        assertThat(ProxyLiveMetadataCorrelator.historyLookupAttempts()).isZero();
-
-        monotonicNanos.addAndGet(Duration.ofSeconds(1).toNanos());
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-
-        assertThat(ProxyLiveMetadataCorrelator.historyLookupAttempts()).isEqualTo(1L);
+        assertThat(testSpool.count()).isZero();
         assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
-        assertThat(offered).hasSize(1);
-    }
-
-    @Test
-    void recoveredColdEntry_doesNotJoinFreshAppendLookup() {
-        configure(testSpool, 0L);
-        MutableAnnotations stale = mutableAnnotations("");
-        ProxyLiveMetadataCorrelator.registerLiveTokenForTest(53, TOKEN_A, 8080, stale.value);
-        ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
-                liveDocument(53), stale.value, 53, SENT_MS);
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-        ProxyLiveMetadataCorrelator.dropMemoryForRestartTest();
-        ProxyCorrelationSpool recoveredSpool =
-                new ProxyCorrelationSpool(tempDir.resolve("correlation"), 10_000_000L);
-        configure(recoveredSpool);
-        ProxyLiveMetadataCorrelator.openRun();
-        MutableAnnotations fresh = mutableAnnotations("");
-        ProxyLiveMetadataCorrelator.registerLiveTokenForTest(54, TOKEN_B, 8080, fresh.value);
-        Map<String, Object> freshDocument = liveDocument(54);
-        ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
-                freshDocument, fresh.value, 54, SENT_MS);
-        history.add(historyRow(
-                82_054,
-                8080,
-                mutableAnnotations(ProxyCorrelationToken.marker(TOKEN_B)).value,
-                4,
-                5));
-
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-        monotonicNanos.addAndGet(Duration.ofSeconds(30).toNanos());
-        ProxyLiveMetadataCorrelator.runReconciliationForTest();
-
-        assertThat(offered).containsExactly(freshDocument);
-        assertThat(ProxyLiveMetadataCorrelator.historyLookupAttempts()).isEqualTo(1L);
-        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isEqualTo(1);
+        assertThat(ProxyLiveMetadataCorrelator.eligibleTotal()).isZero();
+        assertThat(offered).isEmpty();
     }
 
     @Test
@@ -1257,7 +1198,7 @@ class ProxyLiveMetadataCorrelatorTest {
                 SENT_MS);
         assertThat(ProxyLiveMetadataCorrelator.explicitFailures()).isEqualTo(1L);
 
-        ProxyLiveMetadataCorrelator.closeAndDrainRun();
+        ProxyLiveMetadataCorrelator.closeAndDiscardRun();
         ProxyLiveMetadataCorrelator.openRun();
 
         assertThat(ProxyLiveMetadataCorrelator.eligibleTotal()).isZero();
@@ -1266,7 +1207,7 @@ class ProxyLiveMetadataCorrelatorTest {
     }
 
     @Test
-    void closePersistsUnresolvedStateAndClosesRequestOnlyMarkers() {
+    void closeDiscardsUnresolvedStateAndClosesRequestOnlyMarkers() {
         MutableAnnotations pendingResponse = mutableAnnotations("");
         MutableAnnotations requestOnly = mutableAnnotations("keep");
         ProxyLiveMetadataCorrelator.registerLiveTokenForTest(71, TOKEN_A, 8080, pendingResponse.value);
@@ -1277,11 +1218,12 @@ class ProxyLiveMetadataCorrelatorTest {
                 71,
                 SENT_MS);
 
-        ProxyLiveMetadataCorrelator.closeAndDrainRun();
-        ProxyLiveMetadataCorrelator.awaitPendingPersistenceForTest();
+        boolean clean = ProxyLiveMetadataCorrelator.closeAndDiscardRun();
 
-        assertThat(testSpool.count()).isEqualTo(1);
-        assertThat(ProxyCorrelationToken.find(pendingResponse.value)).contains(TOKEN_A);
+        assertThat(clean).isTrue();
+        assertThat(testSpool.count()).isZero();
+        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
+        assertThat(ProxyCorrelationToken.find(pendingResponse.value)).isEmpty();
         assertThat(requestOnly.notes.get()).isEqualTo("keep");
         assertThat(offered).isEmpty();
     }
@@ -1293,7 +1235,7 @@ class ProxyLiveMetadataCorrelatorTest {
         ProxyLiveMetadataCorrelator.ResponseLease lease =
                 ProxyLiveMetadataCorrelator.beginHttpResponse();
         Thread stop = new Thread(
-                ProxyLiveMetadataCorrelator::closeAndDrainRun,
+                ProxyLiveMetadataCorrelator::closeAndDiscardRun,
                 "correlation-stop-test");
 
         stop.start();
@@ -1307,25 +1249,27 @@ class ProxyLiveMetadataCorrelatorTest {
                 liveDocument(73), live.value, 73, SENT_MS, lease);
         lease.close();
         stop.join(2_000L);
-        ProxyLiveMetadataCorrelator.awaitPendingPersistenceForTest();
 
         assertThat(waitingForResponse).isTrue();
         assertThat(stop.isAlive()).isFalse();
-        assertThat(testSpool.count()).isEqualTo(1);
+        assertThat(testSpool.count()).isZero();
+        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
+        assertThat(ProxyCorrelationToken.find(live.value)).isEmpty();
     }
 
     @Test
-    void stopStart_retainsDurablePendingAndSeedsEligibility() {
+    void stopStart_discardsPendingAndStartsWithZeroEligibility() {
         MutableAnnotations live = mutableAnnotations("");
         ProxyLiveMetadataCorrelator.registerLiveTokenForTest(74, TOKEN_A, 8080, live.value);
         ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
                 liveDocument(74), live.value, 74, SENT_MS);
 
-        ProxyLiveMetadataCorrelator.closeAndDrainRun();
-        ProxyLiveMetadataCorrelator.awaitPendingPersistenceForTest();
+        ProxyLiveMetadataCorrelator.closeAndDiscardRun();
         ProxyLiveMetadataCorrelator.openRun();
 
-        assertThat(ProxyLiveMetadataCorrelator.eligibleTotal()).isEqualTo(1L);
+        assertThat(ProxyLiveMetadataCorrelator.eligibleTotal()).isZero();
+        assertThat(ProxyLiveMetadataCorrelator.pendingCountForTest()).isZero();
+        assertThat(testSpool.count()).isZero();
         history.add(historyRow(
                 83_074,
                 8080,
@@ -1335,8 +1279,7 @@ class ProxyLiveMetadataCorrelatorTest {
         monotonicNanos.addAndGet(Duration.ofMinutes(1).toNanos());
         ProxyLiveMetadataCorrelator.runReconciliationForTest();
 
-        assertThat(offered).hasSize(1);
-        assertThat(historyId(offered.get(0))).isEqualTo(83_074);
+        assertThat(offered).isEmpty();
         assertThat(testSpool.count()).isZero();
     }
 
@@ -1405,6 +1348,31 @@ class ProxyLiveMetadataCorrelatorTest {
                 epochMillis::get,
                 () -> TOKEN_A,
                 durableThresholdMs);
+    }
+
+    private static ConfigState.State proxyTrafficState(Path root) {
+        return new ConfigState.State(
+                List.of(ConfigKeys.SRC_TRAFFIC),
+                ConfigKeys.SCOPE_ALL,
+                List.of(),
+                new ConfigState.Sinks(
+                        true,
+                        root.toString(),
+                        true,
+                        false,
+                        true,
+                        ConfigState.DEFAULT_FILE_TOTAL_CAP_GB,
+                        false,
+                        ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT,
+                        false,
+                        "",
+                        "",
+                        "",
+                        ConfigState.OPEN_SEARCH_TLS_VERIFY),
+                ConfigState.DEFAULT_SETTINGS_SUB,
+                List.of("proxy"),
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                null);
     }
 
     private static Map<String, Object> liveDocument(int messageId) {

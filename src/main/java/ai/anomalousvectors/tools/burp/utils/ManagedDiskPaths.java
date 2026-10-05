@@ -43,10 +43,11 @@ public final class ManagedDiskPaths {
     }
 
     /**
-     * Returns the durable unresolved Proxy-correlation directory under the managed root.
+     * Returns the run-scoped unresolved Proxy-correlation directory under the managed root.
      *
      * <p>Entries here have not yet been admitted to the traffic export queue. They remain separate
-     * from overflow spill files so Stop and restart can resume exact Proxy History binding.</p>
+     * from overflow spill files so an active run can complete exact Proxy History binding. Stop,
+     * unload, failed Start, and the next load discard these temporary artifacts.</p>
      *
      * @return canonical unresolved Proxy-correlation directory path
      */

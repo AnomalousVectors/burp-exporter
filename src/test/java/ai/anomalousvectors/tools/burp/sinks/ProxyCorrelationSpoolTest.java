@@ -20,7 +20,7 @@ class ProxyCorrelationSpoolTest {
     Path tempDir;
 
     @Test
-    void persistAndRecover_preservesGenerationAndProjectOwnership() {
+    void restartDiscardsOwnedEntryWithoutTouchingForeignProject() {
         ProxyCorrelationSpool owner =
                 new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A");
         ProxyCorrelationSpool.StoredEntry entry = new ProxyCorrelationSpool.StoredEntry(
@@ -35,20 +35,27 @@ class ProxyCorrelationSpoolTest {
                 false);
 
         assertThat(owner.persist(entry)).isEqualTo(ProxyCorrelationSpool.PersistResult.STORED);
-
-        ProxyCorrelationSpool recovered =
-                new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A");
         ProxyCorrelationSpool foreign =
                 new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project B");
+        ProxyCorrelationSpool.StoredEntry foreignEntry = new ProxyCorrelationSpool.StoredEntry(
+                TOKEN_B,
+                18,
+                8081,
+                43L,
+                1_700_000_000_200L,
+                1_700_000_000_300L,
+                Map.of("burp", Map.of("message_id", 18)),
+                false,
+                false);
+        assertThat(foreign.persist(foreignEntry))
+                .isEqualTo(ProxyCorrelationSpool.PersistResult.STORED);
 
-        assertThat(recovered.recover()).singleElement().satisfies(value -> {
-            assertThat(value.token()).isEqualTo(TOKEN);
-            assertThat(value.messageId()).isEqualTo(17);
-            assertThat(value.listenerPort()).isEqualTo(8080);
-            assertThat(value.generation()).isEqualTo(42L);
-            assertThat(value.requestSentMs()).isEqualTo(1_700_000_000_000L);
-        });
-        assertThat(foreign.count()).isZero();
+        ProxyCorrelationSpool restarted =
+                new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A");
+
+        assertThat(restarted.count()).isZero();
+        assertThat(tempDir.resolve("project-a--" + TOKEN + ".json")).doesNotExist();
+        assertThat(tempDir.resolve("project-b--" + TOKEN_B + ".json")).exists();
     }
 
     @Test
@@ -90,11 +97,11 @@ class ProxyCorrelationSpoolTest {
         assertThat(spool.persist(entry)).isEqualTo(ProxyCorrelationSpool.PersistResult.STORED);
 
         assertThat(spool.count()).isZero();
-        assertThat(spool.recover()).isEmpty();
+        assertThat(tempDir.resolve("project-a--" + TOKEN + ".json")).doesNotExist();
     }
 
     @Test
-    void recover_quarantinesCorruptOwnedEntryAndKeepsValidEntries() throws Exception {
+    void initializationDiscardsOwnedValidAndCorruptArtifactsWithoutParsing() throws Exception {
         ProxyCorrelationSpool writer =
                 new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A");
         ProxyCorrelationSpool.StoredEntry valid = new ProxyCorrelationSpool.StoredEntry(
@@ -111,18 +118,18 @@ class ProxyCorrelationSpoolTest {
         Path malformed = tempDir.resolve("project-a--" + TOKEN_B + ".json");
         Files.writeString(malformed, "{not-json");
 
-        ProxyCorrelationSpool recovered =
+        ProxyCorrelationSpool restarted =
                 new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A");
 
-        assertThat(recovered.recover()).containsExactly(valid);
+        assertThat(restarted.count()).isZero();
+        assertThat(tempDir.resolve("project-a--" + TOKEN + ".json")).doesNotExist();
         assertThat(malformed).doesNotExist();
-        assertThat(tempDir.resolve(malformed.getFileName() + ".corrupt")).exists();
-        assertThat(recovered.count()).isEqualTo(1L);
-        assertThat(recovered.permanentFailures()).isEqualTo(1L);
+        assertThat(tempDir.resolve(malformed.getFileName() + ".corrupt")).doesNotExist();
+        assertThat(restarted.permanentFailures()).isZero();
     }
 
     @Test
-    void failedCompletionMove_leavesRestartTombstoneThatPreventsDuplicateRecovery() {
+    void failedCompletionMove_leavesArtifactsThatRestartDiscards() {
         AtomicBoolean rejectMoves = new AtomicBoolean();
         ProxyCorrelationSpool spool =
                 new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A") {
@@ -151,7 +158,34 @@ class ProxyCorrelationSpoolTest {
 
         ProxyCorrelationSpool restarted =
                 new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A");
-        assertThat(restarted.recover()).isEmpty();
         assertThat(restarted.count()).isZero();
+        assertThat(tempDir.resolve("project-a--" + TOKEN + ".json")).doesNotExist();
+        assertThat(tempDir.resolve("project-a--" + TOKEN + ".json.delivered")).doesNotExist();
+    }
+
+    @Test
+    void discardAllIsIdempotentAndRemovesActiveArtifacts() {
+        ProxyCorrelationSpool spool =
+                new ProxyCorrelationSpool(tempDir, 10_000_000L, 100L, "Project A");
+        ProxyCorrelationSpool.StoredEntry entry = new ProxyCorrelationSpool.StoredEntry(
+                TOKEN,
+                17,
+                8080,
+                42L,
+                1_700_000_000_000L,
+                1_700_000_000_100L,
+                Map.of("burp", Map.of("message_id", 17)),
+                false,
+                false);
+        assertThat(spool.persist(entry)).isEqualTo(ProxyCorrelationSpool.PersistResult.STORED);
+
+        ProxyCorrelationSpool.DiscardResult first = spool.discardAll();
+        ProxyCorrelationSpool.DiscardResult second = spool.discardAll();
+
+        assertThat(first.complete()).isTrue();
+        assertThat(first.filesDeleted()).isEqualTo(1L);
+        assertThat(first.bytesDeleted()).isPositive();
+        assertThat(second).isEqualTo(new ProxyCorrelationSpool.DiscardResult(0L, 0L, 0L));
+        assertThat(spool.count()).isZero();
     }
 }

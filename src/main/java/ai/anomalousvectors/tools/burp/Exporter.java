@@ -136,11 +136,6 @@ public class Exporter implements BurpExtension {
         proxyResponseHandlerRegistration = null;
         safeDeregister(proxyRequestHandlerRegistration);
         proxyRequestHandlerRegistration = null;
-        ProxyLiveMetadataCorrelator.closeAndDrainRun();
-        if (!ProxyLiveMetadataCorrelator.awaitPendingPersistence(5_000L)) {
-            Logger.logWarnPanelOnly(
-                    "[ProxyCorrelation] Extension unload persistence exceeded its 5-second budget.");
-        }
         safeDeregister(httpHandlerRegistration);
         httpHandlerRegistration = null;
         safeDeregister(requestEditorRegistration);

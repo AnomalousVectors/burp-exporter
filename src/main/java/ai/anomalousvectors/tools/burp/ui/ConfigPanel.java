@@ -844,14 +844,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 postStopProgress(callbacks, ExportShutdownStatus.waitingForBatchMessage());
                 ParameterIntegritySessionLog.flushStopDebugValidation();
                 StartupSnapshotCoordinator.cancelRun(stoppedRun);
-                ProxyLiveMetadataCorrelator.closeAndDrainRun();
-                if (!ProxyLiveMetadataCorrelator.awaitPendingPersistence(
-                        RuntimeConfig.remainingExportStopBudgetMs())) {
-                    Logger.logWarnPanelOnly(
-                            "[ProxyCorrelation] Stop persistence did not finish within the "
-                                    + "remaining shutdown budget; unload will make one final "
-                                    + "bounded wait.");
-                }
+                ProxyLiveMetadataCorrelator.closeIntake();
                 ExportReporterLifecycle.stopBackgroundReporters();
                 if (!isStopForceAbortRequested() && !RuntimeConfig.isExportStopBudgetExpired()) {
                     boolean startupIdle = StartupSnapshotCoordinator.awaitIdle(
@@ -889,7 +882,6 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 TrafficLiveAttributionSummary.logAndClearForCurrentRun();
                 postStopProgress(callbacks, ExportShutdownStatus.clearingQueuedTrafficMessage(snapshot));
                 ExportReporterLifecycle.clearRepeaterRunState();
-                TrafficExportQueue.clearPendingWork();
                 IndexingRetryCoordinator retryCoordinator = IndexingRetryCoordinator.getInstance();
                 // Entire Stop UX shares one wall-clock budget (EXPORT_STOP_UX_WALL_CLOCK_MS).
                 if (RuntimeConfig.isSearchExportEnabled()
@@ -949,6 +941,14 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                     }
                 }
                 retryCoordinator.clearPendingWork();
+                if (!ExportReporterLifecycle.discardPendingRunState(
+                        RuntimeConfig.remainingExportStopBudgetMs())) {
+                    forceAborted = true;
+                    RuntimeConfig.requestExportStopForceAbort();
+                    Logger.logWarnPanelOnly(
+                            "[Export] Run-state discard exceeded the Stop budget or left "
+                                    + "undeleted temporary artifacts.");
+                }
                 IndexingRetryCoordinator.warnIfOutstandingFailuresRemain();
                 if (FileExportService.hasTrackedArtifacts()) {
                     postStopProgress(callbacks, ExportShutdownStatus.validatingFileArtifactsMessage());
@@ -1425,9 +1425,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     private void abortStartOnEdt(String reason, ConfigControlPanel.StartUiCallbacks uiCallbacks) {
         RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
-        ProxyLiveMetadataCorrelator.closeAndDrainRun();
         RuntimeConfig.setExportRunning(false);
         StartupSnapshotCoordinator.cancelRun(token);
+        ExportReporterLifecycle.discardPendingRunState(0L);
         Logger.logErrorPanelOnly("[Export] Start aborted: " + reason);
         UrlParameterTruncationLog.flushStartupSummary();
         BodyParameterTruncationLog.flushStartupSummary();
@@ -1439,9 +1439,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     private void abortStartFromWorker(String reason, ConfigControlPanel.StartUiCallbacks uiCallbacks) {
         RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
-        ProxyLiveMetadataCorrelator.closeAndDrainRun();
         RuntimeConfig.setExportRunning(false);
         StartupSnapshotCoordinator.cancelRun(token);
+        ExportReporterLifecycle.discardPendingRunState(Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS);
         Logger.logErrorPanelOnly("[Export] Start aborted: " + reason);
         UrlParameterTruncationLog.flushStartupSummary();
         BodyParameterTruncationLog.flushStartupSummary();

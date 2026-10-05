@@ -3,7 +3,6 @@ package ai.anomalousvectors.tools.burp.sinks;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -110,8 +109,8 @@ class TrafficSpillFileQueueTest {
     }
 
     @Test
-    void initializeFromDisk_recoversExistingSpillEnvelope() throws IOException {
-        Path dir = TestPathSupport.createDirectory("traffic-spill-recover");
+    void initializeFromDisk_discardsExistingSpillEnvelope() throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-discard");
         try {
             String payload = "{\"meta\":{\"schema_version\":\"1\"},\"document\":{\"id\":99,\"url\":\"https://r\"}}";
             Files.writeString(
@@ -121,21 +120,19 @@ class TrafficSpillFileQueueTest {
                     StandardOpenOption.TRUNCATE_EXISTING);
 
             TrafficSpillFileQueue queue = new TrafficSpillFileQueue(dir, 10, 1024 * 1024);
-            assertThat(queue.recoveredCount()).isEqualTo(1);
-            assertThat(queue.recoveredBytes()).isGreaterThan(0);
-            assertThat(queue.oldestAgeMs()).isGreaterThanOrEqualTo(0);
-
-            Map<String, Object> doc = queue.poll();
-            assertThat(doc).isNotNull();
-            assertThat(doc.get("id")).isEqualTo(99);
-            assertThat(doc.get("url")).isEqualTo("https://r");
+            assertThat(queue.startupDiscardedCount()).isEqualTo(1);
+            assertThat(queue.startupDiscardedBytes()).isGreaterThan(0);
+            assertThat(queue.size()).isZero();
+            assertThat(queue.poll()).isNull();
+            assertThat(dir.resolve("test-project-00000000000000000001.json"))
+                    .doesNotExist();
         } finally {
             deleteRecursively(dir);
         }
     }
 
     @Test
-    void initializeFromDisk_legacyPreparedEnvelopeGeneratesStableOperationIdentity()
+    void initializeFromDisk_discardsLegacyPreparedEnvelopeWithoutReplay()
             throws IOException {
         Path dir = TestPathSupport.createDirectory("traffic-spill-legacy-prepared");
         try {
@@ -159,15 +156,33 @@ class TrafficSpillFileQueueTest {
 
             TrafficSpillFileQueue queue = new TrafficSpillFileQueue(
                     dir, 10, 1024 * 1024);
-            TrafficQueueEntry recovered = queue.pollEntry();
+            assertThat(queue.startupDiscardedCount()).isEqualTo(1L);
+            assertThat(queue.pollEntry()).isNull();
+            assertThat(dir.resolve("test-project-00000000000000000001.json"))
+                    .doesNotExist();
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
 
-            assertThat(recovered).isNotNull();
-            assertThat(recovered.prepared().operationId()).isNotBlank();
-            assertThat(new String(
-                    recovered.prepared().bulkNdjsonBytes(),
-                    StandardCharsets.UTF_8))
-                    .startsWith("{\"index\":{\"_id\":\""
-                            + recovered.prepared().operationId() + "\"}}");
+    @Test
+    void initializeFromDisk_preservesOtherProjectArtifacts() throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-project-isolation");
+        try {
+            Path owned = dir.resolve("project-a-00000000000000000001.json");
+            Path ownedTemp = dir.resolve("project-a-00000000000000000002.json.tmp");
+            Path foreign = dir.resolve("project-b-00000000000000000001.json");
+            Files.writeString(owned, "{}");
+            Files.writeString(ownedTemp, "partial");
+            Files.writeString(foreign, "{}");
+
+            TrafficSpillFileQueue queue = new TrafficSpillFileQueue(
+                    dir, 10, 1024 * 1024, "Project A", 86_400_000L);
+
+            assertThat(queue.startupDiscardedCount()).isEqualTo(1L);
+            assertThat(owned).doesNotExist();
+            assertThat(ownedTemp).doesNotExist();
+            assertThat(foreign).exists();
         } finally {
             deleteRecursively(dir);
         }

@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayDeque;
-import java.util.Comparator;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -57,6 +56,12 @@ final class TrafficSpillFileQueue {
         FAILED
     }
 
+    record DiscardResult(long filesDeleted, long bytesDeleted, long failures) {
+        boolean complete() {
+            return failures == 0L;
+        }
+    }
+
     private static final String SPILL_SOURCE = "traffic_overflow";
     private static final long DEFAULT_MAX_AGE_MS = TimeUnit.DAYS.toMillis(3);
     private static final TypeReference<Map<String, Object>> DOC_TYPE = new TypeReference<>() { };
@@ -70,8 +75,8 @@ final class TrafficSpillFileQueue {
     private final Deque<Path> files = new ArrayDeque<>();
     private long totalBytes = 0;
     private long nextSequence = 1;
-    private long recoveredCount = 0;
-    private long recoveredBytes = 0;
+    private long startupDiscardedCount = 0;
+    private long startupDiscardedBytes = 0;
 
     /**
      * Creates a queue with default limits under the managed exporter temp root.
@@ -104,8 +109,8 @@ final class TrafficSpillFileQueue {
     /**
      * Creates a queue with explicit location, limits, and project identity.
      *
-     * <p>Visible for tests. Construction initializes on-disk state immediately and recovers any
-     * compatible spill files already present in the directory.</p>
+     * <p>Visible for tests. Construction initializes on-disk state immediately and discards any
+     * compatible spill files abandoned by an earlier process.</p>
      */
     TrafficSpillFileQueue(Path directory, long maxFiles, long maxBytes, String projectId, long maxAgeMs) {
         this.directory = directory;
@@ -323,21 +328,21 @@ final class TrafficSpillFileQueue {
         }
     }
 
-    /** Returns spill file count recovered from disk during initialization. */
-    long recoveredCount() {
+    /** Returns abandoned spill file count discarded during initialization. */
+    long startupDiscardedCount() {
         lock.lock();
         try {
-            return recoveredCount;
+            return startupDiscardedCount;
         } finally {
             lock.unlock();
         }
     }
 
-    /** Returns recovered spill byte count from disk during initialization. */
-    long recoveredBytes() {
+    /** Returns abandoned spill byte count discarded during initialization. */
+    long startupDiscardedBytes() {
         lock.lock();
         try {
-            return recoveredBytes;
+            return startupDiscardedBytes;
         } finally {
             lock.unlock();
         }
@@ -351,14 +356,26 @@ final class TrafficSpillFileQueue {
     /**
      * Clears all currently queued spill files owned by this queue instance.
      */
-    void clear() {
+    DiscardResult clear() {
         lock.lock();
         try {
+            long filesDeleted = 0L;
+            long bytesDeleted = 0L;
+            long failures = 0L;
             for (Path path : files) {
-                deleteSpillFile(path);
+                try {
+                    long bytes = Files.exists(path) ? Files.size(path) : 0L;
+                    if (Files.deleteIfExists(path)) {
+                        filesDeleted++;
+                        bytesDeleted += bytes;
+                    }
+                } catch (IOException e) {
+                    failures++;
+                }
             }
             files.clear();
             totalBytes = 0;
+            return new DiscardResult(filesDeleted, bytesDeleted, failures);
         } finally {
             lock.unlock();
         }
@@ -401,8 +418,8 @@ final class TrafficSpillFileQueue {
             files.clear();
             totalBytes = 0;
             nextSequence = 1;
-            recoveredCount = 0;
-            recoveredBytes = 0;
+            startupDiscardedCount = 0;
+            startupDiscardedBytes = 0;
             if (!Files.isDirectory(directory)) {
                 return;
             }
@@ -410,30 +427,29 @@ final class TrafficSpillFileQueue {
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory, "*.json")) {
                 for (Path path : stream) {
                     if (isOwnedSpillFile(path)) {
-                        files.add(path);
+                        long fileBytes = sizeOf(path);
+                        long seq = parseSequence(path);
+                        if (seq >= nextSequence) {
+                            nextSequence = seq + 1;
+                        }
+                        try {
+                            if (Files.deleteIfExists(path)) {
+                                startupDiscardedCount++;
+                                startupDiscardedBytes += fileBytes;
+                            }
+                        } catch (IOException e) {
+                            Logger.logWarnPanelOnly(
+                                    "[TrafficSpill] Unable to discard abandoned spill file: error="
+                                            + e.getClass().getSimpleName() + ".");
+                        }
                     }
                 }
             }
-            Deque<Path> ordered = files.stream()
-                    .sorted(Comparator.comparing(path -> path.getFileName().toString()))
-                    .collect(ArrayDeque::new, (deque, path) -> deque.addLast(path), (left, right) -> left.addAll(right));
-            files.clear();
-            files.addAll(ordered);
-            pruneExpiredLocked(System.currentTimeMillis());
-            for (Path path : files) {
-                try {
-                    long fileBytes = Files.size(path);
-                    totalBytes += fileBytes;
-                    long seq = parseSequence(path);
-                    if (seq >= nextSequence) {
-                        nextSequence = seq + 1;
-                    }
-                } catch (IOException ignored) {
-                    // Skip files that cannot be stat-ed; poll() will skip on read failure too.
-                }
+            if (startupDiscardedCount > 0L) {
+                Logger.logInfoPanelOnly("[TrafficSpill] Discarded " + startupDiscardedCount
+                        + " abandoned spill documents (" + startupDiscardedBytes + " bytes) from "
+                        + directoryPath() + ".");
             }
-            recoveredCount = files.size();
-            recoveredBytes = totalBytes;
         } catch (IOException e) {
             Logger.logError("[TrafficSpill] Init failed: " + e.getMessage());
         } finally {
@@ -653,7 +669,11 @@ final class TrafficSpillFileQueue {
     private void cleanupTempFilesLocked() {
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory, "*.tmp")) {
             for (Path tmp : stream) {
-                Files.deleteIfExists(tmp);
+                String name = tmp.getFileName().toString();
+                String targetName = name.substring(0, name.length() - ".tmp".length());
+                if (isOwnedSpillFile(tmp.resolveSibling(targetName))) {
+                    Files.deleteIfExists(tmp);
+                }
             }
         } catch (IOException ignored) {
             // Ignore stale temporary files from interrupted writes.

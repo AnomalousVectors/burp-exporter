@@ -73,12 +73,12 @@ public final class TrafficExportQueue {
     private TrafficExportQueue() {}
 
     static {
-        long recoveredDocs = spillQueue.recoveredCount();
-        if (recoveredDocs > 0) {
-            long recoveredBytes = spillQueue.recoveredBytes();
-            ExportStats.recordTrafficSpillRecovered(recoveredDocs);
-            Logger.logInfoPanelOnly("[TrafficExportQueue] Recovered " + recoveredDocs
-                    + " spill docs (" + recoveredBytes + " bytes) from " + spillQueue.directoryPath());
+        long discardedDocs = spillQueue.startupDiscardedCount();
+        if (discardedDocs > 0) {
+            long discardedBytes = spillQueue.startupDiscardedBytes();
+            Logger.logInfoPanelOnly("[TrafficExportQueue] Discarded " + discardedDocs
+                    + " abandoned spill docs (" + discardedBytes + " bytes) from "
+                    + spillQueue.directoryPath());
         }
     }
 
@@ -179,14 +179,14 @@ public final class TrafficExportQueue {
         return ExportAdmissionController.currentSpillStatus();
     }
 
-    /** Returns startup-recovered spill document count. */
-    public static long getRecoveredSpillCount() {
-        return spillQueue.recoveredCount();
+    /** Returns spill documents discarded as abandoned during extension initialization. */
+    public static long getStartupDiscardedSpillCount() {
+        return spillQueue.startupDiscardedCount();
     }
 
-    /** Returns startup-recovered spill byte count. */
-    public static long getRecoveredSpillBytes() {
-        return spillQueue.recoveredBytes();
+    /** Returns spill bytes discarded as abandoned during extension initialization. */
+    public static long getStartupDiscardedSpillBytes() {
+        return spillQueue.startupDiscardedBytes();
     }
 
     /** Returns currently active drain batches. */
@@ -318,10 +318,17 @@ public final class TrafficExportQueue {
      *
      * <p>Used when export is intentionally stopped or a Start attempt fails, so queued traffic
      * does not resume behind a stopped UI.</p>
+     *
+     * @return {@code true} when all tracked spill files were deleted
      */
-    public static void clearPendingWork() {
+    public static boolean clearPendingWork() {
         queue.clear();
-        spillQueue.clear();
+        TrafficSpillFileQueue.DiscardResult discarded = spillQueue.clear();
+        if (!discarded.complete()) {
+            Logger.logWarnPanelOnly("[TrafficExportQueue] Unable to discard all spill files: failures="
+                    + discarded.failures() + ". Abandoned files will not be replayed.");
+        }
+        return discarded.complete();
     }
 
     /**

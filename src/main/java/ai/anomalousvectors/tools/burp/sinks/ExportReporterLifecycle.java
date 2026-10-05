@@ -86,7 +86,7 @@ public final class ExportReporterLifecycle {
         if (!token.isValid()) {
             token = RuntimeConfig.lastInvalidatedExportRunToken();
         }
-        ProxyLiveMetadataCorrelator.closeAndDrainRun();
+        ProxyLiveMetadataCorrelator.closeIntake();
         if (RuntimeConfig.isExportRunning()) {
             TrafficExportQueue.awaitPendingWorkDrained(RuntimeConfig.EXPORT_STOP_UX_WALL_CLOCK_MS);
         }
@@ -98,11 +98,31 @@ public final class ExportReporterLifecycle {
         clearRepeaterRunState();
         TrafficExportQueue.stopWorker();
         shutdownSnapshotWorkers(token, Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS);
-        TrafficExportQueue.clearPendingWork();
-        IndexingRetryCoordinator.getInstance().stopDrainThread();
-        IndexingRetryCoordinator.getInstance().clearPendingWork();
+        discardPendingRunState(Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS);
         FileExportService.validateRunArtifacts();
         FileExportService.resetForRuntime();
+    }
+
+    /**
+     * Discards all unfinished state owned by the current export run.
+     *
+     * <p>This is the common non-replay boundary for ordinary Stop, forced Stop, failed Start, and
+     * extension unload. It clears memory queues even if a disk artifact cannot be deleted; failed
+     * artifacts remain ineligible for replay and a later load attempts deletion again.</p>
+     *
+     * @param timeoutMs maximum wait for already admitted Proxy response callbacks
+     * @return {@code true} when retry ownership stopped and run-owned files were deleted completely
+     */
+    public static boolean discardPendingRunState(long timeoutMs) {
+        long deadline = System.nanoTime()
+                + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
+        boolean proxyDiscarded = ProxyLiveMetadataCorrelator.closeAndDiscardRun(
+                remainingMillis(deadline));
+        boolean trafficDiscarded = TrafficExportQueue.clearPendingWork();
+        IndexingRetryCoordinator retryCoordinator = IndexingRetryCoordinator.getInstance();
+        boolean retryStopped = retryCoordinator.stopDrainThread(remainingMillis(deadline));
+        retryCoordinator.clearPendingWork();
+        return proxyDiscarded && trafficDiscarded && retryStopped;
     }
 
     /**
