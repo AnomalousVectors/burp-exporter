@@ -223,6 +223,26 @@ class MappingsContractTest {
     }
 
     @Test
+    void bodyProgressiveEncodingFields_areMappedAcrossHttpAndFindingsBodies() throws Exception {
+        assertBodyProgressiveEncodingFields("traffic.json", "request");
+        assertBodyProgressiveEncodingFields("traffic.json", "response");
+        assertBodyProgressiveEncodingFields("sitemap.json", "request");
+        assertBodyProgressiveEncodingFields("sitemap.json", "response");
+
+        JsonNode findingsProps = mappingProperties("findings.json");
+        JsonNode evidence = findingsProps.path("requests_responses").path("properties");
+        assertBodyProgressiveEncodingFields(evidence.path("request").path("properties"));
+        assertBodyProgressiveEncodingFields(evidence.path("response").path("properties"));
+        JsonNode collaboratorHttp = findingsProps
+                .path("collaborator")
+                .path("properties")
+                .path("http")
+                .path("properties");
+        assertBodyProgressiveEncodingFields(collaboratorHttp.path("request").path("properties"));
+        assertBodyProgressiveEncodingFields(collaboratorHttp.path("response").path("properties"));
+    }
+
+    @Test
     void bodyTextFields_useOffsets_acrossExportedHttpDocs() throws Exception {
         assertTextOffsetsOnRequestAndResponseBodies("traffic.json");
         assertTextOffsetsOnRequestAndResponseBodies("sitemap.json");
@@ -860,6 +880,23 @@ class MappingsContractTest {
                 collectKeywordViolations(file, path + "[" + i + "]", node.get(i), violations);
             }
         }
+    }
+
+    private void assertBodyProgressiveEncodingFields(String mappingFile, String messageField) throws Exception {
+        JsonNode properties = mappingProperties(mappingFile)
+                .path(messageField)
+                .path("properties");
+        assertBodyProgressiveEncodingFields(properties);
+    }
+
+    private static void assertBodyProgressiveEncodingFields(JsonNode messageProperties) {
+        JsonNode body = messageProperties.path("body").path("properties");
+        assertThat(body.path("decoded_b64").path("type").asText()).isEqualTo("binary");
+        assertThat(body.path("decoded_b64").path("doc_values").asBoolean()).isFalse();
+        JsonNode contentEncoding = body.path("content_encoding").path("properties");
+        assertThat(contentEncoding.path("applied").path("type").asText()).isEqualTo("keyword");
+        assertThat(contentEncoding.path("remaining").path("type").asText()).isEqualTo("keyword");
+        assertThat(contentEncoding.path("complete").path("type").asText()).isEqualTo("boolean");
     }
 
     private void assertBodyMetadataNested(String mappingFile) throws Exception {

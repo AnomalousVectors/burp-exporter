@@ -57,6 +57,40 @@ class FileExportServiceTest {
     }
 
     @Test
+    void emit_preservesProgressiveBodyDecodingFieldsInBothFormats() throws Exception {
+        withCleanup(() -> {
+            Path root = TestPathSupport.createDirectory("file-export-progressive-body");
+            RuntimeConfig.updateState(fileExportState(root, true, Long.MAX_VALUE, false, 95));
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("b64", "d2lyZQ==");
+            body.put("decoded_b64", "ZGVjb2RlZA==");
+            body.put("content_encoding", Map.of(
+                    "applied", List.of("gzip"),
+                    "remaining", List.of("br"),
+                    "complete", false));
+            Map<String, Object> document = new LinkedHashMap<>();
+            document.put("request", Map.of("body", body));
+            document.put("meta", Map.of("schema_version", "1"));
+
+            String indexName = IndexNaming.indexNameForShortName("traffic");
+            PreparedExportDocument prepared =
+                    ExportDocumentIdentity.prepare(indexName, "traffic", document);
+            FileExportService.emit(prepared);
+
+            String jsonl = Files.readString(root.resolve(indexName + ".jsonl"));
+            String ndjson = Files.readString(root.resolve(indexName + ".ndjson"));
+            assertThat(jsonl)
+                    .contains("\"b64\":\"d2lyZQ==\"")
+                    .contains("\"decoded_b64\":\"ZGVjb2RlZA==\"")
+                    .contains("\"applied\":[\"gzip\"]")
+                    .contains("\"remaining\":[\"br\"]")
+                    .contains("\"complete\":false");
+            assertThat(ndjson).contains(jsonl.trim());
+        });
+    }
+
+    @Test
     void emit_keepsSingleFilePerFormat_andDoesNotRoll() throws Exception {
         withCleanup(() -> {
             Path root = TestPathSupport.createDirectory("file-export-single-file");

@@ -46,7 +46,9 @@ public final class ExportFieldSectionTooltips {
             case "request" ->
                     "HTTP request URL, method, path, service, headers, body, parameters, markers, and protocol facets.";
             case "request.body" ->
-                    "Request body on the wire (body.b64) and searchable text (body.text) when Content-Encoding is removed and bytes classify as text.";
+                    "Request wire bytes, deepest successful Content-Encoding decode, chain status, and searchable text when bytes classify as text.";
+            case "request.body.content_encoding" ->
+                    "Progressive Content-Encoding decode status: layers applied, layers remaining, and whether the chain completed.";
             case "request.headers" -> "Ordered request header rows with normalized names, raw names, values, and ordinals.";
             case "request.cookies" -> "Cookie header pairs parsed from the request.";
             case "request.body.markers" -> "Request highlight ranges (inclusive start, exclusive end offsets).";
@@ -57,7 +59,9 @@ public final class ExportFieldSectionTooltips {
                     "HTTP status, headers, body, MIME classification, and response markers.";
             case "response.status" -> "HTTP status code, status family, and reason phrase from the response.";
             case "response.body" ->
-                    "Response body on the wire (body.b64) and searchable text (body.text) when Content-Encoding is removed and bytes classify as text.";
+                    "Response wire bytes, deepest successful Content-Encoding decode, chain status, and searchable text when bytes classify as text.";
+            case "response.body.content_encoding" ->
+                    "Progressive Content-Encoding decode status: layers applied, layers remaining, and whether the chain completed.";
             case "response.body.html" -> "HTML parser attributes derived from the response body.";
             case "response.body.html.dom" -> "HTML tag, id, and CSS-class facets parsed from the response body.";
             case "response.body.html.forms" -> "HTML form controls and submit-label facets parsed from the response body.";

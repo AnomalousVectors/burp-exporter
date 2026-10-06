@@ -6,6 +6,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.zip.GZIPInputStream;
@@ -26,7 +27,8 @@ import burp.api.montoya.http.message.HttpHeader;
  *
  * <p>Wire bytes are always preserved for {@code body.b64}; logical bytes are decompressed when
  * recognized encodings are present so content-type inference, text extraction, and urlencoded BODY
- * parameter parsing can operate on the semantic payload.</p>
+ * parameter parsing can operate on the semantic payload. Decoding is progressive: a failed or
+ * unsupported inner layer retains the output of every successfully removed outer layer.</p>
  *
  * <p>Supported tokens: {@code gzip}, {@code x-gzip}, {@code deflate}, {@code br}, {@code zstd},
  * {@code compress}, {@code x-compress}. {@code identity} is ignored.</p>
@@ -35,6 +37,9 @@ final class BodyContentEncodingSupport {
 
     /** Maximum expanded bytes accepted from a single decompression step (zip-bomb guard). */
     static final int MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024;
+
+    /** Maximum non-identity Content-Encoding layers attempted for one body. */
+    static final int MAX_ENCODING_LAYERS = 8;
 
     private static final CompressorStreamFactory COMPRESSOR_FACTORY = CompressorStreamFactory.getSingleton();
 
@@ -45,14 +50,22 @@ final class BodyContentEncodingSupport {
      *
      * @param wireBytes original on-the-wire body bytes (never {@code null})
      * @param logicalBytes bytes used for inference and text parsing (decompressed when successful)
-     * @param transformed whether {@code logicalBytes} differs from {@code wireBytes}
+     * @param transformed whether at least one representation layer was removed successfully
      * @param encodingsApplied Content-Encoding tokens applied, in decode order; empty when unchanged
+     * @param encodingsRemaining unapplied Content-Encoding tokens, in decode order
+     * @param encodingChainComplete whether every non-identity declared encoding was removed
      */
-    record ResolvedBody(byte[] wireBytes, byte[] logicalBytes, boolean transformed, List<String> encodingsApplied) {
+    record ResolvedBody(
+            byte[] wireBytes,
+            byte[] logicalBytes,
+            boolean transformed,
+            List<String> encodingsApplied,
+            List<String> encodingsRemaining,
+            boolean encodingChainComplete) {
 
         static ResolvedBody unchanged(byte[] wireBytes) {
             byte[] safe = wireBytes == null ? new byte[0] : wireBytes;
-            return new ResolvedBody(safe, safe, false, List.of());
+            return new ResolvedBody(safe, safe, false, List.of(), List.of(), true);
         }
     }
 
@@ -72,10 +85,12 @@ final class BodyContentEncodingSupport {
         if (encodings.isEmpty()) {
             return ResolvedBody.unchanged(wireBytes);
         }
+        List<String> decodeOrder = new ArrayList<>(encodings);
+        Collections.reverse(decodeOrder);
         byte[] current = wireBytes;
         List<String> applied = new ArrayList<>();
-        for (int i = encodings.size() - 1; i >= 0; i--) {
-            String token = encodings.get(i);
+        for (int i = 0; i < decodeOrder.size() && i < MAX_ENCODING_LAYERS; i++) {
+            String token = decodeOrder.get(i);
             byte[] next = decompressToken(token, current);
             if (next == null) {
                 break;
@@ -83,10 +98,14 @@ final class BodyContentEncodingSupport {
             applied.add(token);
             current = next;
         }
-        if (applied.isEmpty() || Arrays.equals(current, wireBytes)) {
-            return ResolvedBody.unchanged(wireBytes);
-        }
-        return new ResolvedBody(wireBytes, current, true, List.copyOf(applied));
+        List<String> remaining = List.copyOf(decodeOrder.subList(applied.size(), decodeOrder.size()));
+        return new ResolvedBody(
+                wireBytes,
+                current,
+                !applied.isEmpty(),
+                List.copyOf(applied),
+                remaining,
+                remaining.isEmpty());
     }
 
     /**
@@ -108,22 +127,18 @@ final class BodyContentEncodingSupport {
         if (decompressed == null || Arrays.equals(decompressed, wireBytes)) {
             return ResolvedBody.unchanged(wireBytes);
         }
-        return new ResolvedBody(wireBytes, decompressed, true, List.of("gzip"));
+        return new ResolvedBody(wireBytes, decompressed, true, List.of("gzip"), List.of(), true);
     }
 
     /**
-     * Resolves logical bytes for export, applying Content-Encoding removal when the primary
-     * media type and headers warrant decompression.
+     * Resolves logical bytes for export, applying declared Content-Encoding removal.
      *
-     * <p>Decompresses when {@code Content-Encoding} is present and the primary media type is
-     * eligible (text, form, multipart, or {@code application/octet-stream} with encoding). Skips
-     * decompress for {@code image/*} and similar never-agent-text families even when compressed.
-     * Request-only declared form/multipart gzip magic sniff runs when {@code allowDeclaredFormGzipSniff}
-     * is true.</p>
+     * <p>Declared encodings are representation layers and are attempted independently of media
+     * type. Request-only declared form/multipart gzip magic sniff runs when
+     * {@code allowDeclaredFormGzipSniff} is true.</p>
      *
      * @param wireBytes on-the-wire body
      * @param headers message headers
-     * @param primaryMediaType resolved primary Content-Type; may be {@code null}
      * @param declaredFormOrMultipart whether Content-Type indicates form or multipart
      * @param allowDeclaredFormGzipSniff whether request-only gzip magic sniff is allowed
      * @return resolved view; never {@code null}
@@ -131,11 +146,13 @@ final class BodyContentEncodingSupport {
     static ResolvedBody resolveForExport(
             byte[] wireBytes,
             List<HttpHeader> headers,
-            String primaryMediaType,
             boolean declaredFormOrMultipart,
             boolean allowDeclaredFormGzipSniff) {
         if (wireBytes == null || wireBytes.length == 0) {
             return ResolvedBody.unchanged(wireBytes);
+        }
+        if (!contentEncodings(headers).isEmpty()) {
+            return resolve(wireBytes, headers);
         }
         if (allowDeclaredFormGzipSniff) {
             ResolvedBody sniffed = trySniffGzipForDeclaredForm(wireBytes, declaredFormOrMultipart);
@@ -143,46 +160,7 @@ final class BodyContentEncodingSupport {
                 return sniffed;
             }
         }
-        if (contentEncodings(headers).isEmpty()) {
-            return ResolvedBody.unchanged(wireBytes);
-        }
-        if (!shouldDecompressForContentEncoding(primaryMediaType)) {
-            return ResolvedBody.unchanged(wireBytes);
-        }
-        return resolve(wireBytes, headers);
-    }
-
-    /**
-     * Returns whether {@code Content-Encoding} decompression is applied for the given primary
-     * media type.
-     *
-     * <p>Caller must ensure a {@code Content-Encoding} header is present before invoking.</p>
-     *
-     * @param primaryMediaType resolved primary Content-Type; may be {@code null}
-     * @return {@code true} when logical bytes should be decompressed for export analysis
-     */
-    static boolean shouldDecompressForContentEncoding(String primaryMediaType) {
-        if (primaryMediaType == null || primaryMediaType.isBlank()) {
-            return false;
-        }
-        if (isNeverDecompressMediaFamily(primaryMediaType)) {
-            return false;
-        }
-        if ("application/octet-stream".equals(primaryMediaType)) {
-            return true;
-        }
-        if (primaryMediaType.startsWith("multipart/")) {
-            return true;
-        }
-        return HttpMessageDocSupport.isTextualMediaType(primaryMediaType);
-    }
-
-    private static boolean isNeverDecompressMediaFamily(String mediaType) {
-        return mediaType.startsWith("image/")
-                || mediaType.startsWith("audio/")
-                || mediaType.startsWith("video/")
-                || mediaType.startsWith("font/")
-                || mediaType.startsWith("model/");
+        return ResolvedBody.unchanged(wireBytes);
     }
 
     /**

@@ -308,7 +308,7 @@ final class HttpMessageDocSupport {
             int bodyOffset,
             boolean allowDeclaredFormGzipSniff) {
         int bodyLen = wireBytes == null ? 0 : wireBytes.length;
-        Map<String, Object> bodyContent = new LinkedHashMap<>(8);
+        Map<String, Object> bodyContent = new LinkedHashMap<>(10);
         bodyContent.put("length", bodyLen);
         bodyContent.put("offset", bodyOffset);
         if (wireBytes == null || wireBytes.length == 0) {
@@ -323,9 +323,18 @@ final class HttpMessageDocSupport {
         BodyContentEncodingSupport.ResolvedBody resolved = BodyContentEncodingSupport.resolveForExport(
                 wireBytes,
                 headers,
-                mediaType,
                 declaredForm,
                 allowDeclaredFormGzipSniff);
+        if (resolved.transformed()) {
+            bodyContent.put("decoded_b64", Base64.getEncoder().encodeToString(resolved.logicalBytes()));
+        }
+        if (!resolved.encodingsApplied().isEmpty() || !resolved.encodingsRemaining().isEmpty()) {
+            Map<String, Object> contentEncoding = new LinkedHashMap<>(3);
+            contentEncoding.put("applied", resolved.encodingsApplied());
+            contentEncoding.put("remaining", resolved.encodingsRemaining());
+            contentEncoding.put("complete", resolved.encodingChainComplete());
+            bodyContent.put("content_encoding", contentEncoding);
+        }
         bodyContent.put(
                 "text",
                 decodeHumanReadableBodyText(

@@ -79,9 +79,8 @@ final class RequestResponseParametersSupport {
             if (bodyBytes != null && bodyBytes.length > 0) {
                 boolean declaredForm = isDeclaredFormOrMultipart(
                         contentType, headers, resolvePrimaryMediaType(contentType, headers));
-                String primary = resolvePrimaryMediaType(contentType, headers);
                 BodyContentEncodingSupport.ResolvedBody resolved = resolveBodyForExport(
-                        bodyBytes, headers, primary, declaredForm, true);
+                        bodyBytes, headers, declaredForm, true);
                 byte[] logical = resolved.logicalBytes();
                 if (declaredForm
                         && HttpMessageDocSupport.looksLikeTextPayload(
@@ -154,13 +153,11 @@ final class RequestResponseParametersSupport {
     private static BodyContentEncodingSupport.ResolvedBody resolveBodyForExport(
             byte[] wireBytes,
             List<HttpHeader> headers,
-            String primaryMediaType,
             boolean declaredFormOrMultipart,
             boolean allowDeclaredFormGzipSniff) {
         return BodyContentEncodingSupport.resolveForExport(
                 wireBytes,
                 headers,
-                primaryMediaType,
                 declaredFormOrMultipart,
                 allowDeclaredFormGzipSniff);
     }
@@ -190,7 +187,7 @@ final class RequestResponseParametersSupport {
         boolean declaredForm = isDeclaredFormOrMultipart(
                 contentType, headers, resolvePrimaryMediaType(contentType, headers));
         BodyContentEncodingSupport.ResolvedBody resolved = resolveBodyForExport(
-                bodyBytes, headers, resolvePrimaryMediaType(contentType, headers), declaredForm, true);
+                bodyBytes, headers, declaredForm, true);
         return inferRequestContentTypeFromLogicalBytes(resolved.logicalBytes(), headers);
     }
 
@@ -496,9 +493,8 @@ final class RequestResponseParametersSupport {
         if (!isDeclaredFormOrMultipart(contentType, headers, resolvePrimaryMediaType(contentType, headers))) {
             return ParametersResult.EMPTY;
         }
-        String primary = resolvePrimaryMediaType(contentType, headers);
         BodyContentEncodingSupport.ResolvedBody resolved =
-                resolveBodyForExport(wireBodyBytes, headers, primary, true, true);
+                resolveBodyForExport(wireBodyBytes, headers, true, true);
         byte[] logical = resolved.logicalBytes();
         if (!HttpMessageDocSupport.looksLikeTextPayload(
                 logical,
@@ -827,9 +823,8 @@ final class RequestResponseParametersSupport {
         if (wireBodyBytes == null || wireBodyBytes.length == 0 || !isDeclaredUrlEncoded(contentType, headers)) {
             return null;
         }
-        String primary = resolvePrimaryMediaType(contentType, headers);
         BodyContentEncodingSupport.ResolvedBody resolved =
-                resolveBodyForExport(wireBodyBytes, headers, primary, true, true);
+                resolveBodyForExport(wireBodyBytes, headers, true, true);
         return new UrlEncodedWireContext(resolved, resolved.logicalBytes());
     }
 

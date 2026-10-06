@@ -91,6 +91,52 @@ class ExportFieldFilterDocumentRoundTripTest {
     }
 
     @Test
+    void httpTraffic_progressiveBodyFields_canBeSelectedIndependently() {
+        RuntimeConfig.updateState(new State(
+                List.of(ConfigKeys.SRC_TRAFFIC),
+                ConfigKeys.SCOPE_ALL,
+                List.of(),
+                null,
+                ConfigState.DEFAULT_SETTINGS_SUB,
+                List.of("proxy"),
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                Map.of("traffic", Set.of(
+                        "request.body.decoded_b64",
+                        "request.body.content_encoding.applied",
+                        "request.body.content_encoding.remaining",
+                        "request.body.content_encoding.complete"))));
+        Map<String, Object> body = Map.of(
+                "b64", "wire",
+                "decoded_b64", "decoded",
+                "text", "decoded text",
+                "content_encoding", Map.of(
+                        "applied", List.of("gzip"),
+                        "remaining", List.of("br"),
+                        "complete", false));
+        Map<String, Object> document = Map.of(
+                "meta", Map.of("schema_version", "1"),
+                "request", Map.of("body", body));
+
+        Map<String, Object> filtered = ExportFieldFilter.filterDocument(document, "traffic");
+
+        Map<?, ?> filteredBody = nestedMap(nestedMap(filtered, "request"), "body");
+        assertThat(filteredBody).hasSize(2);
+        assertThat(filteredBody.containsKey("decoded_b64")).isTrue();
+        assertThat(filteredBody.containsKey("content_encoding")).isTrue();
+        assertThat(filteredBody.get("decoded_b64")).isEqualTo("decoded");
+        Map<?, ?> encoding = nestedMap(filteredBody, "content_encoding");
+        assertThat(encoding).hasSize(3);
+        assertThat(encoding.containsKey("applied")).isTrue();
+        assertThat(encoding.containsKey("remaining")).isTrue();
+        assertThat(encoding.containsKey("complete")).isTrue();
+        assertThat(encoding.get("applied")).isEqualTo(List.of("gzip"));
+        assertThat(encoding.get("remaining")).isEqualTo(List.of("br"));
+        assertThat(encoding.get("complete")).isEqualTo(false);
+    }
+
+    @Test
     void proxyWebSocket_defaultSelection_preservesNestedWebSocketAndRequest() {
         enableAllTrafficFields();
         Map<String, Object> built = buildSampleProxyWebSocketDocument();

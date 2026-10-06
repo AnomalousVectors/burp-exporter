@@ -136,8 +136,15 @@ final class ExportFieldTooltipsRequestResponse {
         return switch (leaf) {
             case "b64" -> Tooltips.textWithSource(
                     "On-the-wire body bytes as Base64 — exactly what Burp captured (still compressed when Content-Encoding is set). "
-                            + "Use for exact replay; use body.text for searchable text after Content-Encoding removal when applicable.",
+                            + "Use for exact replay; use body.decoded_b64 for the deepest successfully decoded representation.",
                     "HttpMessageDocSupport.buildBodyContent() Base64-encodes the raw body bytes.");
+            case "decoded_b64" -> Tooltips.textWithSource(
+                    "Deepest successfully decoded body bytes as Base64. Present after at least one Content-Encoding layer is removed, "
+                            + "including when a later layer fails or the decoded representation remains binary.",
+                    "BodyContentEncodingSupport.resolveForExport() progressively removes up to eight encoding layers.");
+            case "content_encoding.applied" -> contentEncodingAppliedTooltip();
+            case "content_encoding.remaining" -> contentEncodingRemainingTooltip();
+            case "content_encoding.complete" -> contentEncodingCompleteTooltip();
             case "length" -> Tooltips.textWithSource(
                     "On-the-wire body length in bytes (compressed size when Content-Encoding is set).",
                     "HttpMessageDocSupport.buildBodyContent() uses HttpRequest.body().getBytes().length.");
@@ -155,7 +162,7 @@ final class ExportFieldTooltipsRequestResponse {
             case "truncated" -> Tooltips.textWithSource(
                     "True when search/database export prefix-truncated this request body to fit the live bulk byte budget. "
                             + "body.length remains the original wire size; file export is not truncated by this path.",
-                    "SearchBodyPrefixFitter.fitToLiveBudget() sets body.truncated when shortening b64/text under BulkByteBudget pressure.");
+                    "SearchBodyPrefixFitter.fitToLiveBudget() sets body.truncated when shortening b64/decoded_b64/text under BulkByteBudget pressure.");
             default -> ExportFieldTooltips.genericLeafTooltip("request.body." + leaf);
         };
     }
@@ -164,8 +171,15 @@ final class ExportFieldTooltipsRequestResponse {
         return switch (leaf) {
             case "b64" -> Tooltips.textWithSource(
                     "On-the-wire body bytes as Base64 — exactly what Burp captured (still compressed when Content-Encoding is set). "
-                            + "Use for exact replay; use body.text for searchable text after Content-Encoding removal when applicable.",
+                            + "Use for exact replay; use body.decoded_b64 for the deepest successfully decoded representation.",
                     "HttpMessageDocSupport.buildBodyContent() Base64-encodes the raw body bytes.");
+            case "decoded_b64" -> Tooltips.textWithSource(
+                    "Deepest successfully decoded body bytes as Base64. Present after at least one Content-Encoding layer is removed, "
+                            + "including when a later layer fails or the decoded representation remains binary.",
+                    "BodyContentEncodingSupport.resolveForExport() progressively removes up to eight encoding layers.");
+            case "content_encoding.applied" -> contentEncodingAppliedTooltip();
+            case "content_encoding.remaining" -> contentEncodingRemainingTooltip();
+            case "content_encoding.complete" -> contentEncodingCompleteTooltip();
             case "length" -> Tooltips.textWithSource(
                     "On-the-wire body length in bytes (compressed size when Content-Encoding is set).",
                     "HttpMessageDocSupport.buildBodyContent() uses HttpResponse.body().getBytes().length.");
@@ -180,7 +194,7 @@ final class ExportFieldTooltipsRequestResponse {
             case "truncated" -> Tooltips.textWithSource(
                     "True when search/database export prefix-truncated this response body to fit the live bulk byte budget. "
                             + "body.length remains the original wire size; file export is not truncated by this path.",
-                    "SearchBodyPrefixFitter.fitToLiveBudget() sets body.truncated when shortening b64/text under BulkByteBudget pressure.");
+                    "SearchBodyPrefixFitter.fitToLiveBudget() sets body.truncated when shortening b64/decoded_b64/text under BulkByteBudget pressure.");
             case "page_title" -> Tooltips.textWithSource(
                     "HTML page title parsed from the response.",
                     "RequestResponseDocBuilder.putResponseAttributes() reads HttpResponseReceived.attributes(AttributeType.PAGE_TITLE) into response.body.page_title.");
@@ -234,6 +248,24 @@ final class ExportFieldTooltipsRequestResponse {
                     "RequestResponseDocBuilder.putResponseAttributes() reads HttpResponseReceived.attributes(AttributeType.OUTBOUND_EDGE_TAG_NAMES) into response.body.outbound_edge_tag_names.");
             default -> ExportFieldTooltips.genericLeafTooltip("response.body." + leaf);
         };
+    }
+
+    private static String contentEncodingAppliedTooltip() {
+        return Tooltips.textWithSource(
+                "Content-Encoding tokens successfully removed, ordered from the outermost decoded layer inward.",
+                "BodyContentEncodingSupport.resolve() records each successful progressive decoding step.");
+    }
+
+    private static String contentEncodingRemainingTooltip() {
+        return Tooltips.textWithSource(
+                "Content-Encoding tokens not removed, in the order decoding would continue. Includes the failed, unsupported, oversized, or over-depth layer and any inner layers.",
+                "BodyContentEncodingSupport.resolve() stops at the first unsafe or unsuccessful layer.");
+    }
+
+    private static String contentEncodingCompleteTooltip() {
+        return Tooltips.textWithSource(
+                "True when every declared non-identity Content-Encoding layer was removed successfully.",
+                "BodyContentEncodingSupport.resolve() compares the applied layers with the normalized declared chain.");
     }
 
     static String responseBodyHtmlFieldTooltip(String leaf) {

@@ -21,8 +21,9 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
  *
  * <p>Shrink ladder:</p>
  * <ol>
- *   <li>HTTP {@code body} / WebSocket {@code payload} ({@code b64}/{@code text}; clear derived
- *       {@code html}; set {@code truncated=true}; keep original wire {@code length})</li>
+ *   <li>HTTP {@code body} / WebSocket {@code payload} ({@code b64}/{@code decoded_b64}/
+ *       {@code text}; clear derived {@code html}; set {@code truncated=true}; keep original wire
+ *       {@code length})</li>
  *   <li>Other large strings (header/cookie/param values, URLs, Collaborator {@code request_b64}/
  *       {@code response_b64}, finding prose, notes, …)</li>
  *   <li>Trim trailing elements from large nested lists when string shrinking is exhausted</li>
@@ -315,7 +316,7 @@ public final class SearchBodyPrefixFitter {
         if (node instanceof Map<?, ?> mapObj) {
             @SuppressWarnings("unchecked")
             Map<String, Object> map = (Map<String, Object>) mapObj;
-            // Payload b64/text handled in payload phase; skip to avoid double-shrinking empty stubs.
+            // Payload byte/text fields are handled together; skip double-shrinking empty stubs.
             boolean payload = isPayloadMap(map);
             for (Map.Entry<String, Object> entry : map.entrySet()) {
                 if ("meta".equals(entry.getKey())) {
@@ -323,7 +324,10 @@ public final class SearchBodyPrefixFitter {
                 }
                 Object value = entry.getValue();
                 if (value instanceof String s) {
-                    if (payload && ("b64".equals(entry.getKey()) || "text".equals(entry.getKey()))) {
+                    if (payload
+                            && ("b64".equals(entry.getKey())
+                                    || "decoded_b64".equals(entry.getKey())
+                                    || "text".equals(entry.getKey()))) {
                         continue;
                     }
                     if (s.length() >= minChars) {
@@ -671,11 +675,13 @@ public final class SearchBodyPrefixFitter {
     private static final class PayloadSlot {
         private final Map<String, Object> map;
         private String b64;
+        private String decodedB64;
         private String text;
 
         private PayloadSlot(Map<String, Object> map) {
             this.map = map;
             this.b64 = asString(map.get("b64"));
+            this.decodedB64 = asString(map.get("decoded_b64"));
             this.text = asString(map.get("text"));
         }
 
@@ -683,6 +689,9 @@ public final class SearchBodyPrefixFitter {
             long total = 0L;
             if (b64 != null) {
                 total += b64.length();
+            }
+            if (decodedB64 != null) {
+                total += decodedB64.length();
             }
             if (text != null) {
                 total += text.length();
@@ -699,6 +708,11 @@ public final class SearchBodyPrefixFitter {
             if (b64 != null && !b64.isEmpty()) {
                 b64 = prefixBase64(b64, Math.max(0, b64.length() / 2));
                 map.put("b64", b64.isEmpty() ? null : b64);
+                changed = true;
+            }
+            if (decodedB64 != null && !decodedB64.isEmpty()) {
+                decodedB64 = prefixBase64(decodedB64, Math.max(0, decodedB64.length() / 2));
+                map.put("decoded_b64", decodedB64.isEmpty() ? null : decodedB64);
                 changed = true;
             }
             if (text != null && !text.isEmpty()) {
@@ -719,6 +733,10 @@ public final class SearchBodyPrefixFitter {
             if (b64 != null) {
                 b64 = "";
                 map.put("b64", null);
+            }
+            if (decodedB64 != null) {
+                decodedB64 = "";
+                map.put("decoded_b64", null);
             }
             if (text != null) {
                 text = "";

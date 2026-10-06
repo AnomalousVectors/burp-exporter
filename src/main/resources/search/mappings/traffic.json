@@ -51,6 +51,14 @@
           "body": {
             "properties": {
               "b64": { "type": "binary", "doc_values": false },
+              "content_encoding": {
+                "properties": {
+                  "applied": { "type": "keyword", "ignore_above": 8191 },
+                  "remaining": { "type": "keyword", "ignore_above": 8191 },
+                  "complete": { "type": "boolean" }
+                }
+              },
+              "decoded_b64": { "type": "binary", "doc_values": false },
               "length": { "type": "integer" },
               "markers": {
                 "type": "nested",
@@ -136,6 +144,14 @@
           "body": {
             "properties": {
               "b64": { "type": "binary", "doc_values": false },
+              "content_encoding": {
+                "properties": {
+                  "applied": { "type": "keyword", "ignore_above": 8191 },
+                  "remaining": { "type": "keyword", "ignore_above": 8191 },
+                  "complete": { "type": "boolean" }
+                }
+              },
+              "decoded_b64": { "type": "binary", "doc_values": false },
               "html": {
                 "properties": {
                   "comments": { "type": "text", "fields": { "raw": { "type": "keyword", "ignore_above": 8191 } } },

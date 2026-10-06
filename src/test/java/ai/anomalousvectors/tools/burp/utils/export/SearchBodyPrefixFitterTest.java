@@ -110,6 +110,10 @@ class SearchBodyPrefixFitterTest {
         String b64 = (String) body.get("b64");
         assertThat(b64).isNotNull();
         assertThat(b64.length()).isLessThan(Base64.getEncoder().encodeToString(new byte[wireBytes]).length());
+        String decodedB64 = (String) body.get("decoded_b64");
+        assertThat(decodedB64).isNotNull();
+        assertThat(decodedB64.length())
+                .isLessThan(Base64.getEncoder().encodeToString(new byte[wireBytes]).length());
         @SuppressWarnings("unchecked")
         Map<String, Object> originalBody =
                 (Map<String, Object>) ((Map<String, Object>) prepared.document().get("response")).get("body");
@@ -346,6 +350,7 @@ class SearchBodyPrefixFitterTest {
         body.put("length", wireBytes);
         body.put("offset", 0);
         body.put("b64", Base64.getEncoder().encodeToString(new byte[wireBytes]));
+        body.put("decoded_b64", Base64.getEncoder().encodeToString(new byte[wireBytes]));
         body.put("text", "x".repeat(Math.min(wireBytes, 4096)));
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("body", body);

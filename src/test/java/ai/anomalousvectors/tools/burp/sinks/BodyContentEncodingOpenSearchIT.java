@@ -13,10 +13,12 @@ import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.zip.Deflater;
+import java.util.zip.GZIPOutputStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
@@ -53,10 +55,12 @@ class BodyContentEncodingOpenSearchIT {
     @Test
     void brotliJsonBody_indexesDecodedText() throws Exception {
         byte[] plain = "{\"metric\":42}".getBytes(StandardCharsets.UTF_8);
-        pushEncodedFormAndAssert(
+        pushEncodedBodyAndAssert(
                 "br",
                 brotli(plain),
                 "application/json",
+                ContentType.JSON,
+                plain,
                 "{\"metric\":42}",
                 "https://example.test/brotli-body-it");
     }
@@ -64,10 +68,12 @@ class BodyContentEncodingOpenSearchIT {
     @Test
     void zstdFormBody_indexesDecodedTextAndBodyParams() throws Exception {
         byte[] plain = "alpha=1&beta=2".getBytes(StandardCharsets.UTF_8);
-        Map<String, Object> stored = pushEncodedFormAndAssert(
+        Map<String, Object> stored = pushEncodedBodyAndAssert(
                 "zstd",
                 com.github.luben.zstd.Zstd.compress(plain),
                 "application/x-www-form-urlencoded",
+                ContentType.URL_ENCODED,
+                plain,
                 "alpha=1&beta=2",
                 "https://example.test/zstd-body-it");
         List<Map<String, Object>> parameters =
@@ -78,18 +84,36 @@ class BodyContentEncodingOpenSearchIT {
     @Test
     void deflateFormBody_indexesDecodedText() throws Exception {
         byte[] plain = "x=1&y=2".getBytes(StandardCharsets.UTF_8);
-        pushEncodedFormAndAssert(
+        pushEncodedBodyAndAssert(
                 "deflate",
                 deflate(plain),
                 "application/x-www-form-urlencoded",
+                ContentType.URL_ENCODED,
+                plain,
                 "x=1&y=2",
                 "https://example.test/deflate-body-it");
     }
 
-    private static Map<String, Object> pushEncodedFormAndAssert(
+    @Test
+    void gzipImageBody_indexesDecodedBinaryWithoutText() throws Exception {
+        byte[] plain = new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x00, (byte) 0xFF};
+
+        pushEncodedBodyAndAssert(
+                "gzip",
+                gzip(plain),
+                "image/png",
+                ContentType.NONE,
+                plain,
+                null,
+                "https://example.test/gzip-image-body-it");
+    }
+
+    private static Map<String, Object> pushEncodedBodyAndAssert(
             String encodingToken,
             byte[] wireBody,
             String contentTypeValue,
+            ContentType burpContentType,
+            byte[] expectedDecodedBytes,
             String expectedText,
             String url) throws Exception {
         Assumptions.assumeTrue(OpenSearchReachable.isReachable(), "OpenSearch dev cluster not reachable");
@@ -102,7 +126,7 @@ class BodyContentEncodingOpenSearchIT {
         when(request.pathWithoutQuery()).thenReturn("/it");
         when(request.query()).thenReturn("");
         when(request.fileExtension()).thenReturn("");
-        when(request.contentType()).thenReturn(ContentType.URL_ENCODED);
+        when(request.contentType()).thenReturn(burpContentType);
         HttpHeader contentTypeHeader = header("Content-Type", contentTypeValue);
         HttpHeader encodingHeader = header("Content-Encoding", encodingToken);
         when(request.headers()).thenReturn(List.of(contentTypeHeader, encodingHeader));
@@ -134,6 +158,13 @@ class BodyContentEncodingOpenSearchIT {
         Map<String, Object> stored = awaitSingleIndexedDocument("traffic");
         Map<?, ?> bodyDoc = nestedMap(nestedMap(stored, "request"), "body");
         assertThat(bodyDoc.get("text")).isEqualTo(expectedText);
+        assertThat(bodyDoc.get("b64")).isEqualTo(Base64.getEncoder().encodeToString(wireBody));
+        assertThat(bodyDoc.get("decoded_b64"))
+                .isEqualTo(Base64.getEncoder().encodeToString(expectedDecodedBytes));
+        Map<?, ?> encoding = nestedMap(bodyDoc, "content_encoding");
+        assertThat(encoding.get("applied")).isEqualTo(List.of(encodingToken));
+        assertThat(encoding.get("remaining")).isEqualTo(List.of());
+        assertThat(encoding.get("complete")).isEqualTo(true);
         assertThat(nestedMap(stored, "meta").containsKey("export")).isFalse();
         return stored;
     }
@@ -154,6 +185,14 @@ class BodyContentEncodingOpenSearchIT {
             out.write(buffer, 0, count);
         }
         deflater.end();
+        return out.toByteArray();
+    }
+
+    private static byte[] gzip(byte[] input) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (GZIPOutputStream gzip = new GZIPOutputStream(out)) {
+            gzip.write(input);
+        }
         return out.toByteArray();
     }
 
