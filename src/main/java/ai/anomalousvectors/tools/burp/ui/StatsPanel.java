@@ -20,15 +20,12 @@ import java.awt.geom.Line2D;
 import java.awt.geom.Path2D;
 import java.awt.geom.Rectangle2D;
 import java.io.Serial;
-import java.text.DecimalFormat;
-import java.text.DecimalFormatSymbols;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import javax.swing.BorderFactory;
@@ -68,7 +65,6 @@ import org.jfree.data.time.Millisecond;
 import org.jfree.data.time.TimeSeries;
 import org.jfree.data.time.TimeSeriesCollection;
 
-import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
 import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
@@ -157,13 +153,6 @@ public class StatsPanel extends JPanel {
      * panes so the three chart rows render at a consistent visual rhythm.
      */
     private static final int MEMORY_CHART_PANEL_HEIGHT = CHART_PANEL_HEIGHT / 2;
-    /**
-     * Visual indent applied to traffic-source sub-rows nested under the {@code Traffic} index
-     * row in the merged sink-counts tables. The leading whitespace is the entire mechanism that
-     * marks a row as a sub-row, so {@link CardCopySupport#tableToTsv} preserves the indent in
-     * clipboard output as well.
-     */
-    private static final String SUBROW_INDENT = "    ";
     private static final double DEFAULT_RATE_RANGE_MAX = 10.0;
     private static final String DOMAIN_TIME_PATTERN = "HH:mm:ss";
     private static final int DOMAIN_TARGET_LABELS = 14;
@@ -174,8 +163,6 @@ public class StatsPanel extends JPanel {
     private static final Color TEXT_FG = uiColor("Label.foreground", new Color(235, 235, 235));
     private static final int LEGEND_ICON_WIDTH = 28;
     private static final int LEGEND_ICON_HEIGHT = 14;
-    private static final DecimalFormat DECIMAL_ONE =
-            new DecimalFormat("0.0", DecimalFormatSymbols.getInstance(Locale.ROOT));
     /**
      * Maps memory-chart series indexes (0 = Heap Used, 1 = Heap Committed) to the throughput
      * chart's {@link #SERIES_STYLES} slots, so the memory chart picks up the same theme-aware
@@ -692,20 +679,17 @@ public class StatsPanel extends JPanel {
         wireBodyDroppedEntriesValue = miscValues.get("Wire BODY Dropped (entries)");
 
         // Merged sink-counts model: index rows on top, traffic-source sub-rows nested directly
-        // under the Traffic index row (visually distinguished by SUBROW_INDENT on column 0),
+        // under the Traffic index row (visually distinguished by indentation in column 0),
         // followed by a trailing Total row that aggregates only the index rows. The OpenSearch
         // table carries Failures / Queued / Recovered Failures / terminal drops because the sink genuinely
         // queues, retries, permanently drops, and recovers via the retry drain; traffic source sub-rows
         // attribute those counters by route. File writes are synchronous and have bounded immediate
         // retries, but no queue, retry-drain recovery, or terminal-drop concepts.
         byIndexModel = new DefaultTableModel(
-                new String[] { "Index", "Exported", "Failures", "Queued",
-                        "Recovered Failures", "Retry Drops", "Permanent Drops", "Last Bulk (ms)", "Last Error" }, 0);
+                SinkCountTableSnapshot.databaseColumns().toArray(), 0);
         byIndexTable = createStatsTable(byIndexModel);
         fileByIndexModel = new DefaultTableModel(
-                new String[] { "Index", "Written", "Failures", "Retry Attempts",
-                        "Baseline", "Appended", "Final Size", "Integrity",
-                        "Last Append (ms)", "Last Error" }, 0);
+                SinkCountTableSnapshot.fileColumns().toArray(), 0);
         fileByIndexTable = createStatsTable(fileByIndexModel);
         applyColumnHeaderTooltips(byIndexTable, databaseCountsHeaderTooltips());
         applyColumnHeaderTooltips(fileByIndexTable, fileCountsHeaderTooltips());
@@ -814,8 +798,8 @@ public class StatsPanel extends JPanel {
         queueDropsValue.setText(formatWhole(ExportStats.getTrafficQueueDrops()));
         repeaterMetadataSourcesValue.setText(ExportStats.describeRepeaterMetadataSourceCounts());
         spillQueueValue.setText(StatsPanelFormatters.formatSpillQueue(spillDocs, spillBytes));
-        spillOldestAgeValue.setText(
-                DECIMAL_ONE.format(ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSpillOldestAgeMs() / 1000.0));
+        spillOldestAgeValue.setText(StatsPanelFormatters.formatOneDecimal(
+                ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue.getCurrentSpillOldestAgeMs() / 1000.0));
         spillFlowValue.setText(
                 formatWhole(ExportStats.getTrafficSpillEnqueued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDequeued()) + " / "
@@ -861,7 +845,8 @@ public class StatsPanel extends JPanel {
         correlationSpoolExplicitFailuresValue.setText(
                 formatWhole(ProxyLiveMetadataCorrelator.spoolFailures()) + " / "
                         + formatWhole(ProxyLiveMetadataCorrelator.explicitFailures()));
-        throughputValue.setText(DECIMAL_ONE.format(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
+        throughputValue.setText(
+                StatsPanelFormatters.formatOneDecimal(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
         exportedDocsValue.setText(formatWhole(totalSuccess) + " docs");
         exportedSizeValue.setText(formatHumanReadableBytes(dbExportedBytes));
         exportedFailuresValue.setText(formatWhole(totalFailure));
@@ -950,81 +935,13 @@ public class StatsPanel extends JPanel {
      * Rebuilds the merged OpenSearch counts table.
      *
      * <p>Row order is: index rows in alphabetical order, the Traffic row, traffic-source
-     * sub-rows directly under it (indented via {@link #SUBROW_INDENT}), then a Total row that
+     * sub-rows directly under it (indented in the first column), then a Total row that
      * aggregates only the index rows. Sub-rows show route-attributed Failures, Queued, Recovered
      * Failures, Retry Drops, and Permanent Drops; Last Bulk / Last Error stay {@code "-"}
      * because those are index-level only.</p>
      */
     private void rebuildByIndexTable() {
-        byIndexModel.setRowCount(0);
-        List<String> sortedKeys = new ArrayList<>(ExportStats.getIndexKeys());
-        sortedKeys.sort((left, right) -> left.compareToIgnoreCase(right));
-        long totalSuccess = 0;
-        long totalQueued = 0;
-        long totalRetryDrops = 0;
-        long totalPermanentDrops = 0;
-        long totalFailure = 0;
-        long totalRecovered = 0;
-        for (String indexKey : sortedKeys) {
-            long exported = ExportStats.getExportedCount(indexKey);
-            int queued = ExportStats.getQueueSize(indexKey);
-            long retryDrops = ExportStats.getRetryQueueDrops(indexKey);
-            long permanentDrops = ExportStats.getPermanentDrops(indexKey);
-            long failure = ExportStats.getFailureCount(indexKey);
-            long recovered = ExportStats.getRecoveredFailureCount(indexKey);
-            String lastBulkStr = "-";
-            if ("traffic".equalsIgnoreCase(indexKey)) {
-                long lastBulkMs = ExportStats.getLastLiveBulkDurationMs(indexKey);
-                if (lastBulkMs >= 0) {
-                    lastBulkStr = String.valueOf(lastBulkMs);
-                }
-            }
-            String lastError = ExportStats.getLastError(indexKey);
-            String errStr = lastError != null ? lastError : "-";
-            totalSuccess += exported;
-            totalQueued += queued;
-            totalRetryDrops += retryDrops;
-            totalPermanentDrops += permanentDrops;
-            totalFailure += failure;
-            totalRecovered += recovered;
-            byIndexModel.addRow(new Object[] {
-                    formatKeyLabel(indexKey), exported, failure, queued,
-                    recovered, retryDrops, permanentDrops, lastBulkStr, errStr
-            });
-            if ("traffic".equalsIgnoreCase(indexKey)) {
-                appendOpenSearchTrafficSourceSubRows();
-            }
-        }
-        byIndexModel.addRow(new Object[] {
-                "Total", totalSuccess, totalFailure, totalQueued,
-                totalRecovered, totalRetryDrops, totalPermanentDrops, "-", "-"
-        });
-    }
-
-    /** Appends per-source sub-rows for OpenSearch traffic right after the Traffic index row. */
-    private void appendOpenSearchTrafficSourceSubRows() {
-        for (String sourceKey : ExportStats.getTrafficToolTypeKeys()) {
-            if ("UNKNOWN".equals(sourceKey)) {
-                continue;
-            }
-            long sourceSuccess = resolveSourceSuccess(sourceKey);
-            int sourceQueued = ExportStats.getTrafficDisplaySourceQueueSize(sourceKey);
-            long sourceRetryDrops = TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops(sourceKey);
-            long sourcePermanentDrops = TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops(sourceKey);
-            long sourceFailure = resolveSourceFailure(sourceKey);
-            long sourceRecovered = TrafficRouteBucket.resolveOpenSearchSourceRecovery(sourceKey);
-            byIndexModel.addRow(new Object[] {
-                    SUBROW_INDENT + formatKeyLabel(sourceKey),
-                    sourceSuccess,
-                    sourceFailure,
-                    sourceQueued,
-                    sourceRecovered,
-                    sourceRetryDrops,
-                    sourcePermanentDrops,
-                    "-",
-                    "-"
-            });
-        }
+        applySinkCountSnapshot(byIndexModel, SinkCountTableSnapshot.database());
     }
 
     /**
@@ -1033,100 +950,15 @@ public class StatsPanel extends JPanel {
      * file writes use bounded immediate retries rather than an asynchronous retry queue.
      */
     private void rebuildFileByIndexTable() {
-        fileByIndexModel.setRowCount(0);
-        List<String> sortedKeys = new ArrayList<>(FileExportStats.getIndexKeys());
-        sortedKeys.sort((left, right) -> left.compareToIgnoreCase(right));
-        long totalSuccess = 0;
-        long totalFailure = 0;
-        long totalRetryAttempts = 0;
-        long totalBaselineBytes = 0;
-        long totalAppendedBytes = 0;
-        long totalFinalBytes = 0;
-        boolean anyArtifacts = false;
-        boolean anyIntegrityFailure = false;
-        boolean anyIntegrityPending = false;
-        for (String indexKey : sortedKeys) {
-            long written = FileExportStats.getWrittenCount(indexKey);
-            long failure = FileExportStats.getFailureCount(indexKey);
-            long retryAttempts = FileExportStats.getRetryAttemptCount(indexKey);
-            long artifactCount = FileExportStats.getArtifactCount(indexKey);
-            long baselineBytes = FileExportStats.getArtifactBaselineBytes(indexKey);
-            long appendedBytes = FileExportStats.getExportedBytes(indexKey);
-            long finalBytes = FileExportStats.getArtifactFinalBytes(indexKey);
-            FileExportStats.ArtifactIntegrity integrity =
-                    FileExportStats.getArtifactIntegrity(indexKey);
-            boolean selected = artifactCount > 0L;
-            long lastWriteMs = FileExportStats.getLastWriteDurationMs(indexKey);
-            String lastWriteStr = lastWriteMs >= 0 ? String.valueOf(lastWriteMs) : "-";
-            String lastError = FileExportStats.getLastError(indexKey);
-            String errStr = lastError != null ? lastError : "-";
-            totalSuccess += written;
-            totalFailure += failure;
-            totalRetryAttempts += retryAttempts;
-            totalBaselineBytes += baselineBytes;
-            totalAppendedBytes += appendedBytes;
-            totalFinalBytes += finalBytes;
-            anyArtifacts |= selected;
-            anyIntegrityFailure |= integrity == FileExportStats.ArtifactIntegrity.FAILED;
-            anyIntegrityPending |= integrity == FileExportStats.ArtifactIntegrity.PENDING;
-            fileByIndexModel.addRow(new Object[] {
-                    formatKeyLabel(indexKey),
-                    written,
-                    failure,
-                    retryAttempts,
-                    selected ? StatsPanelFormatters.formatBytesHuman(baselineBytes) : "-",
-                    selected ? StatsPanelFormatters.formatBytesHuman(appendedBytes) : "-",
-                    integrity == FileExportStats.ArtifactIntegrity.OK
-                                    || integrity == FileExportStats.ArtifactIntegrity.FAILED
-                            ? StatsPanelFormatters.formatBytesHuman(finalBytes)
-                            : "-",
-                    fileIntegrityLabel(integrity),
-                    lastWriteStr,
-                    errStr
-            });
-            if ("traffic".equalsIgnoreCase(indexKey)) {
-                appendFileTrafficSourceSubRows();
-            }
-        }
-        fileByIndexModel.addRow(new Object[] {
-                "Total",
-                totalSuccess,
-                totalFailure,
-                totalRetryAttempts,
-                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalBaselineBytes) : "-",
-                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalAppendedBytes) : "-",
-                !anyArtifacts || anyIntegrityPending
-                        ? "-"
-                        : StatsPanelFormatters.formatBytesHuman(totalFinalBytes),
-                !anyArtifacts
-                        ? "Not selected"
-                        : anyIntegrityFailure ? "Failed" : anyIntegrityPending ? "Pending" : "OK",
-                "-",
-                "-"
-        });
+        applySinkCountSnapshot(fileByIndexModel, SinkCountTableSnapshot.file());
     }
 
-    private static String fileIntegrityLabel(FileExportStats.ArtifactIntegrity integrity) {
-        return switch (integrity) {
-            case PENDING -> "Pending";
-            case OK -> "OK";
-            case FAILED -> "Failed";
-            case NOT_SELECTED -> "Not selected";
-        };
-    }
-
-    /** Appends per-source sub-rows for File traffic right after the Traffic index row. */
-    private void appendFileTrafficSourceSubRows() {
-        for (String sourceKey : FileExportStats.getTrafficToolTypeKeys()) {
-            if ("UNKNOWN".equals(sourceKey)) {
-                continue;
-            }
-            long sourceSuccess = resolveFileSourceSuccess(sourceKey);
-            long sourceFailure = resolveFileSourceFailure(sourceKey);
-            fileByIndexModel.addRow(new Object[] {
-                    SUBROW_INDENT + formatKeyLabel(sourceKey),
-                    sourceSuccess, sourceFailure, "-", "-", "-", "-", "-", "-", "-", "-"
-            });
+    private static void applySinkCountSnapshot(
+            DefaultTableModel model,
+            SinkCountTableSnapshot snapshot) {
+        model.setRowCount(0);
+        for (SinkCountTableSnapshot.Row row : snapshot.rows()) {
+            model.addRow(row.toSwingValues());
         }
     }
 
@@ -1948,7 +1780,7 @@ public class StatsPanel extends JPanel {
     }
 
     private static String formatWhole(long value) {
-        return String.format(Locale.ROOT, "%,d", value);
+        return StatsPanelFormatters.formatWhole(value);
     }
 
     /**
@@ -1958,23 +1790,7 @@ public class StatsPanel extends JPanel {
      * Values below 1 KB remain in bytes; larger values are shown in KB, MB, or GB.</p>
      */
     private static String formatHumanReadableBytes(long bytes) {
-        long safeBytes = Math.max(0L, bytes);
-        double value = safeBytes;
-        String unit = "B";
-        if (safeBytes >= 1024L * 1024L * 1024L) {
-            value = safeBytes / (1024.0 * 1024.0 * 1024.0);
-            unit = "GB";
-        } else if (safeBytes >= 1024L * 1024L) {
-            value = safeBytes / (1024.0 * 1024.0);
-            unit = "MB";
-        } else if (safeBytes >= 1024L) {
-            value = safeBytes / 1024.0;
-            unit = "KB";
-        }
-        if ("B".equals(unit)) {
-            return formatWhole(safeBytes) + " " + unit;
-        }
-        return DECIMAL_ONE.format(value) + " " + unit;
+        return StatsPanelFormatters.formatBytesKbMbGb(bytes);
     }
 
     /**
@@ -2005,13 +1821,7 @@ public class StatsPanel extends JPanel {
                 : "n/a");
         processCpuLoadValue.setText(Double.isNaN(snapshot.processCpuLoad())
                 ? "n/a"
-                : DECIMAL_ONE.format(snapshot.processCpuLoad() * 100.0) + "%");
-    }
-
-    private static String formatBytesPair(long used, long max) {
-        String usedText = used >= 0 ? formatHumanReadableBytes(used) : "n/a";
-        String maxText = max > 0 ? formatHumanReadableBytes(max) : "n/a";
-        return usedText + " / " + maxText;
+                : StatsPanelFormatters.formatOneDecimal(snapshot.processCpuLoad() * 100.0) + "%");
     }
 
     /**
@@ -2020,11 +1830,7 @@ public class StatsPanel extends JPanel {
      * percent cannot be computed.
      */
     private static String formatBytesPairWithPercent(long used, long max) {
-        String paired = formatBytesPair(used, max);
-        if (used < 0 || max <= 0) {
-            return paired;
-        }
-        return paired + " (" + formatPercentOfMax(used, max) + ")";
+        return StatsPanelFormatters.formatBytesPairWithPercent(used, max);
     }
 
     /**
@@ -2033,28 +1839,11 @@ public class StatsPanel extends JPanel {
      * lives next to Heap Used / Max, so repeating the cap as bytes would be redundant).
      */
     private static String formatBytesWithPercentOf(long value, long max) {
-        if (value < 0) {
-            return "n/a";
-        }
-        if (max <= 0) {
-            return formatHumanReadableBytes(value);
-        }
-        return formatHumanReadableBytes(value) + " (" + formatPercentOfMax(value, max) + ")";
-    }
-
-    /**
-     * Formats {@code numerator / denominator} as a one-decimal-place percent, e.g.
-     * {@code "52.3%"}. Caller guarantees {@code denominator > 0}.
-     */
-    private static String formatPercentOfMax(long numerator, long denominator) {
-        double pct = (numerator * 100.0) / denominator;
-        return DECIMAL_ONE.format(pct) + "%";
+        return StatsPanelFormatters.formatBytesWithPercentOf(value, max);
     }
 
     private static String formatIntPair(int live, int peak) {
-        String liveText = live >= 0 ? formatWhole(live) : "n/a";
-        String peakText = peak >= 0 ? formatWhole(peak) : "n/a";
-        return liveText + " / " + peakText;
+        return StatsPanelFormatters.formatIntPair(live, peak);
     }
 
     /**
@@ -2063,14 +1852,7 @@ public class StatsPanel extends JPanel {
      * zero.
      */
     private static String formatDurationMsCompact(long millis) {
-        long safe = Math.max(0L, millis);
-        if (safe < 1_000L) {
-            return formatWhole(safe) + " ms";
-        }
-        if (safe < 60_000L) {
-            return DECIMAL_ONE.format(safe / 1_000.0) + " s";
-        }
-        return DECIMAL_ONE.format(safe / 60_000.0) + " m";
+        return StatsPanelFormatters.formatDurationMsCompact(millis);
     }
 
     private static void updateTablePreferredHeight(JTable table) {
@@ -2488,24 +2270,6 @@ public class StatsPanel extends JPanel {
         tooltips.put("File Total Failures", Tooltips.htmlRaw(
                 "Session total of failed file export write attempts."));
         return tooltips;
-    }
-
-    private static String formatKeyLabel(String key) {
-        if (key == null || key.isBlank()) {
-            return "";
-        }
-        String[] parts = key.toLowerCase(Locale.ROOT).replace('_', ' ').split("\\s+");
-        StringBuilder sb = new StringBuilder();
-        for (String part : parts) {
-            if (part.isEmpty()) {
-                continue;
-            }
-            if (sb.length() > 0) {
-                sb.append(' ');
-            }
-            sb.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
-        }
-        return sb.toString();
     }
 
     private void sampleRateSeries() {
@@ -3312,31 +3076,6 @@ public class StatsPanel extends JPanel {
         } else {
             javax.swing.SwingUtilities.invokeLater(apply);
         }
-    }
-
-    /**
-     * Resolves "Traffic by source" docs exported count for a source key.
-     *
-     * <p>Most rows come from live captured tool-type counts. Proxy-history snapshot pushes and
-     * proxy WebSocket exports are recorded separately, so include those under the
-     * proxy_history row. Delegates to {@link TrafficRouteBucket} so the mapping stays consistent
-     * across sinks and stats displays.</p>
-     */
-    private static long resolveSourceSuccess(String sourceKey) {
-        return TrafficRouteBucket.resolveOpenSearchSourceSuccess(sourceKey);
-    }
-
-    /** Resolves "Traffic by source" failure count for a source key. */
-    private static long resolveSourceFailure(String sourceKey) {
-        return TrafficRouteBucket.resolveOpenSearchSourceFailure(sourceKey);
-    }
-
-    private static long resolveFileSourceSuccess(String sourceKey) {
-        return TrafficRouteBucket.resolveFileSourceSuccess(sourceKey);
-    }
-
-    private static long resolveFileSourceFailure(String sourceKey) {
-        return TrafficRouteBucket.resolveFileSourceFailure(sourceKey);
     }
 
 }

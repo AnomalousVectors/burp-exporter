@@ -1815,21 +1815,18 @@ public final class ExportStats {
      */
     public static void recordExportStartRequested() {
         resetForRun();
-        resetRunPeaks();
         exportStartRequestedAtMs.set(System.currentTimeMillis());
-        firstTrafficSuccessAtMs.set(-1);
     }
 
     /**
-     * Clears per-run export counters while preserving snapshot-last-run stats.
+     * Clears every metric owned by the preceding export run.
      *
      * <p>Individual counter operations are thread-safe, but reset is not an atomic snapshot
      * transition. Callers must quiesce export producers before invoking it.</p>
      */
     public static void resetForRun() {
         FileExportStats.resetForRun();
-        for (String key : INDEX_KEYS) {
-            PerIndexStats stats = forIndex(key);
+        for (PerIndexStats stats : STATS.values()) {
             stats.exportedCount.set(0);
             stats.noopCount.set(0);
             stats.failureCount.set(0);
@@ -1842,25 +1839,55 @@ public final class ExportStats {
             stats.retryAttempts.set(0);
             stats.bodyTruncations.set(0);
         }
-        for (String sourceKey : TRAFFIC_SOURCE_KEYS) {
-            TrafficSourceStats source = forTrafficSource(sourceKey);
+        for (TrafficSourceStats source : TRAFFIC_SOURCE_STATS.values()) {
             source.successCount.set(0);
             source.failureCount.set(0);
             source.recoveryCount.set(0);
             source.retryQueueDrops.set(0);
             source.permanentDrops.set(0);
         }
-        for (String toolType : TRAFFIC_TOOL_TYPE_KEYS) {
-            TRAFFIC_TOOL_TYPE_SUCCESS_COUNTS.put(toolType, new AtomicLong(0));
-            TRAFFIC_TOOL_TYPE_FAILURE_COUNTS.put(toolType, new AtomicLong(0));
-            TRAFFIC_TOOL_TYPE_RECOVERY_COUNTS.put(toolType, new AtomicLong(0));
-            TRAFFIC_TOOL_TYPE_RETRY_QUEUE_DROP_COUNTS.put(toolType, new AtomicLong(0));
-            TRAFFIC_TOOL_TYPE_PERMANENT_DROP_COUNTS.put(toolType, new AtomicLong(0));
-        }
+        TRAFFIC_TOOL_TYPE_SUCCESS_COUNTS.values().forEach(count -> count.set(0L));
+        TRAFFIC_TOOL_TYPE_FAILURE_COUNTS.values().forEach(count -> count.set(0L));
+        TRAFFIC_TOOL_TYPE_RECOVERY_COUNTS.values().forEach(count -> count.set(0L));
+        TRAFFIC_TOOL_TYPE_RETRY_QUEUE_DROP_COUNTS.values().forEach(count -> count.set(0L));
+        TRAFFIC_TOOL_TYPE_PERMANENT_DROP_COUNTS.values().forEach(count -> count.set(0L));
+        REPEATER_METADATA_SOURCE_COUNTS.values().forEach(count -> count.set(0L));
+        lastSnapshotRuns.values().forEach(snapshot -> snapshot.set(null));
+        exportStartRequestedAtMs.set(-1L);
+        firstTrafficSuccessAtMs.set(-1L);
+        currentProxyHistoryChunkTarget.set(-1);
+        lastBulkTargetBatch.set(-1);
+        lastBulkAttemptedDocs.set(-1);
+        resetRunPeaks();
         synchronized (recentSuccesses) {
             recentSuccesses.clear();
         }
-        firstTrafficSuccessAtMs.set(-1);
+        trafficQueueDrops.set(0L);
+        trafficSpillEnqueued.set(0L);
+        trafficSpillDequeued.set(0L);
+        trafficSpillDrops.set(0L);
+        trafficSpillExpiredPruned.set(0L);
+        trafficDropReasons.clear();
+        trafficToolSourceFallbacks.set(0L);
+        synthesizedBodyParamsDropped.set(0L);
+        docsBodyParamsTruncated.set(0L);
+        bodyParamsDroppedTotal.set(0L);
+        docsBodyEnumerationMisgateSuspect.set(0L);
+        docsUrlParamsTruncated.set(0L);
+        urlParamsDroppedTotal.set(0L);
+        docsWithSkippedBodyEnumeration.set(0L);
+        docsWireBodyParamsReplaced.set(0L);
+        wireBodyParamsDroppedTotal.set(0L);
+        docsSupplementalBodyParamsUsed.set(0L);
+        docsSkipPathBodyRescued.set(0L);
+        docsSupplementalRejectedNonForm.set(0L);
+        bodyParamsSourceCounts.clear();
+        bodyParamsSkipReasonCounts.clear();
+        bodyParamsEncodingCounts.clear();
+        openSearchLastSuccessAtMs.set(-1L);
+        openSearchConsecutiveFailures.set(0L);
+        skipReasonCounts.clear();
+        bulkInFlight.set(0);
         softOutageEntries.set(0L);
         capacityPressureEvents.set(0L);
         searchBodyPrefixTruncations.set(0L);
@@ -1895,6 +1922,8 @@ public final class ExportStats {
      * <p>Callers must ensure no producers are recording concurrently.</p>
      */
     public static void resetForTests() {
+        resetForRun();
+        FileExportStats.resetForTests();
         STATS.clear();
         TRAFFIC_SOURCE_STATS.clear();
         TRAFFIC_TOOL_TYPE_SUCCESS_COUNTS.clear();
@@ -1903,6 +1932,7 @@ public final class ExportStats {
         TRAFFIC_TOOL_TYPE_RETRY_QUEUE_DROP_COUNTS.clear();
         TRAFFIC_TOOL_TYPE_PERMANENT_DROP_COUNTS.clear();
         REPEATER_METADATA_SOURCE_COUNTS.clear();
+        lastSnapshotRuns.clear();
         for (String key : INDEX_KEYS) {
             STATS.put(key, new PerIndexStats());
         }
@@ -1919,51 +1949,9 @@ public final class ExportStats {
         for (String metadataSource : REPEATER_METADATA_SOURCE_KEYS) {
             REPEATER_METADATA_SOURCE_COUNTS.put(metadataSource, new AtomicLong(0));
         }
-        exportStartRequestedAtMs.set(-1);
-        firstTrafficSuccessAtMs.set(-1);
-        for (AtomicReference<SnapshotLastRunStats> snapshotRef : lastSnapshotRuns.values()) {
-            snapshotRef.set(null);
+        for (String reporterKey : SNAPSHOT_REPORTER_KEYS) {
+            lastSnapshotRuns.put(reporterKey, new AtomicReference<>(null));
         }
-        currentProxyHistoryChunkTarget.set(-1);
-        lastBulkTargetBatch.set(-1);
-        lastBulkAttemptedDocs.set(-1);
-        resetRunPeaks();
-        synchronized (recentSuccesses) {
-            recentSuccesses.clear();
-        }
-        trafficQueueDrops.set(0);
-        trafficSpillEnqueued.set(0);
-        trafficSpillDequeued.set(0);
-        trafficSpillDrops.set(0);
-        trafficSpillExpiredPruned.set(0);
-        trafficDropReasons.clear();
-        trafficToolSourceFallbacks.set(0);
-        synthesizedBodyParamsDropped.set(0);
-        docsBodyParamsTruncated.set(0);
-        bodyParamsDroppedTotal.set(0);
-        docsBodyEnumerationMisgateSuspect.set(0);
-        docsUrlParamsTruncated.set(0);
-        urlParamsDroppedTotal.set(0);
-        docsWithSkippedBodyEnumeration.set(0);
-        docsWireBodyParamsReplaced.set(0);
-        wireBodyParamsDroppedTotal.set(0);
-        docsSupplementalBodyParamsUsed.set(0);
-        docsSkipPathBodyRescued.set(0);
-        docsSupplementalRejectedNonForm.set(0);
-        bodyParamsSourceCounts.clear();
-        bodyParamsSkipReasonCounts.clear();
-        bodyParamsEncodingCounts.clear();
-        openSearchLastSuccessAtMs.set(-1L);
-        openSearchConsecutiveFailures.set(0L);
-        skipReasonCounts.clear();
-        permanentDropReasons.clear();
-        bulkInFlight.set(0);
-        softOutageEntries.set(0L);
-        capacityPressureEvents.set(0L);
-        searchBodyPrefixTruncations.set(0L);
-        COUNTED_SEARCH_TRUNCATION_OPERATION_IDS.clear();
-        peakCooldownWaitMs.set(0L);
-        peakFlushSlotWaitMs.set(0L);
     }
 
     /** Snapshot reporter keys that receive structured last-run stats. */

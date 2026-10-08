@@ -1,11 +1,6 @@
 package ai.anomalousvectors.tools.burp.ui;
 
-import java.text.DecimalFormat;
-import java.text.DecimalFormatSymbols;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -14,7 +9,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
 import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
-import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -31,26 +25,12 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
  * file and miscellaneous single-line JSON INFO entries via {@link #logSessionStopSummary()}.
  * Database counts remain available in the database and are not read back during Stop.</p>
  *
- * <p>This class is not thread-safe because its shared number formatter is mutable. Copy actions on
- * the EDT and Stop-summary generation on the Stop worker must be serialized and must not overlap.
- * Counters are sampled independently, so output is a non-atomic operational snapshot rather than
- * a transactionally consistent view.</p>
+ * <p>Counters are sampled independently, so output is a non-atomic operational snapshot rather
+ * than a transactionally consistent view.</p>
  */
 public final class StatsClipboardSnapshot {
 
     private static final ObjectMapper COMPACT_JSON = new ObjectMapper();
-    private static final String SUBROW_INDENT = "    ";
-    private static final DecimalFormat DECIMAL_ONE =
-            new DecimalFormat("0.0", DecimalFormatSymbols.getInstance(Locale.ROOT));
-
-    private static final String[] FILE_COLUMNS =
-            { "Index", "Written", "Failures", "Retry Attempts",
-                    "Baseline", "Appended", "Final Size", "Integrity",
-                    "Last Append (ms)", "Last Error" };
-    private static final String[] OPEN_SEARCH_COLUMNS =
-            { "Index", "Exported", "Failures", "Queued", "Recovered Failures",
-                    "Retry Drops", "Permanent Drops", "Last Bulk (ms)", "Last Error" };
-
     private StatsClipboardSnapshot() {}
 
     /**
@@ -64,13 +44,17 @@ public final class StatsClipboardSnapshot {
     public static String buildClipboardText() {
         StringBuilder sb = new StringBuilder(1024);
         if (isFileSectionEnabled()) {
+            SinkCountTableSnapshot fileSnapshot = SinkCountTableSnapshot.file();
             sb.append("File Counts\n");
-            sb.append(CardCopySupport.rowsToTsv(FILE_COLUMNS, buildFileCountRows()));
+            sb.append(CardCopySupport.rowsToTsv(
+                    fileSnapshot.columns().toArray(String[]::new), fileSnapshot.textRows()));
             sb.append('\n');
         }
         if (isDatabaseSectionEnabled()) {
+            SinkCountTableSnapshot databaseSnapshot = SinkCountTableSnapshot.database();
             sb.append("Database Counts\n");
-            sb.append(CardCopySupport.rowsToTsv(OPEN_SEARCH_COLUMNS, buildOpenSearchCountRows()));
+            sb.append(CardCopySupport.rowsToTsv(
+                    databaseSnapshot.columns().toArray(String[]::new), databaseSnapshot.textRows()));
             sb.append('\n');
         }
         sb.append(CardCopySupport.sectionsToText("Misc Stats", buildMiscSections()));
@@ -103,9 +87,10 @@ public final class StatsClipboardSnapshot {
     }
 
     private static Map<String, Object> buildFileCountsPayload() {
+        SinkCountTableSnapshot snapshot = SinkCountTableSnapshot.file();
         Map<String, Object> payload = new LinkedHashMap<>(2);
-        payload.put("columns", List.of(FILE_COLUMNS));
-        payload.put("rows", buildFileCountRows());
+        payload.put("columns", snapshot.columns());
+        payload.put("rows", snapshot.textRows());
         return payload;
     }
 
@@ -114,194 +99,6 @@ public final class StatsClipboardSnapshot {
         Map<String, Object> payload = new LinkedHashMap<>(1);
         payload.put("sections", buildMiscSections());
         return payload;
-    }
-
-    private static List<String[]> buildFileCountRows() {
-        List<String[]> rows = new ArrayList<>();
-        List<String> sortedKeys = new ArrayList<>(FileExportStats.getIndexKeys());
-        sortedKeys.sort((left, right) -> left.compareToIgnoreCase(right));
-        long totalSuccess = 0;
-        long totalFailure = 0;
-        long totalRetryAttempts = 0;
-        long totalBaselineBytes = 0;
-        long totalAppendedBytes = 0;
-        long totalFinalBytes = 0;
-        boolean anyArtifacts = false;
-        boolean anyIntegrityFailure = false;
-        boolean anyIntegrityPending = false;
-        for (String indexKey : sortedKeys) {
-            long written = FileExportStats.getWrittenCount(indexKey);
-            long failure = FileExportStats.getFailureCount(indexKey);
-            long retryAttempts = FileExportStats.getRetryAttemptCount(indexKey);
-            long artifactCount = FileExportStats.getArtifactCount(indexKey);
-            long baselineBytes = FileExportStats.getArtifactBaselineBytes(indexKey);
-            long appendedBytes = FileExportStats.getExportedBytes(indexKey);
-            long finalBytes = FileExportStats.getArtifactFinalBytes(indexKey);
-            FileExportStats.ArtifactIntegrity integrity =
-                    FileExportStats.getArtifactIntegrity(indexKey);
-            boolean selected = artifactCount > 0L;
-            long lastWriteMs = FileExportStats.getLastWriteDurationMs(indexKey);
-            String lastWriteStr = lastWriteMs >= 0 ? String.valueOf(lastWriteMs) : "-";
-            String lastError = FileExportStats.getLastError(indexKey);
-            totalSuccess += written;
-            totalFailure += failure;
-            totalRetryAttempts += retryAttempts;
-            totalBaselineBytes += baselineBytes;
-            totalAppendedBytes += appendedBytes;
-            totalFinalBytes += finalBytes;
-            anyArtifacts |= selected;
-            anyIntegrityFailure |= integrity == FileExportStats.ArtifactIntegrity.FAILED;
-            anyIntegrityPending |= integrity == FileExportStats.ArtifactIntegrity.PENDING;
-            rows.add(new String[] {
-                    formatKeyLabel(indexKey),
-                    formatWhole(written),
-                    formatWhole(failure),
-                    formatWhole(retryAttempts),
-                    selected ? StatsPanelFormatters.formatBytesHuman(baselineBytes) : "-",
-                    selected ? StatsPanelFormatters.formatBytesHuman(appendedBytes) : "-",
-                    integrity == FileExportStats.ArtifactIntegrity.OK
-                                    || integrity == FileExportStats.ArtifactIntegrity.FAILED
-                            ? StatsPanelFormatters.formatBytesHuman(finalBytes)
-                            : "-",
-                    fileIntegrityLabel(integrity),
-                    lastWriteStr,
-                    lastError != null ? lastError : "-"
-            });
-            if ("traffic".equalsIgnoreCase(indexKey)) {
-                appendFileTrafficSourceSubRows(rows);
-            }
-        }
-        rows.add(new String[] {
-                "Total",
-                formatWhole(totalSuccess),
-                formatWhole(totalFailure),
-                formatWhole(totalRetryAttempts),
-                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalBaselineBytes) : "-",
-                anyArtifacts ? StatsPanelFormatters.formatBytesHuman(totalAppendedBytes) : "-",
-                !anyArtifacts || anyIntegrityPending
-                        ? "-"
-                        : StatsPanelFormatters.formatBytesHuman(totalFinalBytes),
-                !anyArtifacts
-                        ? "Not selected"
-                        : anyIntegrityFailure ? "Failed" : anyIntegrityPending ? "Pending" : "OK",
-                "-",
-                "-"
-        });
-        return rows;
-    }
-
-    private static void appendFileTrafficSourceSubRows(List<String[]> rows) {
-        for (String sourceKey : FileExportStats.getTrafficToolTypeKeys()) {
-            if ("UNKNOWN".equals(sourceKey)) {
-                continue;
-            }
-            rows.add(new String[] {
-                    SUBROW_INDENT + formatKeyLabel(sourceKey),
-                    formatWhole(TrafficRouteBucket.resolveFileSourceSuccess(sourceKey)),
-                    formatWhole(TrafficRouteBucket.resolveFileSourceFailure(sourceKey)),
-                    "-",
-                    "-",
-                    "-",
-                    "-",
-                    "-",
-                    "-",
-                    "-"
-            });
-        }
-    }
-
-    private static String fileIntegrityLabel(FileExportStats.ArtifactIntegrity integrity) {
-        return switch (integrity) {
-            case PENDING -> "Pending";
-            case OK -> "OK";
-            case FAILED -> "Failed";
-            case NOT_SELECTED -> "Not selected";
-        };
-    }
-
-    private static List<String[]> buildOpenSearchCountRows() {
-        return buildOpenSearchCountRows(Map.of());
-    }
-
-    private static List<String[]> buildOpenSearchCountRows(Map<String, Long> countOverrides) {
-        List<String[]> rows = new ArrayList<>();
-        List<String> sortedKeys = new ArrayList<>(ExportStats.getIndexKeys());
-        sortedKeys.sort((left, right) -> left.compareToIgnoreCase(right));
-        long totalSuccess = 0;
-        long totalQueued = 0;
-        long totalRetryDrops = 0;
-        long totalPermanentDrops = 0;
-        long totalFailure = 0;
-        long totalRecovered = 0;
-        for (String indexKey : sortedKeys) {
-            long exported = countOverrides.getOrDefault(indexKey, ExportStats.getExportedCount(indexKey));
-            int queued = ExportStats.getQueueSize(indexKey);
-            long retryDrops = ExportStats.getRetryQueueDrops(indexKey);
-            long permanentDrops = ExportStats.getPermanentDrops(indexKey);
-            long failure = ExportStats.getFailureCount(indexKey);
-            long recovered = ExportStats.getRecoveredFailureCount(indexKey);
-            String lastBulkStr = "-";
-            if ("traffic".equalsIgnoreCase(indexKey)) {
-                long lastBulkMs = ExportStats.getLastLiveBulkDurationMs(indexKey);
-                if (lastBulkMs >= 0) {
-                    lastBulkStr = String.valueOf(lastBulkMs);
-                }
-            }
-            String lastError = ExportStats.getLastError(indexKey);
-            totalSuccess += exported;
-            totalQueued += queued;
-            totalRetryDrops += retryDrops;
-            totalPermanentDrops += permanentDrops;
-            totalFailure += failure;
-            totalRecovered += recovered;
-            rows.add(new String[] {
-                    formatKeyLabel(indexKey),
-                    formatWhole(exported),
-                    formatWhole(failure),
-                    formatWhole(queued),
-                    formatWhole(recovered),
-                    formatWhole(retryDrops),
-                    formatWhole(permanentDrops),
-                    lastBulkStr,
-                    lastError != null ? lastError : "-"
-            });
-            if ("traffic".equalsIgnoreCase(indexKey)) {
-                appendOpenSearchTrafficSourceSubRows(rows);
-            }
-        }
-        rows.add(new String[] {
-                "Total",
-                formatWhole(totalSuccess),
-                formatWhole(totalFailure),
-                formatWhole(totalQueued),
-                formatWhole(totalRecovered),
-                formatWhole(totalRetryDrops),
-                formatWhole(totalPermanentDrops),
-                "-",
-                "-"
-        });
-        return rows;
-    }
-
-    private static void appendOpenSearchTrafficSourceSubRows(List<String[]> rows) {
-        for (String sourceKey : ExportStats.getTrafficToolTypeKeys()) {
-            if ("UNKNOWN".equals(sourceKey)) {
-                continue;
-            }
-            long sourceFailure = TrafficRouteBucket.resolveOpenSearchSourceFailure(sourceKey);
-            long sourceRecovered = TrafficRouteBucket.resolveOpenSearchSourceRecovery(sourceKey);
-            rows.add(new String[] {
-                    SUBROW_INDENT + formatKeyLabel(sourceKey),
-                    formatWhole(TrafficRouteBucket.resolveOpenSearchSourceSuccess(sourceKey)),
-                    formatWhole(sourceFailure),
-                    formatWhole(ExportStats.getTrafficDisplaySourceQueueSize(sourceKey)),
-                    formatWhole(sourceRecovered),
-                    formatWhole(TrafficRouteBucket.resolveOpenSearchSourceRetryQueueDrops(sourceKey)),
-                    formatWhole(TrafficRouteBucket.resolveOpenSearchSourcePermanentDrops(sourceKey)),
-                    "-",
-                    "-"
-            });
-        }
     }
 
     private static Map<String, Map<String, String>> buildMiscSections() {
@@ -368,7 +165,7 @@ public final class StatsClipboardSnapshot {
                 : "n/a");
         rows.put("Process CPU Load", Double.isNaN(snapshot.processCpuLoad())
                 ? "n/a"
-                : DECIMAL_ONE.format(snapshot.processCpuLoad() * 100.0) + "%");
+                : StatsPanelFormatters.formatOneDecimal(snapshot.processCpuLoad() * 100.0) + "%");
         return rows;
     }
 
@@ -376,7 +173,8 @@ public final class StatsClipboardSnapshot {
         long totalSuccess = ExportStats.getTotalSuccessCount();
         long totalFailure = ExportStats.getTotalFailureCount();
         Map<String, String> rows = new LinkedHashMap<>();
-        rows.put("Throughput (10s)", DECIMAL_ONE.format(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
+        rows.put("Throughput (10s)",
+                StatsPanelFormatters.formatOneDecimal(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
         rows.put("Exported Docs", formatWhole(totalSuccess) + " docs");
         rows.put("Exported Failures", formatWhole(totalFailure));
         rows.put("Count Basis", "Session counters; no Stop readback");
@@ -433,7 +231,7 @@ public final class StatsClipboardSnapshot {
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Queue", StatsPanelFormatters.formatSpillQueue(spillDocs, spillBytes));
         rows.put("Oldest Age (s)",
-                DECIMAL_ONE.format(TrafficExportQueue.getCurrentSpillOldestAgeMs() / 1000.0));
+                StatsPanelFormatters.formatOneDecimal(TrafficExportQueue.getCurrentSpillOldestAgeMs() / 1000.0));
         rows.put("Enqueued / Dequeued / Dropped",
                 formatWhole(ExportStats.getTrafficSpillEnqueued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDequeued()) + " / "
@@ -540,91 +338,27 @@ public final class StatsClipboardSnapshot {
         return configured || RuntimeConfig.shouldRetainSearchStatsVisibility();
     }
 
-    private static String formatKeyLabel(String key) {
-        if (key == null || key.isBlank()) {
-            return "";
-        }
-        String[] parts = key.toLowerCase(Locale.ROOT).replace('_', ' ').split("\\s+");
-        StringBuilder sb = new StringBuilder();
-        for (String part : parts) {
-            if (part.isEmpty()) {
-                continue;
-            }
-            if (sb.length() > 0) {
-                sb.append(' ');
-            }
-            sb.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
-        }
-        return sb.toString();
-    }
-
     private static String formatWhole(long value) {
-        return String.format(Locale.ROOT, "%,d", value);
+        return StatsPanelFormatters.formatWhole(value);
     }
 
     private static String formatHumanReadableBytes(long bytes) {
-        long safeBytes = Math.max(0L, bytes);
-        double value = safeBytes;
-        String unit = "B";
-        if (safeBytes >= 1024L * 1024L * 1024L) {
-            value = safeBytes / (1024.0 * 1024.0 * 1024.0);
-            unit = "GB";
-        } else if (safeBytes >= 1024L * 1024L) {
-            value = safeBytes / (1024.0 * 1024.0);
-            unit = "MB";
-        } else if (safeBytes >= 1024L) {
-            value = safeBytes / 1024.0;
-            unit = "KB";
-        }
-        if ("B".equals(unit)) {
-            return formatWhole(safeBytes) + " " + unit;
-        }
-        return DECIMAL_ONE.format(value) + " " + unit;
-    }
-
-    private static String formatBytesPair(long used, long max) {
-        String usedText = used >= 0 ? formatHumanReadableBytes(used) : "n/a";
-        String maxText = max > 0 ? formatHumanReadableBytes(max) : "n/a";
-        return usedText + " / " + maxText;
+        return StatsPanelFormatters.formatBytesKbMbGb(bytes);
     }
 
     private static String formatBytesPairWithPercent(long used, long max) {
-        String paired = formatBytesPair(used, max);
-        if (used < 0 || max <= 0) {
-            return paired;
-        }
-        return paired + " (" + formatPercentOfMax(used, max) + ")";
+        return StatsPanelFormatters.formatBytesPairWithPercent(used, max);
     }
 
     private static String formatBytesWithPercentOf(long value, long max) {
-        if (value < 0) {
-            return "n/a";
-        }
-        if (max <= 0) {
-            return formatHumanReadableBytes(value);
-        }
-        return formatHumanReadableBytes(value) + " (" + formatPercentOfMax(value, max) + ")";
-    }
-
-    private static String formatPercentOfMax(long numerator, long denominator) {
-        double pct = (numerator * 100.0) / denominator;
-        return DECIMAL_ONE.format(pct) + "%";
+        return StatsPanelFormatters.formatBytesWithPercentOf(value, max);
     }
 
     private static String formatIntPair(int live, int peak) {
-        String liveText = live >= 0 ? formatWhole(live) : "n/a";
-        String peakText = peak >= 0 ? formatWhole(peak) : "n/a";
-        return liveText + " / " + peakText;
+        return StatsPanelFormatters.formatIntPair(live, peak);
     }
 
     private static String formatDurationMsCompact(long millis) {
-        long safe = Math.max(0L, millis);
-        if (safe < 1_000L) {
-            return formatWhole(safe) + " ms";
-        }
-        if (safe < 60_000L) {
-            return DECIMAL_ONE.format(safe / 1_000.0) + " s";
-        }
-        return DECIMAL_ONE.format(safe / 60_000.0) + " m";
+        return StatsPanelFormatters.formatDurationMsCompact(millis);
     }
 }

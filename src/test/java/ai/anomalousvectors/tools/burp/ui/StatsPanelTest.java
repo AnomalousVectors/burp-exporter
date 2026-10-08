@@ -192,7 +192,7 @@ class StatsPanelTest {
         StatsPanel panel = onEdt(StatsPanel::new);
         JTable openSearchTable = JTable.class.cast(get(panel, "byIndexTable"));
         JTable fileTable = JTable.class.cast(get(panel, "fileByIndexTable"));
-        String subRowLabel = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT")) + "Repeater Tabs";
+        String subRowLabel = SinkCountTableSnapshot.SUBROW_INDENT + "Repeater Tabs";
 
         onEdt(() -> call(panel, "refreshDashboard"));
 
@@ -231,7 +231,7 @@ class StatsPanelTest {
     void byIndexTable_remainsAlphabeticallySortedAfterRefresh() throws Exception {
         StatsPanel panel = onEdt(StatsPanel::new);
         JTable byIndexTable = JTable.class.cast(get(panel, "byIndexTable"));
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         ExportStats.recordSuccess("traffic", 11);
         onEdt(() -> call(panel, "refreshVisibleStats"));
@@ -374,7 +374,7 @@ class StatsPanelTest {
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
         DefaultTableModel fileIndexModel = DefaultTableModel.class.cast(get(panel, "fileByIndexModel"));
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         ExportStats.recordSuccess("traffic", 1);
         FileExportStats.recordSuccess("traffic", 1);
@@ -461,7 +461,7 @@ class StatsPanelTest {
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
         DefaultTableModel fileIndexModel = DefaultTableModel.class.cast(get(panel, "fileByIndexModel"));
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         ExportStats.recordSuccess("traffic", 4);
         ExportStats.recordSuccess("findings", 2);
@@ -1076,7 +1076,7 @@ class StatsPanelTest {
         ExportStats.resetForTests();
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         ExportStats.recordFailure("traffic", 3);
         ExportStats.recordTrafficSourceFailure("proxy_history_snapshot", 3);
@@ -1093,7 +1093,7 @@ class StatsPanelTest {
         ExportStats.resetForTests();
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         ExportStats.recordRetryQueueDrop("traffic", 5);
         ExportStats.recordTrafficSourceRetryQueueDrop("proxy_history_snapshot", 2);
@@ -1117,7 +1117,7 @@ class StatsPanelTest {
     void mergedTable_countsLiveProxyWebSocketsUnderProxySubRowAndTrafficIndex() {
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         onEdt(() -> call(panel, "refreshDashboard"));
 
@@ -1145,7 +1145,7 @@ class StatsPanelTest {
     void mergedTable_subRowSumMatchesTrafficIndexAfterMixedTrafficSources() {
         StatsPanel panel = onEdt(StatsPanel::new);
         DefaultTableModel indexModel = DefaultTableModel.class.cast(get(panel, "byIndexModel"));
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         onEdt(() -> call(panel, "refreshDashboard"));
 
@@ -1469,7 +1469,7 @@ class StatsPanelTest {
         DefaultTableModel fileIndexModel = DefaultTableModel.class.cast(get(panel, "fileByIndexModel"));
         Map<String, TimeSeries> fileDocsSeriesByIndex =
                 Reflect.stringKeyedMap(panel, "fileDocsSeriesByIndex", TimeSeries.class);
-        String indent = String.class.cast(getStatic(StatsPanel.class, "SUBROW_INDENT"));
+        String indent = SinkCountTableSnapshot.SUBROW_INDENT;
 
         onEdt(() -> call(panel, "refreshDashboard"));
         long proxyBefore = sourceTableLong(fileIndexModel, indent + "Proxy", 1);

@@ -390,8 +390,7 @@ public final class FileExportStats {
      * Callers must quiesce file-export producers before invoking it.</p>
      */
     public static void resetForRun() {
-        for (String key : INDEX_KEYS) {
-            PerIndexStats stats = forIndex(key);
+        for (PerIndexStats stats : STATS.values()) {
             stats.writtenCount.set(0);
             stats.failureCount.set(0);
             stats.retryAttemptCount.set(0);
@@ -404,15 +403,12 @@ public final class FileExportStats {
             stats.lastWriteDurationMs.set(-1);
             stats.lastError.set(null);
         }
-        for (String key : TRAFFIC_SOURCE_KEYS) {
-            TrafficSourceStats source = forTrafficSource(key);
+        for (TrafficSourceStats source : TRAFFIC_SOURCE_STATS.values()) {
             source.successCount.set(0);
             source.failureCount.set(0);
         }
-        for (String key : TRAFFIC_TOOL_TYPE_KEYS) {
-            TRAFFIC_TOOL_TYPE_SUCCESS_COUNTS.put(key, new AtomicLong(0));
-            TRAFFIC_TOOL_TYPE_FAILURE_COUNTS.put(key, new AtomicLong(0));
-        }
+        TRAFFIC_TOOL_TYPE_SUCCESS_COUNTS.values().forEach(count -> count.set(0L));
+        TRAFFIC_TOOL_TYPE_FAILURE_COUNTS.values().forEach(count -> count.set(0L));
     }
 
     /**
@@ -421,6 +417,7 @@ public final class FileExportStats {
      * <p>Callers must ensure no producers are recording concurrently.</p>
      */
     public static void resetForTests() {
+        resetForRun();
         STATS.clear();
         TRAFFIC_SOURCE_STATS.clear();
         TRAFFIC_TOOL_TYPE_SUCCESS_COUNTS.clear();

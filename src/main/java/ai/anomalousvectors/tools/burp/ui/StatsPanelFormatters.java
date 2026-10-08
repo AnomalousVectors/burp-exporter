@@ -30,13 +30,9 @@ import org.jfree.data.time.TimeSeriesCollection;
  * Returned values are ready to drop into a {@code JLabel}; callers do not need to format
  * further.</p>
  *
- * <p>This class is not thread-safe because its shared decimal formatter is mutable. Stats-panel
- * refresh and Stop/clipboard snapshot formatting must not invoke it concurrently.</p>
+ * <p>The methods are stateless and safe to call from the EDT or a Stop worker.</p>
  */
 final class StatsPanelFormatters {
-
-    private static final DecimalFormat DECIMAL_ONE =
-            new DecimalFormat("0.0", DecimalFormatSymbols.getInstance(Locale.ROOT));
 
     /** Y-axis tick labels stay at or below this value by rolling KiB → MiB → GiB (or MiB → GiB). */
     static final double AXIS_TICK_LABEL_MAX = 999.0;
@@ -244,7 +240,7 @@ final class StatsPanelFormatters {
      */
     static String formatSpillQueue(long docs, long bytes) {
         double mib = bytes / (1024.0 * 1024.0);
-        return formatWhole(docs) + " docs (" + DECIMAL_ONE.format(mib) + " MiB)";
+        return formatWhole(docs) + " docs (" + formatOneDecimal(mib) + " MiB)";
     }
 
     /**
@@ -329,7 +325,7 @@ final class StatsPanelFormatters {
     static String formatOldestQueuedAgeSummary() {
         return formatPerIndexNonZero(
                 ExportStats::getOldestQueuedAgeMs,
-                ageMs -> DECIMAL_ONE.format(ageMs / 1000.0) + "s");
+                ageMs -> formatOneDecimal(ageMs / 1000.0) + "s");
     }
 
     private static String formatPerIndexNonZero(
@@ -384,8 +380,107 @@ final class StatsPanelFormatters {
         return sb.toString();
     }
 
-    private static String formatWhole(long value) {
+    static String formatWhole(long value) {
         return String.format(Locale.ROOT, "%,d", value);
+    }
+
+    /** Converts an internal underscore-separated metric key to its stable display label. */
+    static String formatKeyLabel(String key) {
+        if (key == null || key.isBlank()) {
+            return "";
+        }
+        String[] parts = key.toLowerCase(Locale.ROOT).replace('_', ' ').split("\\s+");
+        StringBuilder label = new StringBuilder();
+        for (String part : parts) {
+            if (part.isEmpty()) {
+                continue;
+            }
+            if (!label.isEmpty()) {
+                label.append(' ');
+            }
+            label.append(Character.toUpperCase(part.charAt(0))).append(part.substring(1));
+        }
+        return label.toString();
+    }
+
+    /** Formats one fractional digit with locale-independent punctuation. */
+    static String formatOneDecimal(double value) {
+        return String.format(Locale.ROOT, "%.1f", value);
+    }
+
+    /**
+     * Formats bytes with the existing Stats display labels ({@code KB}, {@code MB}, {@code GB}).
+     *
+     * <p>The thresholds remain powers of 1024 for compatibility with the established UI. Use
+     * {@link #formatBytesHuman(long)} for explicitly labeled IEC units.</p>
+     */
+    static String formatBytesKbMbGb(long bytes) {
+        long safeBytes = Math.max(0L, bytes);
+        double value = safeBytes;
+        String unit = "B";
+        if (safeBytes >= 1024L * 1024L * 1024L) {
+            value = safeBytes / (1024.0 * 1024.0 * 1024.0);
+            unit = "GB";
+        } else if (safeBytes >= 1024L * 1024L) {
+            value = safeBytes / (1024.0 * 1024.0);
+            unit = "MB";
+        } else if (safeBytes >= 1024L) {
+            value = safeBytes / 1024.0;
+            unit = "KB";
+        }
+        return "B".equals(unit)
+                ? formatWhole(safeBytes) + " " + unit
+                : formatOneDecimal(value) + " " + unit;
+    }
+
+    /** Formats a used/max byte pair with the established KB/MB/GB labels. */
+    static String formatBytesPair(long used, long max) {
+        String usedText = used >= 0L ? formatBytesKbMbGb(used) : "n/a";
+        String maxText = max > 0L ? formatBytesKbMbGb(max) : "n/a";
+        return usedText + " / " + maxText;
+    }
+
+    /** Formats a used/max byte pair and appends the percentage when both values are available. */
+    static String formatBytesPairWithPercent(long used, long max) {
+        String paired = formatBytesPair(used, max);
+        if (used < 0L || max <= 0L) {
+            return paired;
+        }
+        return paired + " (" + formatPercentOfMax(used, max) + ")";
+    }
+
+    /** Formats one byte value and its percentage of a maximum. */
+    static String formatBytesWithPercentOf(long value, long max) {
+        if (value < 0L) {
+            return "n/a";
+        }
+        if (max <= 0L) {
+            return formatBytesKbMbGb(value);
+        }
+        return formatBytesKbMbGb(value) + " (" + formatPercentOfMax(value, max) + ")";
+    }
+
+    /** Formats a pair of process counters, retaining unavailable sentinels. */
+    static String formatIntPair(int first, int second) {
+        String firstText = first >= 0 ? formatWhole(first) : "n/a";
+        String secondText = second >= 0 ? formatWhole(second) : "n/a";
+        return firstText + " / " + secondText;
+    }
+
+    /** Formats a non-negative duration compactly in milliseconds, seconds, or minutes. */
+    static String formatDurationMsCompact(long millis) {
+        long safe = Math.max(0L, millis);
+        if (safe < 1_000L) {
+            return formatWhole(safe) + " ms";
+        }
+        if (safe < 60_000L) {
+            return formatOneDecimal(safe / 1_000.0) + " s";
+        }
+        return formatOneDecimal(safe / 60_000.0) + " m";
+    }
+
+    private static String formatPercentOfMax(long numerator, long denominator) {
+        return formatOneDecimal((numerator * 100.0) / denominator) + "%";
     }
 
     /**
@@ -402,14 +497,14 @@ final class StatsPanelFormatters {
         }
         double kib = bytes / 1024.0;
         if (kib < 1024.0) {
-            return DECIMAL_ONE.format(kib) + " KiB";
+            return formatOneDecimal(kib) + " KiB";
         }
         double mib = kib / 1024.0;
         if (mib < 1024.0) {
-            return DECIMAL_ONE.format(mib) + " MiB";
+            return formatOneDecimal(mib) + " MiB";
         }
         double gib = mib / 1024.0;
-        return DECIMAL_ONE.format(gib) + " GiB";
+        return formatOneDecimal(gib) + " GiB";
     }
 
     /**
@@ -425,7 +520,7 @@ final class StatsPanelFormatters {
         if (remainingMs < 1_000L) {
             return remainingMs + " ms";
         }
-        return DECIMAL_ONE.format(remainingMs / 1_000.0) + " s";
+        return formatOneDecimal(remainingMs / 1_000.0) + " s";
     }
 
     /**
