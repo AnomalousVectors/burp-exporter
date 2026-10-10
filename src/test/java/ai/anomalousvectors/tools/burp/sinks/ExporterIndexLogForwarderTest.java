@@ -178,10 +178,9 @@ class ExporterIndexLogForwarderTest {
             forwarder.onLog("INFO", "[PeriodicExport] Exporter stats: push failed index=tool-burp-exporter reason=busy.");
             forwarder.onLog("INFO", "[Amazon OpenSearch] Bulk HTTP slow response: requestId=1 index=tool-burp-exporter.");
             forwarder.onLog("INFO", "keep this operator line");
-            java.util.concurrent.TimeUnit.MILLISECONDS.sleep(250L);
 
             Path ndjsonPath = root.resolve(IndexNaming.indexNameForShortName("exporter") + ".ndjson");
-            assertThat(ndjsonPath).exists();
+            awaitFileContains(ndjsonPath, "keep this operator line");
             String body = Files.readString(ndjsonPath);
             assertThat(body).contains("keep this operator line");
             assertThat(body).doesNotContain("Exporter stats: push failed");

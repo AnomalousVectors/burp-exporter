@@ -1,7 +1,9 @@
 package ai.anomalousvectors.tools.burp.utils;
 
 import java.util.ArrayList;
+import java.util.ArrayDeque;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -24,8 +26,10 @@ import org.slf4j.LoggerFactory;
  * <p>This helper writes to SLF4J and exposes a listener bus used by the Log panel and tests. Only
  * explicit extension-lifecycle methods mirror messages to Burp's logging APIs.</p>
  *
- * <p>A bounded replay buffer lets newly registered listeners reconstruct recent history after UI
- * removal or recreation. Listener callbacks are always delivered on the EDT.</p>
+ * <p>A bounded replay buffer lets newly registered UI listeners reconstruct recent history after
+ * removal or recreation. Replayable UI listeners receive ordered, bounded, time-sliced delivery
+ * on the EDT. Other listeners run synchronously on the originating thread so non-UI destinations
+ * remain independent of Swing backpressure.</p>
  *
  * <p>Use a stable {@code [Component]} prefix on every message so support can search the Log tab
  * and log files. Choose destinations as follows:</p>
@@ -54,12 +58,12 @@ public final class Logger {
     /**
      * Receives log events emitted through {@link Logger}.
      *
-     * <p>Callbacks are invoked on the EDT, even when the originating log call comes from a worker
-     * thread.</p>
+     * <p>Callbacks run synchronously on the originating thread. Implementations must be thread-safe
+     * and return promptly. Swing listeners must implement {@link ReplayableLogListener} instead.</p>
      */
     public interface LogListener {
         /**
-         * Receives one normalized log event on the EDT.
+         * Receives one normalized log event on the originating thread.
          *
          * <p>Runtime exceptions are isolated and logged at internal DEBUG level.</p>
          *
@@ -71,6 +75,9 @@ public final class Logger {
 
     private static final String INTERNAL_LOGGER_NAME = "ai.anomalousvectors.tools.burp";
     private static final int REPLAY_BUFFER_SIZE = 500;
+    private static final int UI_DELIVERY_CAPACITY = 5000;
+    private static final int UI_DELIVERY_SLICE_SIZE = 128;
+    private static final long UI_DELIVERY_SLICE_NANOS = 8_000_000L;
 
     private static final org.slf4j.Logger LOG =
             LoggerFactory.getLogger(INTERNAL_LOGGER_NAME);
@@ -85,6 +92,12 @@ public final class Logger {
     private static final Map<LogListener, Long> LAST_SEEN =
             Collections.synchronizedMap(new WeakHashMap<>());
 
+    /** Pending Swing deliveries guarded by UI_DELIVERY_LOCK. */
+    private static final Object UI_DELIVERY_LOCK = new Object();
+    private static final Deque<UiDelivery> UI_DELIVERY_QUEUE = new ArrayDeque<>(UI_DELIVERY_CAPACITY);
+    private static long uiDeliveryGeneration;
+    private static boolean uiDrainScheduled;
+
     /**
      * Utility holder; not instantiable.
      */
@@ -98,11 +111,11 @@ public final class Logger {
     public static void initialize(Logging montoyaLogging) { BURP_LOGGER.set(montoyaLogging); }
 
     /**
-     * Registers a UI/log listener. If the listener is a {@link ReplayableLogListener},
+     * Registers a log listener. If the listener is a {@link ReplayableLogListener},
      * recent buffered messages are replayed so the panel shows full history (e.g. after
      * switching back to the extension tab when Burp had removed the panel).
-     * Replay runs immediately on the EDT or is queued asynchronously when registration occurs on
-     * another thread. Listener exceptions are isolated from the caller.
+     * Replay is queued through the bounded EDT delivery path. Listener exceptions are isolated
+     * from the caller.
      *
      * @param listener listener to add (nullable ignored)
      */
@@ -110,14 +123,16 @@ public final class Logger {
         if (listener == null) return;
         if (LISTENERS.contains(listener)) return;
         LISTENERS.add(listener);
-        if (listener instanceof ReplayableLogListener) {
-            replayTo(listener);
+        if (listener instanceof ReplayableLogListener replayable) {
+            enqueueReplay(replayable);
         }
     }
 
     /**
-     * Marker for listeners that should receive a replay of recent messages when registered
-     * (e.g. LogPanel so the tab shows full history after a tab switch).
+     * Marks a Swing listener for replay plus ordered, bounded delivery on the EDT.
+     *
+     * <p>Implementations may receive fewer pending events than were emitted only when a burst
+     * exceeds the Log panel's 5,000-entry history contract before the EDT can consume it.</p>
      */
     public interface ReplayableLogListener extends LogListener {}
 
@@ -129,6 +144,21 @@ public final class Logger {
     public static void unregisterListener(LogListener listener) { LISTENERS.remove(listener); }
 
     /**
+     * Skips Swing deliveries already pending for one replayable listener.
+     *
+     * <p>Used when the operator clears the Log panel so an older queued burst cannot repopulate
+     * the cleared view. Events emitted after this call remain eligible. Direct listeners and the
+     * replay buffer are unaffected.</p>
+     *
+     * @param listener Swing listener whose pending sequence should be skipped; {@code null} ignored
+     */
+    public static void discardPendingUiEvents(ReplayableLogListener listener) {
+        if (listener != null) {
+            LAST_SEEN.put(listener, REPLAY_SEQ.get());
+        }
+    }
+
+    /**
      * Clears listener registrations, replay state, and the Montoya logging sink.
      *
      * <p>Intended for extension unload and test isolation so stale listeners do not
@@ -138,6 +168,11 @@ public final class Logger {
         LISTENERS.clear();
         BURP_LOGGER.set(null);
         LAST_SEEN.clear();
+        synchronized (UI_DELIVERY_LOCK) {
+            UI_DELIVERY_QUEUE.clear();
+            uiDeliveryGeneration++;
+            uiDrainScheduled = false;
+        }
         synchronized (REPLAY_BUFFER_LOCK) {
             REPLAY_BUFFER.clear();
         }
@@ -359,23 +394,23 @@ public final class Logger {
         }
     }
 
-    /**
-     * Dispatches a message to registered UI listeners.
-     * Always runs listener callbacks on the EDT so the Log panel (and any Swing
-     * listener) updates correctly when log calls come from worker threads.
-     *
-     * @param level level string
-     * @param m     message text
-     */
+    /** Dispatches a message to direct listeners and queues bounded Swing delivery. */
     private static void notifyListeners(String level, String m) {
         long seq = appendToReplayBuffer(level, m);
         if (LISTENERS.isEmpty()) {
             return;
         }
-        if (SwingUtilities.isEventDispatchThread()) {
-            doNotifyListeners(seq, level, m);
-        } else {
-            SwingUtilities.invokeLater(() -> doNotifyListeners(seq, level, m));
+        ReplayEvent event = new ReplayEvent(seq, level, m);
+        boolean hasUiListener = false;
+        for (LogListener listener : LISTENERS) {
+            if (listener instanceof ReplayableLogListener) {
+                hasUiListener = true;
+            } else {
+                notifyDirectListener(listener, event);
+            }
+        }
+        if (hasUiListener) {
+            enqueueUiDelivery(new UiDelivery(event, null));
         }
     }
 
@@ -390,58 +425,103 @@ public final class Logger {
         return seq;
     }
 
-    /**
-     * Replays buffered messages to a single listener on the EDT so the panel shows full history.
-     */
-    private static void replayTo(LogListener listener) {
+    /** Queues buffered events for one newly registered Swing listener. */
+    private static void enqueueReplay(ReplayableLogListener listener) {
         long lastSeen = LAST_SEEN.getOrDefault(listener, 0L);
         List<ReplayEvent> snapshot;
         synchronized (REPLAY_BUFFER_LOCK) {
             snapshot = new ArrayList<>(REPLAY_BUFFER);
         }
-        if (snapshot.isEmpty()) return;
-        List<ReplayEvent> toReplay = new ArrayList<>();
         for (ReplayEvent ev : snapshot) {
             if (ev.seq() > lastSeen) {
-                toReplay.add(ev);
+                enqueueUiDelivery(new UiDelivery(ev, listener));
             }
-        }
-        if (toReplay.isEmpty()) return;
-        Runnable replay = () -> {
-            long latest = lastSeen;
-            for (ReplayEvent entry : toReplay) {
-                try {
-                    listener.onLog(entry.level(), entry.message());
-                    latest = entry.seq();
-                } catch (RuntimeException ex) {
-                    if (LOG.isDebugEnabled()) LOG.debug("replay listener threw: {}", ex.toString());
-                }
-            }
-            if (latest > lastSeen) {
-                LAST_SEEN.put(listener, latest);
-            }
-        };
-        if (SwingUtilities.isEventDispatchThread()) {
-            replay.run();
-        } else {
-            SwingUtilities.invokeLater(replay);
         }
     }
 
-    private static void doNotifyListeners(long seq, String level, String m) {
-        for (LogListener l : LISTENERS) {
-            try {
-                l.onLog(level, m);
-                if (l instanceof ReplayableLogListener) {
-                    LAST_SEEN.put(l, seq);
-                }
-            } catch (RuntimeException ex) {
-                if (LOG.isDebugEnabled()) LOG.debug("listener threw: {}", ex.toString());
+    private static void notifyDirectListener(LogListener listener, ReplayEvent event) {
+        try {
+            listener.onLog(event.level(), event.message());
+        } catch (RuntimeException ex) {
+            if (LOG.isDebugEnabled()) LOG.debug("listener threw: {}", ex.toString());
+        }
+    }
+
+    private static void enqueueUiDelivery(UiDelivery delivery) {
+        long generationToSchedule = -1L;
+        synchronized (UI_DELIVERY_LOCK) {
+            UI_DELIVERY_QUEUE.addLast(delivery);
+            while (UI_DELIVERY_QUEUE.size() > UI_DELIVERY_CAPACITY) {
+                UI_DELIVERY_QUEUE.removeFirst();
             }
+            if (!uiDrainScheduled) {
+                uiDrainScheduled = true;
+                generationToSchedule = uiDeliveryGeneration;
+            }
+        }
+        if (generationToSchedule >= 0L) {
+            long generation = generationToSchedule;
+            SwingUtilities.invokeLater(() -> drainUiDeliveries(generation));
+        }
+    }
+
+    private static void drainUiDeliveries(long generation) {
+        long deadline = System.nanoTime() + UI_DELIVERY_SLICE_NANOS;
+        int delivered = 0;
+        while (delivered < UI_DELIVERY_SLICE_SIZE && System.nanoTime() < deadline) {
+            UiDelivery delivery;
+            synchronized (UI_DELIVERY_LOCK) {
+                if (generation != uiDeliveryGeneration) {
+                    return;
+                }
+                delivery = UI_DELIVERY_QUEUE.pollFirst();
+                if (delivery == null) {
+                    uiDrainScheduled = false;
+                    return;
+                }
+            }
+            deliverUi(delivery);
+            delivered++;
+        }
+        synchronized (UI_DELIVERY_LOCK) {
+            if (generation != uiDeliveryGeneration) {
+                return;
+            }
+            if (UI_DELIVERY_QUEUE.isEmpty()) {
+                uiDrainScheduled = false;
+                return;
+            }
+        }
+        SwingUtilities.invokeLater(() -> drainUiDeliveries(generation));
+    }
+
+    private static void deliverUi(UiDelivery delivery) {
+        if (delivery.target() != null) {
+            deliverUiTo(delivery.target(), delivery.event());
+            return;
+        }
+        for (LogListener listener : LISTENERS) {
+            if (listener instanceof ReplayableLogListener replayable) {
+                deliverUiTo(replayable, delivery.event());
+            }
+        }
+    }
+
+    private static void deliverUiTo(ReplayableLogListener listener, ReplayEvent event) {
+        if (!LISTENERS.contains(listener) || event.seq() <= LAST_SEEN.getOrDefault(listener, 0L)) {
+            return;
+        }
+        try {
+            listener.onLog(event.level(), event.message());
+            LAST_SEEN.put(listener, event.seq());
+        } catch (RuntimeException ex) {
+            if (LOG.isDebugEnabled()) LOG.debug("UI listener threw: {}", ex.toString());
         }
     }
 
     private record ReplayEvent(long seq, String level, String message) {}
+
+    private record UiDelivery(ReplayEvent event, ReplayableLogListener target) {}
 
     /**
      * Null-safe string conversion.

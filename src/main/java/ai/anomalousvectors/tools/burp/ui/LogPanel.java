@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.prefs.Preferences;
+import java.util.regex.Pattern;
 
 import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
@@ -56,6 +57,7 @@ import ai.anomalousvectors.tools.burp.ui.text.IndentedWrappedTextAreaUI;
 import ai.anomalousvectors.tools.burp.ui.text.RegexIndicatorBinder;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.Regex;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.text.TextQuery;
@@ -69,8 +71,8 @@ import net.miginfocom.swing.MigLayout;
  * <p><strong>Design:</strong> Coordinates a {@link LogStore} (model) with a {@link LogRenderer} (view).
  * Keeps regex compilation and flag rules centralized via {@link ai.anomalousvectors.tools.burp.utils.Regex}.</p>
  *
- * <p><strong>Threading:</strong> All UI mutations occur on the EDT. Logger callbacks are marshaled with
- * {@code invokeLater} to preserve ordering and avoid contention with highlight recomputation.</p>
+ * <p><strong>Threading:</strong> All UI mutations occur on the EDT. Logger coalesces, bounds, and
+ * time-slices callbacks so sustained logging cannot monopolize Swing event delivery.</p>
  */
 public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
@@ -113,6 +115,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
     private final JCheckBox filterCaseToggle;
     private final JCheckBox filterRegexToggle;
     private final JCheckBox filterNegativeToggle;
+    private transient TextFilterState textFilterState;
 
     // Search controls
     private final AutoSizingTextField searchField;
@@ -225,6 +228,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
         filterCaseToggle.setSelected(PREFS.getBoolean(PREF_FILTER_CASE, false));
         filterRegexToggle = new Tooltips.HtmlCheckBox(".*");
         filterRegexToggle.setName("log.filter.regex");
+        filterRegexToggle.setSelected(PREFS.getBoolean(PREF_FILTER_REGEX, false));
         filterNegativeToggle = new Tooltips.HtmlCheckBox(FILTER_NEGATIVE_TOGGLE_LABEL);
         filterNegativeToggle.setName("log.filter.negative");
         filterNegativeToggle.setSelected(PREFS.getBoolean(PREF_FILTER_NEGATIVE, false));
@@ -320,6 +324,8 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
         add(ScrollPanes.wrapNoHorizontalScroll(logTextPane), BorderLayout.CENTER);
 
+        refreshTextFilterState();
+
         // Model created before listeners capture it; filter supplied via visible().
         store = new LogStore(MAX_MODEL_ENTRIES, this::visible);
 
@@ -344,22 +350,26 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
         DocumentListener filterChange = Doc.onChange(() -> {
             PREFS.put(PREF_FILTER_TEXT, filterField.getText());
+            refreshTextFilterState();
             rebuildView();
             syncRuntimePreferencesFromUi();
         });
         filterField.getDocument().addDocumentListener(filterChange);
         filterCaseToggle.addActionListener(e -> {
             PREFS.putBoolean(PREF_FILTER_CASE, filterCaseToggle.isSelected());
+            refreshTextFilterState();
             rebuildView();
             syncRuntimePreferencesFromUi();
         });
         filterRegexToggle.addActionListener(e -> {
             PREFS.putBoolean(PREF_FILTER_REGEX, filterRegexToggle.isSelected());
+            refreshTextFilterState();
             rebuildView();
             syncRuntimePreferencesFromUi();
         });
         filterNegativeToggle.addActionListener(e -> {
             PREFS.putBoolean(PREF_FILTER_NEGATIVE, filterNegativeToggle.isSelected());
+            refreshTextFilterState();
             rebuildView();
             syncRuntimePreferencesFromUi();
         });
@@ -392,6 +402,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
         clearBtn.addActionListener(e -> {
             Logger.internalDebug("LogPanel: clear requested");
+            Logger.discardPendingUiEvents(this);
             store.clear();
             renderer.clear();
             renderedAggregates.clear();
@@ -568,6 +579,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
      */
     private void onHierarchyChanged(HierarchyEvent e) {
         if ((e.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) == 0) return;
+        if (getParent() == null) return;
         boolean showing = isShowing();
         if (showing == viewActive) return;
         viewActive = showing;
@@ -609,6 +621,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
             searchCaseToggle.setSelected(preferences.searchCase());
             searchRegexToggle.setSelected(preferences.searchRegex());
             persistUiPreferencesToPreferences(preferences);
+            refreshTextFilterState();
             rebuildView();
             if (autoscrollPaused) {
                 recomputeMatchesNow();
@@ -669,7 +682,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
     // ---- Logger.LogListener ----
 
     /**
-     * Logger callback; invoked on the EDT by Logger so ingestion runs on the UI thread.
+     * Logger callback; invoked on the EDT by Logger's bounded UI-delivery drain.
      *
      * @param level   level string from Logger
      * @param message log message (nullable)
@@ -847,38 +860,54 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
     }
 
     /**
-     * Text filter (regex or substring). Invalid regex results in WARN and non-match.
-     *
-     * Regex flag rules (case/UNICODE) are centralized; substring matching lowers both
-     * sides when case-insensitive to avoid locale pitfalls.
+     * Applies the filter state prepared when the controls last changed.
      *
      * @param msg message to test
      * @return {@code true} when the message passes the text filter
      */
     private boolean passesTextFilter(String msg) {
-        String f = filterField.getText();
-        if (f == null || f.isEmpty()) {
-            return true;
-        }
+        return textFilterState.matches(msg);
+    }
+
+    private void refreshTextFilterState() {
+        String text = Objects.toString(filterField.getText(), "");
+        boolean caseSensitive = filterCaseToggle.isSelected();
+        boolean regex = filterRegexToggle.isSelected();
+        boolean negative = filterNegativeToggle.isSelected();
         try {
-            boolean filterMatches;
-            if (filterRegexToggle.isSelected()) {
-                int flags = filterCaseToggle.isSelected()
-                        ? 0
-                        : (java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.UNICODE_CASE);
-                filterMatches = java.util.regex.Pattern.compile(f, flags)
-                        .matcher(msg == null ? "" : msg)
-                        .find();
-            } else {
-                String m = msg == null ? "" : msg;
-                filterMatches = filterCaseToggle.isSelected()
-                        ? m.contains(f)
-                        : m.toLowerCase(Locale.ROOT).contains(f.toLowerCase(Locale.ROOT));
-            }
-            return filterNegativeToggle.isSelected() ? !filterMatches : filterMatches;
+            Pattern pattern = regex && !text.isEmpty()
+                    ? Regex.compile(text, caseSensitive, false)
+                    : null;
+            String needle = caseSensitive ? text : text.toLowerCase(Locale.ROOT);
+            textFilterState = new TextFilterState(text.isEmpty(), caseSensitive, negative, needle, pattern, true);
         } catch (RuntimeException ex) {
             Logger.internalWarn("LogPanel invalid regex: " + ex.getMessage());
-            return false;
+            textFilterState = new TextFilterState(false, caseSensitive, negative, text, null, false);
+        }
+    }
+
+    record TextFilterState(
+            boolean empty,
+            boolean caseSensitive,
+            boolean negative,
+            String needle,
+            Pattern pattern,
+            boolean valid) {
+
+        boolean matches(String message) {
+            if (empty) {
+                return true;
+            }
+            if (!valid) {
+                return false;
+            }
+            String candidate = Objects.toString(message, "");
+            boolean matched = pattern != null
+                    ? pattern.matcher(candidate).find()
+                    : (caseSensitive
+                            ? candidate.contains(needle)
+                            : candidate.toLowerCase(Locale.ROOT).contains(needle));
+            return negative ? !matched : matched;
         }
     }
 

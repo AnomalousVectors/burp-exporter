@@ -22,11 +22,15 @@ class LogPanelLoggerLifecycleHeadlessTest {
     @Test
     void panel_receivesLogsWhenInHierarchy_getsReplayWhenReAdded() throws Exception {
         LogPanel panel = LogPanelTestHarness.newPanel();
+        LogPanelTestHarness.resetPanelState(panel);
 
         SwingUtilities.invokeAndWait(() -> invokeAddNotify(panel));
         // Simulates panel added to hierarchy → register with Logger
 
         SwingUtilities.invokeAndWait(() -> Logger.logInfo("while-visible"));
+        assertThat(LogPanelTestHarness.waitFor(
+                () -> LogPanelTestHarness.allText(panel).contains("while-visible"), 5000L))
+                .isTrue();
         String afterFirst = LogPanelTestHarness.allText(panel);
         assertThat(afterFirst).contains("while-visible");
 
@@ -38,7 +42,9 @@ class LogPanelLoggerLifecycleHeadlessTest {
 
         SwingUtilities.invokeAndWait(() -> invokeAddNotify(panel));
         // Re-added → register and replay
-        SwingUtilities.invokeAndWait(() -> { /* drain EDT for replay */ });
+        assertThat(LogPanelTestHarness.waitFor(
+                () -> LogPanelTestHarness.allText(panel).contains("while-removed"), 5000L))
+                .isTrue();
 
         String afterReAdd = LogPanelTestHarness.allText(panel);
         assertThat(afterReAdd).contains("while-visible");
