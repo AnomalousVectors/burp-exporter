@@ -1,7 +1,5 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
-import static ai.anomalousvectors.tools.burp.testutils.Reflect.callStatic;
-import static ai.anomalousvectors.tools.burp.testutils.Reflect.get;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.getStatic;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -295,17 +293,14 @@ class RepeaterTabsIndexReporterSwingWalkTest {
             JPanel root = new JPanel(new BorderLayout());
             root.add(toolTabs, BorderLayout.CENTER);
 
-            Object repeaterLocation = callStatic(
-                    RepeaterTabsIndexReporter.class,
-                    "findToolTabLocation",
-                    List.of(root),
-                    "Repeater");
-            Object plan = callStatic(
-                    RepeaterTabsIndexReporter.class,
-                    "buildStartupTabWalkPlan",
-                    repeaterLocation);
-            List<?> steps = get(plan, "steps", List.class);
-            stepCountRef.set(steps.size());
+            RepeaterSwingTabWalker.ToolTabLocation repeaterLocation =
+                    RepeaterSwingTabWalker.findToolTabLocation(List.of(root), "Repeater");
+            RepeaterSwingTabWalker.WalkPlan<?> plan =
+                    RepeaterSwingTabWalker.buildPlanForInspection(
+                            repeaterLocation,
+                            RepeaterTabsIndexReporter::topLevelRepeaterTabMetadata,
+                            0);
+            stepCountRef.set(plan.steps().size());
         });
 
         assertThat(stepCountRef.get()).isEqualTo(3);
@@ -332,22 +327,21 @@ class RepeaterTabsIndexReporterSwingWalkTest {
             JPanel root = new JPanel(new BorderLayout());
             root.add(toolTabs, BorderLayout.CENTER);
 
-            Object repeaterLocation = callStatic(
-                    RepeaterTabsIndexReporter.class,
-                    "findToolTabLocation",
-                    List.of(root),
-                    "Repeater");
-            Object firstPlan = callStatic(
-                    RepeaterTabsIndexReporter.class,
-                    "buildStartupTabWalkPlan",
-                    repeaterLocation);
+            RepeaterSwingTabWalker.ToolTabLocation repeaterLocation =
+                    RepeaterSwingTabWalker.findToolTabLocation(List.of(root), "Repeater");
+            RepeaterSwingTabWalker.WalkPlan<?> firstPlan =
+                    RepeaterSwingTabWalker.buildPlanForInspection(
+                            repeaterLocation,
+                            RepeaterTabsIndexReporter::topLevelRepeaterTabMetadata,
+                            0);
             firstSlotsRef.set(planSlotKeys(firstPlan));
 
             repeaterTabs.setComponentAt(1, editorBody("Different Extension", "One", "Two"));
-            Object secondPlan = callStatic(
-                    RepeaterTabsIndexReporter.class,
-                    "buildStartupTabWalkPlan",
-                    repeaterLocation);
+            RepeaterSwingTabWalker.WalkPlan<?> secondPlan =
+                    RepeaterSwingTabWalker.buildPlanForInspection(
+                            repeaterLocation,
+                            RepeaterTabsIndexReporter::topLevelRepeaterTabMetadata,
+                            0);
             secondSlotsRef.set(planSlotKeys(secondPlan));
         });
 
@@ -562,11 +556,11 @@ class RepeaterTabsIndexReporterSwingWalkTest {
         return body;
     }
 
-    private static List<String> planSlotKeys(Object plan) {
-        List<?> steps = get(plan, "steps", List.class);
-        return steps.stream()
-                .map(step -> get(step, "metadata", Object.class))
-                .map(metadata -> get(metadata, "slotIdentityKey", String.class))
+    private static List<String> planSlotKeys(RepeaterSwingTabWalker.WalkPlan<?> plan) {
+        return plan.steps().stream()
+                .map(step -> step.metadata())
+                .map(RepeaterTabsIndexReporter.RepeaterTabMetadata.class::cast)
+                .map(metadata -> metadata.slotIdentityKey())
                 .toList();
     }
 

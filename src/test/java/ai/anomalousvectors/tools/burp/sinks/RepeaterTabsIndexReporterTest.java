@@ -20,12 +20,13 @@ import java.util.List;
 import java.util.Map;
 
 import javax.swing.JLabel;
-import org.junit.jupiter.api.Test;
-
-import javax.swing.JTabbedPane;
 import javax.swing.JPanel;
+import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Answers;
 
 import burp.api.montoya.core.ByteArray;
@@ -47,6 +48,21 @@ import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 class RepeaterTabsIndexReporterTest {
+
+    @BeforeEach
+    void prepareReporterState() throws Exception {
+        resetReporterStateAndDrainEdt();
+    }
+
+    @AfterEach
+    void cleanReporterState() throws Exception {
+        resetReporterStateAndDrainEdt();
+    }
+
+    private static void resetReporterStateAndDrainEdt() throws Exception {
+        RepeaterTabsIndexReporter.clearSessionState();
+        SwingUtilities.invokeAndWait(() -> { });
+    }
 
     @Test
     void buildDocument_returnsNull_whenBurpScopeRejectsRepeaterTab() {
@@ -854,10 +870,11 @@ class RepeaterTabsIndexReporterTest {
                     .contains("group=Findings");
             assertThat(RepeaterTabsIndexReporter.describeStartupMetadataSummary())
                     .contains("observations=2")
-                    .contains("grouped=1")
-                    .contains("standalone=1")
-                    .contains("uniqueSlots=2")
-                    .contains("uniqueTabGroupPairs=2")
+                    .contains("logicalSlotObservations=2")
+                    .contains("groupedLogicalSlotObservations=1")
+                    .contains("standaloneLogicalSlotObservations=1")
+                    .contains("uniqueLogicalSlots=2")
+                    .contains("uniqueLogicalTabGroupPairs=2")
                     .contains("groups=[Findings=1]")
                     .contains("noIdentityObservationsSkipped=0")
                     .contains("alreadyCapturedSlotObservations=0")
@@ -885,24 +902,28 @@ class RepeaterTabsIndexReporterTest {
                 new RepeaterTabsIndexReporter.RepeaterTabMetadata("GetUserToken", null, "root", "slot-1");
         RepeaterTabsIndexReporter.RepeaterTabMetadata grouped =
                 new RepeaterTabsIndexReporter.RepeaterTabMetadata("SensitiveContentInUrl", "Findings", "root", "slot-2");
+        RepeaterTabsIndexReporter.RepeaterTabMetadata noLogicalSlot =
+                new RepeaterTabsIndexReporter.RepeaterTabMetadata(null, null, "root", null);
 
         summary.recordObservation("request_editor", standalone);
         summary.recordObservation("response_editor", grouped);
+        summary.recordObservation("response_editor", noLogicalSlot);
         summary.recordIgnoredAnonymousBinding("response_editor");
         summary.recordDuplicateSlotSuppression("request_editor", "slot-1");
         summary.recordMetadataUpgrade("response_editor");
 
         assertThat(summary.describe())
-                .contains("observations=2")
-                .contains("grouped=1")
-                .contains("standalone=1")
-                .contains("uniqueSlots=2")
-                .contains("uniqueTabGroupPairs=2")
+                .contains("observations=3")
+                .contains("logicalSlotObservations=2")
+                .contains("groupedLogicalSlotObservations=1")
+                .contains("standaloneLogicalSlotObservations=1")
+                .contains("uniqueLogicalSlots=2")
+                .contains("uniqueLogicalTabGroupPairs=2")
                 .contains("groups=[Findings=1]")
                 .contains("noIdentityObservationsSkipped=1")
                 .contains("alreadyCapturedSlotObservations=1")
                 .contains("metadataUpgrades=1")
-                .contains("capturePaths=[request_editor=1, response_editor=1]")
+                .contains("capturePaths=[request_editor=1, response_editor=2]")
                 .contains("noIdentityPaths=[response_editor=1]")
                 .contains("alreadyCapturedSlotPaths=[request_editor=1]")
                 .contains("alreadyCapturedSlotHighlights=[slot-1|request_editor=1]")

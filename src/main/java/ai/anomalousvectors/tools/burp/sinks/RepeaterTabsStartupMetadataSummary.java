@@ -22,10 +22,11 @@ final class RepeaterTabsStartupMetadataSummary {
     private final Map<String, Integer> duplicateSlotSuppressionsByCapturePath = new LinkedHashMap<>();
     private final Map<String, Integer> duplicateSlotSuppressionsBySlotPath = new LinkedHashMap<>();
     private final Map<String, Integer> metadataUpgradesByCapturePath = new LinkedHashMap<>();
-    private final Set<String> uniqueSlots = new java.util.LinkedHashSet<>();
-    private final Set<String> uniqueTabGroupPairs = new java.util.LinkedHashSet<>();
+    private final Set<String> uniqueLogicalSlots = new java.util.LinkedHashSet<>();
+    private final Set<String> uniqueLogicalTabGroupPairs = new java.util.LinkedHashSet<>();
     private int totalObservations;
-    private int groupedObservations;
+    private int logicalSlotObservations;
+    private int groupedLogicalSlotObservations;
     private int ignoredAnonymousBindings;
     private int duplicateSlotSuppressions;
     private int metadataUpgrades;
@@ -37,10 +38,11 @@ final class RepeaterTabsStartupMetadataSummary {
         duplicateSlotSuppressionsByCapturePath.clear();
         duplicateSlotSuppressionsBySlotPath.clear();
         metadataUpgradesByCapturePath.clear();
-        uniqueSlots.clear();
-        uniqueTabGroupPairs.clear();
+        uniqueLogicalSlots.clear();
+        uniqueLogicalTabGroupPairs.clear();
         totalObservations = 0;
-        groupedObservations = 0;
+        logicalSlotObservations = 0;
+        groupedLogicalSlotObservations = 0;
         ignoredAnonymousBindings = 0;
         duplicateSlotSuppressions = 0;
         metadataUpgrades = 0;
@@ -48,21 +50,23 @@ final class RepeaterTabsStartupMetadataSummary {
 
     synchronized void recordObservation(
             String capturePath,
-            RepeaterTabsIndexReporter.RepeaterTabMetadata metadata) {
+        RepeaterTabsIndexReporter.RepeaterTabMetadata metadata) {
         totalObservations++;
-        if (metadata != null && metadata.groupName() != null) {
-            groupedObservations++;
+        increment(observationsByCapturePath, capturePath);
+        String logicalSlotKey = RepeaterTabsCapturePolicy.startupSlotKey(metadata);
+        if (logicalSlotKey == null) {
+            return;
+        }
+        logicalSlotObservations++;
+        if (metadata.groupName() != null) {
+            groupedLogicalSlotObservations++;
             increment(observationsByGroupName, metadata.groupName());
         }
-        increment(observationsByCapturePath, capturePath);
-        uniqueSlots.add(RepeaterTabsCapturePolicy.safeLogValue(
-                RepeaterTabsCapturePolicy.startupSlotKey(metadata)));
-        String tabGroupKey = metadata == null
-                ? "<null>|<null>"
-                : RepeaterTabsCapturePolicy.safeLogValue(metadata.tabName())
-                        + "|"
-                        + RepeaterTabsCapturePolicy.safeLogValue(metadata.groupName());
-        uniqueTabGroupPairs.add(tabGroupKey);
+        uniqueLogicalSlots.add(RepeaterTabsCapturePolicy.safeLogValue(logicalSlotKey));
+        String tabGroupKey = RepeaterTabsCapturePolicy.safeLogValue(metadata.tabName())
+                + "|"
+                + RepeaterTabsCapturePolicy.safeLogValue(metadata.groupName());
+        uniqueLogicalTabGroupPairs.add(tabGroupKey);
     }
 
     synchronized void recordIgnoredAnonymousBinding(String capturePath) {
@@ -89,10 +93,12 @@ final class RepeaterTabsStartupMetadataSummary {
             return "none";
         }
         return "observations=" + totalObservations
-                + ", grouped=" + groupedObservations
-                + ", standalone=" + (totalObservations - groupedObservations)
-                + ", uniqueSlots=" + uniqueSlots.size()
-                + ", uniqueTabGroupPairs=" + uniqueTabGroupPairs.size()
+                + ", logicalSlotObservations=" + logicalSlotObservations
+                + ", groupedLogicalSlotObservations=" + groupedLogicalSlotObservations
+                + ", standaloneLogicalSlotObservations="
+                + (logicalSlotObservations - groupedLogicalSlotObservations)
+                + ", uniqueLogicalSlots=" + uniqueLogicalSlots.size()
+                + ", uniqueLogicalTabGroupPairs=" + uniqueLogicalTabGroupPairs.size()
                 + ", groups=[" + describeCounts(observationsByGroupName) + "]"
                 + ", noIdentityObservationsSkipped=" + ignoredAnonymousBindings
                 + ", alreadyCapturedSlotObservations=" + duplicateSlotSuppressions

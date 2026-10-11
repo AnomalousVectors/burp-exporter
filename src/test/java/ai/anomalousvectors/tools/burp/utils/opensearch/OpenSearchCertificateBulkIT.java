@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.utils.opensearch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -11,6 +12,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.ResourceLock;
+import org.opensearch.client.opensearch.indices.DeleteIndexRequest;
 
 import ai.anomalousvectors.tools.burp.sinks.OpenSearchSink;
 import ai.anomalousvectors.tools.burp.sinks.TrafficQueueEntry;
@@ -40,11 +42,14 @@ class OpenSearchCertificateBulkIT {
     @Test
     void preparedBulkSender_indexesDocumentWithClientCertificate() throws Exception {
         ConfigState.State previousState = RuntimeConfig.getState();
+        String baseUrl = null;
+        String indexName = null;
+        OpenSearchAuth auth = null;
         try {
             OpenSearchClientCertificateSupport.Paths certPaths = prepareCertificateAuth();
-            String baseUrl = OpenSearchTestConfig.get().baseUrl();
-            String indexName = RuntimeConfig.indexNameForKey("traffic");
-            OpenSearchAuth auth = OpenSearchAuth.fromRuntime();
+            baseUrl = OpenSearchTestConfig.get().baseUrl();
+            indexName = RuntimeConfig.indexNameForKey("traffic");
+            auth = OpenSearchAuth.fromRuntime();
 
             List<OpenSearchSink.IndexResult> indexResults =
                     OpenSearchSink.createSelectedIndexes(baseUrl, List.of(ConfigKeys.SRC_TRAFFIC), auth, () -> true);
@@ -64,20 +69,27 @@ class OpenSearchCertificateBulkIT {
                     .isEqualTo(1);
             assertThat(result.failedItems).isEmpty();
         } finally {
-            RuntimeConfig.updateState(previousState);
-            SecureCredentialStore.clearAll();
-            OpenSearchConnector.closeAll();
+            try {
+                deleteCertificateIndex(baseUrl, indexName, auth);
+            } finally {
+                RuntimeConfig.updateState(previousState);
+                SecureCredentialStore.clearAll();
+                OpenSearchConnector.closeAll();
+            }
         }
     }
 
     @Test
     void chunkedBulkSender_indexesDocumentWithClientCertificate() throws Exception {
         ConfigState.State previousState = RuntimeConfig.getState();
+        String baseUrl = null;
+        String indexName = null;
+        OpenSearchAuth auth = null;
         try {
             OpenSearchClientCertificateSupport.Paths certPaths = prepareCertificateAuth();
-            String baseUrl = OpenSearchTestConfig.get().baseUrl();
-            String indexName = RuntimeConfig.indexNameForKey("traffic");
-            OpenSearchAuth auth = OpenSearchAuth.fromRuntime();
+            baseUrl = OpenSearchTestConfig.get().baseUrl();
+            indexName = RuntimeConfig.indexNameForKey("traffic");
+            auth = OpenSearchAuth.fromRuntime();
 
             List<OpenSearchSink.IndexResult> indexResults =
                     OpenSearchSink.createSelectedIndexes(baseUrl, List.of(ConfigKeys.SRC_TRAFFIC), auth, () -> true);
@@ -97,15 +109,32 @@ class OpenSearchCertificateBulkIT {
                     .isEqualTo(1);
             assertThat(result.failedItems).isEmpty();
         } finally {
-            RuntimeConfig.setExportRunning(false);
-            RuntimeConfig.setExportStarting(false);
-            RuntimeConfig.setExportStopping(false);
-            IndexingRetryCoordinator.getInstance().stopDrainThread();
-            IndexingRetryCoordinator.getInstance().clearPendingWork();
-            RuntimeConfig.updateState(previousState);
-            SecureCredentialStore.clearAll();
-            OpenSearchConnector.closeAll();
+            try {
+                deleteCertificateIndex(baseUrl, indexName, auth);
+            } finally {
+                RuntimeConfig.setExportRunning(false);
+                RuntimeConfig.setExportStarting(false);
+                RuntimeConfig.setExportStopping(false);
+                IndexingRetryCoordinator.getInstance().stopDrainThread();
+                IndexingRetryCoordinator.getInstance().clearPendingWork();
+                RuntimeConfig.updateState(previousState);
+                SecureCredentialStore.clearAll();
+                OpenSearchConnector.closeAll();
+            }
         }
+    }
+
+    private static void deleteCertificateIndex(
+            String baseUrl, String indexName, OpenSearchAuth auth) throws IOException {
+        if (baseUrl == null || indexName == null || auth == null) {
+            return;
+        }
+        OpenSearchConnector.getClient(baseUrl, auth).indices().delete(
+                new DeleteIndexRequest.Builder()
+                        .index(indexName)
+                        .allowNoIndices(true)
+                        .ignoreUnavailable(true)
+                        .build());
     }
 
     private static OpenSearchClientCertificateSupport.Paths prepareCertificateAuth() {

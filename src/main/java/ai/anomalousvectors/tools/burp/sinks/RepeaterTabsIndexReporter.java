@@ -3,12 +3,10 @@ package ai.anomalousvectors.tools.burp.sinks;
 import ai.anomalousvectors.tools.burp.sinks.RepeaterTabMetadataHeuristics.InferenceResult;
 import ai.anomalousvectors.tools.burp.sinks.RepeaterTabMetadataHeuristics.SelectedTabSnapshot;
 import java.awt.Component;
-import java.awt.Container;
 import java.awt.Frame;
 import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,7 +20,6 @@ import javax.swing.JMenuItem;
 import javax.swing.JPanel;
 import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
-import javax.swing.Timer;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -90,6 +87,14 @@ public final class RepeaterTabsIndexReporter {
     private static volatile String currentStartupSessionId = RepeaterMetadataTraceLabels.NONE;
     private static volatile StartupExportStatsSnapshot startupExportStatsSnapshot =
             StartupExportStatsSnapshot.empty();
+    private static final RepeaterSwingTabWalker<RepeaterTabMetadata> STARTUP_TAB_WALKER =
+            new RepeaterSwingTabWalker<>(
+                    REPEATER_TOOL_TITLE,
+                    STARTUP_TAB_WALK_DELAY_MS,
+                    STARTUP_TAB_WALK_SECOND_PASS_DELAY_MS,
+                    STARTUP_TAB_WALK_STEP_DELAY_MS,
+                    () -> List.of(Frame.getFrames()),
+                    new StartupTabWalkDelegate());
 
     private RepeaterTabsIndexReporter() {}
 
@@ -213,9 +218,13 @@ public final class RepeaterTabsIndexReporter {
                 List<PreparedExportDocument> documents);
     }
 
-    /** Clears captured Repeater snapshots and all other state owned by the current export run. */
+    /**
+     * Cancels the owned Swing walk, requests selection restoration on the EDT, and clears all
+     * Repeater state owned by the current export run.
+     */
     public static void clearRunState() {
         RUN_GENERATION.incrementAndGet();
+        STARTUP_TAB_WALKER.cancelAndRestore();
         CAPTURE_WINDOW_GENERATION.set(-1);
         CAPTURED.clear();
         STARTUP_TRACE_LOGGED.clear();
@@ -351,14 +360,7 @@ public final class RepeaterTabsIndexReporter {
                 + generation
                 + " startupSession=" + currentStartupSessionId()
                 + " with trafficToolTypes=" + describeRuntimeTrafficToolTypes() + ".");
-        Runnable schedule = () -> {
-            scheduleStartupTabWalkPass(generation, 1, STARTUP_TAB_WALK_DELAY_MS);
-        };
-        if (SwingUtilities.isEventDispatchThread()) {
-            schedule.run();
-        } else {
-            SwingUtilities.invokeLater(schedule);
-        }
+        STARTUP_TAB_WALKER.schedule(generation);
     }
 
     /**
@@ -373,37 +375,22 @@ public final class RepeaterTabsIndexReporter {
      * @return summary of whether Repeater was found and how many selections changed
      */
     static StartupTabWalkResult performStartupTabWalk(Iterable<? extends Component> roots) {
-        ToolTabLocation repeaterLocation = findToolTabLocation(roots, REPEATER_TOOL_TITLE);
-        if (repeaterLocation == null) {
-            return new StartupTabWalkResult(false, 0, 0, 0, 0);
+        RepeaterSwingTabWalker.SynchronousWalkResult result =
+                RepeaterSwingTabWalker.performSynchronously(
+                        roots,
+                        REPEATER_TOOL_TITLE,
+                        CAPTURED::size,
+                        RepeaterTabsIndexReporter::topLevelRepeaterTabMetadata,
+                        metadata -> currentStartupSelectionMetadata = metadata);
+        if (result.failure() != null) {
+            logStartupTabWalkFailure(0, 0, result.failure());
         }
-
-        JTabbedPane toolTabs = repeaterLocation.tabbedPane();
-        int repeaterIndex = repeaterLocation.index();
-        int originalToolIndex = toolTabs.getSelectedIndex();
-        int captureCountBefore = CAPTURED.size();
-        int toolSelectionChanges = 0;
-
-        try {
-            if (originalToolIndex != repeaterIndex) {
-                toolTabs.setSelectedIndex(repeaterIndex);
-                toolSelectionChanges++;
-            }
-            Component repeaterRoot = toolTabs.getComponentAt(repeaterIndex);
-            SelectionCycleResult cycle = cycleAllTabSelections(repeaterRoot);
-            return new StartupTabWalkResult(
-                    true,
-                    cycle.tabbedPaneCount(),
-                    toolSelectionChanges + cycle.selectionChangeCount(),
-                    captureCountBefore,
-                    CAPTURED.size());
-        } finally {
-            if (toolTabs.getSelectedIndex() != originalToolIndex
-                    && originalToolIndex >= 0
-                    && originalToolIndex < toolTabs.getTabCount()) {
-                toolTabs.setSelectedIndex(originalToolIndex);
-            }
-        }
+        return new StartupTabWalkResult(
+                result.locatedRepeaterToolTab(),
+                result.tabbedPaneCount(),
+                result.selectionChangeCount(),
+                result.captureCountBefore(),
+                result.captureCountAfter());
     }
 
     private static boolean capture(
@@ -576,7 +563,9 @@ public final class RepeaterTabsIndexReporter {
         if (anchored != null) {
             return anchored;
         }
-        ToolTabLocation repeaterLocation = findToolTabLocation(List.of(Frame.getFrames()), REPEATER_TOOL_TITLE);
+        RepeaterSwingTabWalker.ToolTabLocation repeaterLocation =
+                RepeaterSwingTabWalker.findToolTabLocation(
+                        List.of(Frame.getFrames()), REPEATER_TOOL_TITLE);
         if (repeaterLocation == null) {
             return RepeaterTabMetadata.empty(null);
         }
@@ -634,15 +623,17 @@ public final class RepeaterTabsIndexReporter {
         if (uiAnchor == null) {
             return null;
         }
-        ToolTabLocation repeaterLocation = findAncestorToolTabLocation(uiAnchor, REPEATER_TOOL_TITLE);
+        RepeaterSwingTabWalker.ToolTabLocation repeaterLocation =
+                RepeaterSwingTabWalker.findAncestorToolTabLocation(uiAnchor, REPEATER_TOOL_TITLE);
         if (repeaterLocation == null) {
             return null;
         }
         Component repeaterRoot = repeaterLocation.tabbedPane().getComponentAt(repeaterLocation.index());
-        List<JTabbedPane> topLevelPanes = collectTopLevelRepeaterTabPanes(repeaterRoot);
+        List<JTabbedPane> topLevelPanes =
+                RepeaterSwingTabWalker.collectTopLevelRepeaterTabPanes(repeaterRoot);
         for (int paneOrdinal = 0; paneOrdinal < topLevelPanes.size(); paneOrdinal++) {
             JTabbedPane pane = topLevelPanes.get(paneOrdinal);
-            int selectedIndex = indexContainingDescendant(pane, uiAnchor);
+            int selectedIndex = RepeaterSwingTabWalker.indexContainingDescendant(pane, uiAnchor);
             if (selectedIndex >= 0) {
                 return topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal);
             }
@@ -651,7 +642,8 @@ public final class RepeaterTabsIndexReporter {
     }
 
     private static RepeaterTabMetadata currentTopLevelRepeaterTabMetadata(Component repeaterRoot) {
-        List<JTabbedPane> topLevelPanes = collectTopLevelRepeaterTabPanes(repeaterRoot);
+        List<JTabbedPane> topLevelPanes =
+                RepeaterSwingTabWalker.collectTopLevelRepeaterTabPanes(repeaterRoot);
         for (int paneOrdinal = 0; paneOrdinal < topLevelPanes.size(); paneOrdinal++) {
             JTabbedPane pane = topLevelPanes.get(paneOrdinal);
             int selectedIndex = pane.getSelectedIndex();
@@ -662,7 +654,7 @@ public final class RepeaterTabsIndexReporter {
         return RepeaterTabMetadata.empty(repeaterRoot == null ? null : repeaterRoot.getClass().getName());
     }
 
-    private static RepeaterTabMetadata topLevelRepeaterTabMetadata(
+    static RepeaterTabMetadata topLevelRepeaterTabMetadata(
             JTabbedPane pane,
             int selectedIndex,
             int paneOrdinal) {
@@ -841,230 +833,44 @@ public final class RepeaterTabsIndexReporter {
         }
     }
 
-    /** Schedules one delayed EDT pass of the unsupported Repeater startup tab walk. */
-    private static void scheduleStartupTabWalkPass(int generation, int passNumber, int delayMs) {
-        Timer timer = new Timer(delayMs, ignored -> runStartupTabWalk(generation, passNumber, delayMs));
-        timer.setRepeats(false);
-        timer.start();
+    private static void logStartupTabWalkResult(
+            int passNumber,
+            int delayMs,
+            RepeaterSwingTabWalker.PassResult result) {
+        int newCaptures = result.captureCountAfter() - result.captureCountBefore();
+        String metadataSummary = describeStartupMetadataSummary();
+        if (newCaptures > 0) {
+            Logger.logInfoPanelOnly("[StartupExport] Repeater Tabs: startup tab walk pass "
+                    + passNumber + " startupSession=" + currentStartupSessionId()
+                    + " captured " + newCaptures + " tab(s); "
+                    + metadataSummary + ".");
+        }
+        Logger.logDebug("[RepeaterTabs] Startup tab walk pass " + passNumber
+                + " startupSession=" + currentStartupSessionId()
+                + " (" + delayMs + " ms) visited "
+                + result.tabbedPaneCount() + " Repeater tab container(s) across "
+                + result.selectionChangeCount() + " selection change(s). "
+                + "Capture count before=" + result.captureCountBefore()
+                + ", after=" + result.captureCountAfter()
+                + ", newly captured=" + newCaptures
+                + ", startup metadata summary=" + metadataSummary
+                + ".");
     }
 
-    /** Runs one delayed Repeater startup tab-walk pass on the EDT. */
-    private static void runStartupTabWalk(int generation, int passNumber, int delayMs) {
-        boolean generationMatches = generation == RUN_GENERATION.get();
-        boolean exportRunning = RuntimeConfig.isExportRunning();
-        boolean anyTrafficEnabled = RuntimeConfig.isAnyTrafficExportEnabled();
-        boolean repeaterTabsEnabled = RuntimeConfig.isTrafficToolTypeEnabled(TOOL_TYPE_KEY);
-        if (!generationMatches || !exportRunning || !anyTrafficEnabled || !repeaterTabsEnabled) {
-            Logger.logDebug("[RepeaterTabs] Startup tab walk pass " + passNumber
-                    + " startupSession=" + currentStartupSessionId()
-                    + " skipped: generationMatches=" + generationMatches
-                    + ", running=" + exportRunning
-                    + ", anyTraffic=" + anyTrafficEnabled
-                    + ", repeaterTabsEnabled=" + repeaterTabsEnabled
-                    + ", trafficToolTypes=" + describeRuntimeTrafficToolTypes());
-            return;
-        }
-        try {
-            startIncrementalStartupTabWalk(generation, passNumber, delayMs);
-        } catch (RuntimeException t) {
-            Logger.logErrorPanelOnly("[RepeaterTabs] Startup tab walk pass " + passNumber
-                    + " startupSession=" + currentStartupSessionId()
-                    + " failed: " + summarizeThrowable(t));
-        }
-    }
-
-    private static void startIncrementalStartupTabWalk(int generation, int passNumber, int delayMs) {
-        ToolTabLocation repeaterLocation = findToolTabLocation(List.of(Frame.getFrames()), REPEATER_TOOL_TITLE);
-        if (repeaterLocation == null) {
-            Logger.logDebug("[RepeaterTabs] Startup tab walk pass " + passNumber
-                    + " startupSession=" + currentStartupSessionId()
-                    + " (" + delayMs + " ms) could not locate Burp's Repeater tool tab.");
-            scheduleFollowUpStartupTabWalkPass(generation, passNumber);
-            return;
-        }
-        StartupTabWalkPlan plan = buildStartupTabWalkPlan(repeaterLocation);
-        new IncrementalStartupTabWalkSession(generation, passNumber, delayMs, plan).start();
-    }
-
-    private static void scheduleFollowUpStartupTabWalkPass(int generation, int completedPassNumber) {
-        if (generation != RUN_GENERATION.get()) {
-            return;
-        }
-        if (completedPassNumber < 2) {
-            scheduleStartupTabWalkPass(generation, completedPassNumber + 1, STARTUP_TAB_WALK_SECOND_PASS_DELAY_MS);
-        } else {
-            scheduleStartupExportCompletionSummary();
-            closeCaptureWindowForCurrentRun();
-        }
-    }
-
-    /** Cycles top-level Repeater request tabs and restores their prior selections afterward. */
-    private static SelectionCycleResult cycleAllTabSelections(Component root) {
-        IdentityHashMap<JTabbedPane, Integer> originalSelections = new IdentityHashMap<>();
-        List<JTabbedPane> visitedOrder = collectTopLevelRepeaterTabPanes(root);
-        int selectionChanges = 0;
-        for (int paneOrdinal = 0; paneOrdinal < visitedOrder.size(); paneOrdinal++) {
-            JTabbedPane pane = visitedOrder.get(paneOrdinal);
-            int originalIndex = pane.getSelectedIndex();
-            originalSelections.put(pane, originalIndex);
-            for (int selectedIndex : selectionOrder(pane)) {
-                RepeaterTabMetadata previousMetadata = currentStartupSelectionMetadata;
-                currentStartupSelectionMetadata =
-                        topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal);
-                try {
-                    if (pane.getSelectedIndex() != selectedIndex) {
-                        pane.setSelectedIndex(selectedIndex);
-                        selectionChanges++;
-                    }
-                } finally {
-                    currentStartupSelectionMetadata = previousMetadata;
-                }
-            }
-        }
-        for (int i = visitedOrder.size() - 1; i >= 0; i--) {
-            JTabbedPane pane = visitedOrder.get(i);
-            Integer originalIndex = originalSelections.get(pane);
-            if (originalIndex != null && originalIndex >= 0 && originalIndex < pane.getTabCount()) {
-                pane.setSelectedIndex(originalIndex);
-            }
-        }
-        return new SelectionCycleResult(visitedOrder.size(), selectionChanges);
-    }
-
-    private static StartupTabWalkPlan buildStartupTabWalkPlan(ToolTabLocation repeaterLocation) {
-        JTabbedPane toolTabs = repeaterLocation.tabbedPane();
-        int repeaterIndex = repeaterLocation.index();
-        Component repeaterRoot = toolTabs.getComponentAt(repeaterIndex);
-        IdentityHashMap<JTabbedPane, Integer> originalSelections = new IdentityHashMap<>();
-        List<JTabbedPane> visitedOrder = collectTopLevelRepeaterTabPanes(repeaterRoot);
-        List<StartupTabSelectionStep> steps = new ArrayList<>();
-        for (int paneOrdinal = 0; paneOrdinal < visitedOrder.size(); paneOrdinal++) {
-            JTabbedPane pane = visitedOrder.get(paneOrdinal);
-            originalSelections.put(pane, pane.getSelectedIndex());
-            for (int selectedIndex : selectionOrder(pane)) {
-                steps.add(new StartupTabSelectionStep(
-                        pane,
-                        selectedIndex,
-                        topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal)));
-            }
-        }
-        return new StartupTabWalkPlan(
-                toolTabs,
-                toolTabs.getSelectedIndex(),
-                repeaterIndex,
-                visitedOrder,
-                originalSelections,
-                List.copyOf(steps),
-                CAPTURED.size());
-    }
-
-    private static List<JTabbedPane> collectTopLevelRepeaterTabPanes(Component root) {
-        List<JTabbedPane> panes = new ArrayList<>();
-        collectTopLevelRepeaterTabPanes(root, panes);
-        return panes;
-    }
-
-    private static void collectTopLevelRepeaterTabPanes(Component root, List<JTabbedPane> panes) {
-        if (root instanceof JTabbedPane pane) {
-            if (pane.getTabCount() > 0
-                    && !RepeaterTabMetadataHeuristics.isMessageViewTabPane(pane)) {
-                panes.add(pane);
-            }
-            return;
-        }
-        if (!(root instanceof Container container)) {
-            return;
-        }
-        for (Component child : container.getComponents()) {
-            collectTopLevelRepeaterTabPanes(child, panes);
-        }
-    }
-
-    private static List<Integer> selectionOrder(JTabbedPane pane) {
-        if (pane == null || pane.getTabCount() <= 0) {
-            return List.of();
-        }
-        int originalIndex = pane.getSelectedIndex();
-        List<Integer> order = new ArrayList<>(pane.getTabCount());
-        for (int index = 0; index < pane.getTabCount(); index++) {
-            if (index != originalIndex) {
-                order.add(index);
-            }
-        }
-        if (originalIndex >= 0 && originalIndex < pane.getTabCount()) {
-            order.add(originalIndex);
-        }
-        return order;
-    }
-
-    private static int indexContainingDescendant(JTabbedPane pane, Component descendant) {
-        if (pane == null || descendant == null) {
-            return -1;
-        }
-        for (int index = 0; index < pane.getTabCount(); index++) {
-            Component tabComponent = pane.getComponentAt(index);
-            if (tabComponent == descendant
-                    || SwingUtilities.isDescendingFrom(descendant, tabComponent)) {
-                return index;
-            }
-        }
-        return -1;
-    }
-
-    private static ToolTabLocation findAncestorToolTabLocation(Component descendant, String title) {
-        for (Component current = descendant; current != null; current = current.getParent()) {
-            if (!(current instanceof JTabbedPane pane)) {
-                continue;
-            }
-            for (int index = 0; index < pane.getTabCount(); index++) {
-                if (title.equalsIgnoreCase(pane.getTitleAt(index))
-                        && indexContainingDescendant(pane, descendant) == index) {
-                    return new ToolTabLocation(pane, index);
-                }
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Searches the provided Swing roots for a tabbed pane entry whose visible title matches
-     * {@code title}, ignoring case.
-     */
-    private static ToolTabLocation findToolTabLocation(Iterable<? extends Component> roots, String title) {
-        if (roots == null || title == null || title.isBlank()) {
-            return null;
-        }
-        for (Component root : roots) {
-            ToolTabLocation location = findToolTabLocation(root, title);
-            if (location != null) {
-                return location;
-            }
-        }
-        return null;
-    }
-
-    private static ToolTabLocation findToolTabLocation(Component root, String title) {
-        if (root == null) {
-            return null;
-        }
-        if (root instanceof JTabbedPane pane) {
-            for (int i = 0; i < pane.getTabCount(); i++) {
-                String tabTitle = pane.getTitleAt(i);
-                if (title.equalsIgnoreCase(tabTitle)) {
-                    return new ToolTabLocation(pane, i);
-                }
-            }
-        }
-        if (!(root instanceof Container container)) {
-            return null;
-        }
-        for (Component child : container.getComponents()) {
-            ToolTabLocation location = findToolTabLocation(child, title);
-            if (location != null) {
-                return location;
-            }
-        }
-        return null;
+    private static void logStartupTabWalkFailure(
+            int passNumber,
+            int delayMs,
+            RepeaterSwingTabWalker.WalkFailure failure) {
+        String restoration = failure.restorationFailureCount() <= 0
+                ? ""
+                : "; restorationFailures=" + failure.restorationFailureCount()
+                        + ", firstRestorationFailure="
+                        + summarizeThrowable(failure.firstRestorationFailure());
+        Logger.logErrorPanelOnly("[RepeaterTabs] Startup tab walk pass " + passNumber
+                + " startupSession=" + currentStartupSessionId()
+                + " (" + delayMs + " ms) stopped safely during " + failure.phase()
+                + ": " + summarizeThrowable(failure.primaryFailure())
+                + restoration + ".");
     }
 
     /**
@@ -1457,141 +1263,59 @@ public final class RepeaterTabsIndexReporter {
             int captureCountBefore,
             int captureCountAfter) { }
 
-    private static record SelectionCycleResult(int tabbedPaneCount, int selectionChangeCount) { }
+    private static final class StartupTabWalkDelegate
+            implements RepeaterSwingTabWalker.Delegate<RepeaterTabMetadata> {
 
-    private static record StartupTabSelectionStep(
-            JTabbedPane pane,
-            int selectedIndex,
-            RepeaterTabMetadata metadata) { }
-
-    private static record StartupTabWalkPlan(
-            JTabbedPane toolTabs,
-            int originalToolIndex,
-            int repeaterIndex,
-            List<JTabbedPane> visitedOrder,
-            IdentityHashMap<JTabbedPane, Integer> originalSelections,
-            List<StartupTabSelectionStep> steps,
-            int captureCountBefore) { }
-
-    private static record ToolTabLocation(JTabbedPane tabbedPane, int index) { }
-
-    private static final class IncrementalStartupTabWalkSession {
-        private final int generation;
-        private final int passNumber;
-        private final int delayMs;
-        private final StartupTabWalkPlan plan;
-        private final Timer timer;
-        private int nextStepIndex;
-        private int selectionChanges;
-
-        private IncrementalStartupTabWalkSession(
-                int generation,
-                int passNumber,
-                int delayMs,
-                StartupTabWalkPlan plan) {
-            this.generation = generation;
-            this.passNumber = passNumber;
-            this.delayMs = delayMs;
-            this.plan = plan;
-            this.timer = new Timer(STARTUP_TAB_WALK_STEP_DELAY_MS, ignored -> processNextStep());
-            this.timer.setRepeats(true);
+        @Override
+        public boolean isWalkValid(int generation) {
+            return isStartupWalkStillValid(generation);
         }
 
-        private void start() {
-            if (plan.steps().isEmpty()) {
-                finish();
-                return;
-            }
-            // Stay on the Repeater tool tab for the whole pass; restore once in finish/cancel.
-            if (plan.toolTabs().getSelectedIndex() != plan.repeaterIndex()) {
-                plan.toolTabs().setSelectedIndex(plan.repeaterIndex());
-                selectionChanges++;
-            }
-            timer.start();
+        @Override
+        public int captureCount() {
+            return CAPTURED.size();
         }
 
-        private void processNextStep() {
-            if (!isStartupWalkStillValid(generation)) {
-                cancelAndRestore();
-                return;
-            }
-            if (nextStepIndex >= plan.steps().size()) {
-                finish();
-                return;
-            }
-            // Selecting a Burp Repeater tab can synchronously construct and paint a substantial
-            // editor tree. Keep its slot metadata active until the next timer tick so Burp's final
-            // asynchronous editor binding can replace an initial stale binding for the same slot.
-            StartupTabSelectionStep step = plan.steps().get(nextStepIndex++);
-            currentStartupSelectionMetadata = step.metadata();
-            try {
-                if (step.pane().getSelectedIndex() != step.selectedIndex()) {
-                    step.pane().setSelectedIndex(step.selectedIndex());
-                    selectionChanges++;
-                }
-            } catch (RuntimeException exception) {
-                currentStartupSelectionMetadata = null;
-                throw exception;
-            }
+        @Override
+        public RepeaterTabMetadata metadataFor(
+                JTabbedPane pane,
+                int selectedIndex,
+                int paneOrdinal) {
+            return topLevelRepeaterTabMetadata(pane, selectedIndex, paneOrdinal);
         }
 
-        private void finish() {
-            timer.stop();
-            currentStartupSelectionMetadata = null;
-            restoreSelections();
-            StartupTabWalkResult result = new StartupTabWalkResult(
-                    true,
-                    plan.visitedOrder().size(),
-                    selectionChanges,
-                    plan.captureCountBefore(),
-                    CAPTURED.size());
-            logStartupTabWalkResult(result);
-            scheduleFollowUpStartupTabWalkPass(generation, passNumber);
+        @Override
+        public void setActiveMetadata(RepeaterTabMetadata metadata) {
+            currentStartupSelectionMetadata = metadata;
         }
 
-        private void cancelAndRestore() {
-            timer.stop();
-            currentStartupSelectionMetadata = null;
-            restoreSelections();
-        }
-
-        private void restoreSelections() {
-            for (int i = plan.visitedOrder().size() - 1; i >= 0; i--) {
-                JTabbedPane pane = plan.visitedOrder().get(i);
-                Integer originalIndex = plan.originalSelections().get(pane);
-                if (originalIndex != null
-                        && originalIndex >= 0
-                        && originalIndex < pane.getTabCount()
-                        && pane.getSelectedIndex() != originalIndex) {
-                    pane.setSelectedIndex(originalIndex);
-                }
-            }
-            if (plan.originalToolIndex() >= 0
-                    && plan.originalToolIndex() < plan.toolTabs().getTabCount()
-                    && plan.toolTabs().getSelectedIndex() != plan.originalToolIndex()) {
-                plan.toolTabs().setSelectedIndex(plan.originalToolIndex());
-            }
-        }
-
-        private void logStartupTabWalkResult(StartupTabWalkResult result) {
-            int newCaptures = result.captureCountAfter() - result.captureCountBefore();
-            String metadataSummary = describeStartupMetadataSummary();
-            if (newCaptures > 0) {
-                Logger.logInfoPanelOnly("[StartupExport] Repeater Tabs: startup tab walk pass "
-                        + passNumber + " startupSession=" + currentStartupSessionId()
-                        + " captured " + newCaptures + " tab(s); "
-                        + metadataSummary + ".");
-            }
+        @Override
+        public void onPassUnavailable(int passNumber, int delayMs) {
             Logger.logDebug("[RepeaterTabs] Startup tab walk pass " + passNumber
                     + " startupSession=" + currentStartupSessionId()
-                    + " (" + delayMs + " ms) visited "
-                    + result.tabbedPaneCount() + " Repeater tab container(s) across "
-                    + result.selectionChangeCount() + " selection change(s). "
-                    + "Capture count before=" + result.captureCountBefore()
-                    + ", after=" + result.captureCountAfter()
-                    + ", newly captured=" + newCaptures
-                    + ", startup metadata summary=" + metadataSummary
-                    + ".");
+                    + " (" + delayMs + " ms) could not locate Burp's Repeater tool tab.");
+        }
+
+        @Override
+        public void onPassCompleted(
+                int passNumber,
+                int delayMs,
+                RepeaterSwingTabWalker.PassResult result) {
+            logStartupTabWalkResult(passNumber, delayMs, result);
+        }
+
+        @Override
+        public void onPassFailed(
+                int passNumber,
+                int delayMs,
+                RepeaterSwingTabWalker.WalkFailure failure) {
+            logStartupTabWalkFailure(passNumber, delayMs, failure);
+        }
+
+        @Override
+        public void onWalkCompleted() {
+            scheduleStartupExportCompletionSummary();
+            closeCaptureWindowForCurrentRun();
         }
     }
 
