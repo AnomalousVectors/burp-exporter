@@ -65,6 +65,22 @@ class OpenSearchConnectorTest {
     }
 
     @Test
+    void getClient_cacheSeparatesAuthenticationModesAndSecretValues() {
+        String url = "http://localhost:9200";
+        OpenSearchClient basic = OpenSearchConnector.getClient(url, OpenSearchAuth.basic("user", "first"));
+        OpenSearchClient basicAgain = OpenSearchConnector.getClient(url, OpenSearchAuth.basic("user", "first"));
+        OpenSearchClient differentBasic = OpenSearchConnector.getClient(
+                url, OpenSearchAuth.basic("user", "second"));
+        OpenSearchClient apiKey = OpenSearchConnector.getClient(url, OpenSearchAuth.apiKey("first"));
+        OpenSearchClient bearer = OpenSearchConnector.getClient(url, OpenSearchAuth.bearerToken("first"));
+
+        assertThat(basicAgain).isSameAs(basic);
+        assertThat(differentBasic).isNotSameAs(basic);
+        assertThat(apiKey).isNotSameAs(basic).isNotSameAs(differentBasic);
+        assertThat(bearer).isNotSameAs(basic).isNotSameAs(differentBasic).isNotSameAs(apiKey);
+    }
+
+    @Test
     void getClassicHttpClient_returnsNonNull() {
         CloseableHttpClient client = OpenSearchConnector.getClassicHttpClient(DUMMY_URL, "user", "pass");
         assertThat(client).isNotNull();

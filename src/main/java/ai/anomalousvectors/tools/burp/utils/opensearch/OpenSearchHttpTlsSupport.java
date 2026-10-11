@@ -9,6 +9,7 @@ import org.apache.hc.client5.http.config.TlsConfig;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.impl.nio.PoolingAsyncClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.ssl.ClientTlsStrategyBuilder;
+import org.apache.hc.client5.http.ssl.HostnameVerificationPolicy;
 import org.apache.hc.client5.http.ssl.NoopHostnameVerifier;
 import org.apache.hc.client5.http.ssl.TrustAllStrategy;
 import org.apache.hc.core5.http2.HttpVersionPolicy;
@@ -42,10 +43,7 @@ final class OpenSearchHttpTlsSupport {
             SSLContext sslContext = sslBuilder
                     .loadTrustMaterial(TrustAllStrategy.INSTANCE)
                     .build();
-            connManagerBuilder.setTlsStrategy(ClientTlsStrategyBuilder.create()
-                    .setSslContext(sslContext)
-                    .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                    .buildAsync());
+            connManagerBuilder.setTlsStrategy(insecureTlsStrategy(sslContext).buildAsync());
         } else if (OpenSearchTlsSupport.isPinnedMode(destination)) {
             SSLContextBuilder pinnedBuilder = OpenSearchTlsSupport.pinnedSslContextBuilder(destination);
             resolvedAuth.loadClientKeyMaterial(pinnedBuilder);
@@ -77,10 +75,7 @@ final class OpenSearchHttpTlsSupport {
             SSLContext sslContext = sslBuilder
                     .loadTrustMaterial(TrustAllStrategy.INSTANCE)
                     .build();
-            connManagerBuilder.setTlsSocketStrategy(ClientTlsStrategyBuilder.create()
-                    .setSslContext(sslContext)
-                    .setHostnameVerifier(NoopHostnameVerifier.INSTANCE)
-                    .buildClassic());
+            connManagerBuilder.setTlsSocketStrategy(insecureTlsStrategy(sslContext).buildClassic());
         } else if (OpenSearchTlsSupport.isPinnedMode(destination)) {
             SSLContextBuilder pinnedBuilder = OpenSearchTlsSupport.pinnedSslContextBuilder(destination);
             resolvedAuth.loadClientKeyMaterial(pinnedBuilder);
@@ -106,5 +101,15 @@ final class OpenSearchHttpTlsSupport {
         connManagerBuilder.setDefaultTlsConfig(TlsConfig.custom()
                 .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
                 .build());
+    }
+
+    private static ClientTlsStrategyBuilder insecureTlsStrategy(SSLContext sslContext) {
+        // A verifier alone selects HttpClient's BOTH policy, which still enables JSSE endpoint
+        // identification before the verifier runs. CLIENT delegates hostname handling only to the
+        // explicit no-op verifier; verify and pinned modes retain the default BUILTIN policy.
+        return ClientTlsStrategyBuilder.create()
+                .setSslContext(sslContext)
+                .setHostVerificationPolicy(HostnameVerificationPolicy.CLIENT)
+                .setHostnameVerifier(NoopHostnameVerifier.INSTANCE);
     }
 }
