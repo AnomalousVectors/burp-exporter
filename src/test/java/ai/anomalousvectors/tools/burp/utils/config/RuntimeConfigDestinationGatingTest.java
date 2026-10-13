@@ -361,7 +361,8 @@ class RuntimeConfigDestinationGatingTest {
             assertThat(RuntimeConfig.indexNameForKey("traffic")).isEqualTo(trafficDuringRun);
             assertThat(RuntimeConfig.resolvedIndexNamesAt()).isEqualTo(resolvedAt);
 
-            RuntimeConfig.endExportStopWorker();
+            RuntimeConfig.beginExportStopWorker(Thread.currentThread());
+            RuntimeConfig.endExportStopWorker(Thread.currentThread());
             RuntimeConfig.setExportStopping(false);
             assertThat(RuntimeConfig.indexNameForKey("exporter")).isEqualTo("changed-base-exporter");
             assertThat(RuntimeConfig.indexNameForKey("traffic")).isEqualTo("changed-base-traffic");

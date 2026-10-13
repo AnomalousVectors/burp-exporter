@@ -481,7 +481,7 @@ public final class RuntimeConfig {
      *
      * <p>Registration does not reset the deadline or force flag established by
      * {@link #beginExportStop()}. If force-abort was requested before registration, the worker is
-     * interrupted immediately. Pair with {@link #endExportStopWorker()}.</p>
+     * interrupted immediately. Pair with {@link #endExportStopWorker(Thread)}.</p>
      *
      * @param worker Stop worker thread; ignored when {@code null}
      */
@@ -498,12 +498,45 @@ public final class RuntimeConfig {
     /**
      * Completes Stop after final pushes, counts, and connection close have finished.
      *
-     * <p>Clears the worker/deadline and releases the frozen index-name snapshot.</p>
+     * <p>Only the registered owner may clear the worker/deadline. This prevents a stale Stop
+     * worker from clearing a newer owner if lifecycle work is replaced during teardown.</p>
+     *
+     * @param worker registered Stop worker completing its lifecycle
      */
-    public static void endExportStopWorker() {
-        exportStopWorker.set(null);
-        exportStopDeadlineNanos.set(0L);
-        clearResolvedIndexNamesForCurrentRun();
+    public static void endExportStopWorker(Thread worker) {
+        if (worker != null && exportStopWorker.compareAndSet(worker, null)) {
+            exportStopDeadlineNanos.set(0L);
+            clearResolvedIndexNamesForCurrentRun();
+        }
+    }
+
+    /**
+     * Waits a bounded time for the currently registered Stop owner to terminate.
+     *
+     * <p>The caller must request force-abort before waiting. The exact owner reference is captured
+     * once so a later replacement can never be mistaken for the thread being joined. Interruption
+     * is preserved. This method must not be called by the Stop worker itself.</p>
+     *
+     * @param timeoutMs maximum wait in milliseconds; values at or below zero only inspect state
+     * @return {@code true} when no owner exists or the captured owner terminated in time
+     */
+    public static boolean awaitExportStopWorker(long timeoutMs) {
+        Thread worker = exportStopWorker.get();
+        if (worker == null) {
+            return true;
+        }
+        if (worker == Thread.currentThread()) {
+            return false;
+        }
+        if (timeoutMs > 0L) {
+            try {
+                worker.join(timeoutMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+        return !worker.isAlive();
     }
 
     /**

@@ -122,6 +122,25 @@ class ConfigPanelStopLifecycleHeadlessTest {
         }
     }
 
+    @Test
+    void closeForUnload_fencesLaterControlStatusCallbacks() throws Exception {
+        try {
+            RuntimeConfig.resetExportRunForTests();
+            ConfigPanel panel = newPanelOnEdt();
+            JTextArea controlStatus = findByName(panel, "control.status", JTextArea.class);
+
+            runEdt(() -> panel.onControlStatus("before unload"));
+            panel.closeForUnload();
+            panel.onControlStatus("after unload");
+            runEdt(() -> { });
+
+            assertThat(controlStatus.getText()).isEqualTo("before unload");
+        } finally {
+            ExportReporterLifecycle.resetForTests();
+            ConfigPanel.shutdownStartupExecutor();
+        }
+    }
+
     private static ConfigPanel newPanelOnEdt() throws Exception {
         AtomicReference<ConfigPanel> ref = new AtomicReference<>();
         SwingUtilities.invokeAndWait(() -> {

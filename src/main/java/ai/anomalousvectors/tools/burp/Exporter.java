@@ -23,6 +23,8 @@ import ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.ProductInfo;
 import ai.anomalousvectors.tools.burp.utils.Version;
+import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
 import burp.api.montoya.BurpExtension;
@@ -48,6 +50,7 @@ public class Exporter implements BurpExtension {
     private volatile Registration contextMenuRegistration;
     private volatile Registration webSocketCreatedRegistration;
     private volatile ExporterIndexLogForwarder logForwarder;
+    private volatile BurpExporterPanel exporterPanel;
     private volatile boolean initialized;
 
     /**
@@ -124,6 +127,18 @@ public class Exporter implements BurpExtension {
     }
 
     private void cleanupExtensionState() {
+        BurpExporterPanel panel = exporterPanel;
+        exporterPanel = null;
+        if (panel != null) {
+            panel.closeForUnload();
+        }
+        RuntimeConfig.requestExportStopForceAbort();
+        if (!RuntimeConfig.awaitExportStopWorker(Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS)) {
+            Logger.logWarnPanelOnly(
+                    "[Export] Stop worker did not terminate within the unload handoff budget; "
+                            + "continuing bounded unload cleanup.");
+        }
+
         ExporterIndexLogForwarder forwarder = logForwarder;
         if (forwarder != null) {
             Logger.unregisterListener(forwarder);
@@ -157,6 +172,8 @@ public class Exporter implements BurpExtension {
                     ExporterIndexStatsReporter.pushFinalSnapshotNow());
         }
         ExportReporterLifecycle.stopAndClearSessionState();
+        RuntimeConfig.setExportStopping(false);
+        RuntimeConfig.clearExportStopForceAbort();
         // Cleanup after unload or failed initialization must release pooled connections, TLS
         // session caches, and transport-owned reactor/scheduler threads. Run synchronously so the
         // classloader can be GC'd cleanly; closeAll() is idempotent if a Stop-triggered async
@@ -203,7 +220,9 @@ public class Exporter implements BurpExtension {
     }
 
     private void registerUi(MontoyaApi api, String tabTitle) {
-        suiteTabRegistration = api.userInterface().registerSuiteTab(tabTitle, new BurpExporterPanel());
+        BurpExporterPanel panel = new BurpExporterPanel();
+        exporterPanel = panel;
+        suiteTabRegistration = api.userInterface().registerSuiteTab(tabTitle, panel);
     }
 
     private static void safeDeregister(Registration registration) {

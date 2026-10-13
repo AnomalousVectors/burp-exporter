@@ -1,6 +1,9 @@
 package ai.anomalousvectors.tools.burp.utils.config;
 
 import java.time.Instant;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -102,12 +105,54 @@ class RuntimeConfigExportStoppingTest {
             worker.join(2_000L);
             assertThat(worker.isAlive()).isFalse();
         } finally {
-            RuntimeConfig.endExportStopWorker();
+            RuntimeConfig.endExportStopWorker(worker);
             RuntimeConfig.clearExportStopForceAbort();
             if (worker.isAlive()) {
                 worker.interrupt();
                 worker.join(1_000L);
             }
+        }
+    }
+
+    @Test
+    void awaitExportStopWorker_timesOutForNonCooperativeOwner_withoutClearingRegistration()
+            throws Exception {
+        AtomicBoolean release = new AtomicBoolean();
+        AtomicBoolean releaseReplacement = new AtomicBoolean();
+        Thread worker = new Thread(() -> {
+            while (!release.get()) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5L));
+                Thread.interrupted();
+            }
+        }, "test-stubborn-export-stop-worker");
+        worker.start();
+        try {
+            RuntimeConfig.beginExportStop();
+            RuntimeConfig.beginExportStopWorker(worker);
+            RuntimeConfig.requestExportStopForceAbort();
+
+            assertThat(RuntimeConfig.awaitExportStopWorker(25L)).isFalse();
+
+            Thread replacement = new Thread(() -> {
+                while (!releaseReplacement.get()) {
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5L));
+                    Thread.interrupted();
+                }
+            }, "test-replacement-export-stop-worker");
+            replacement.start();
+            RuntimeConfig.beginExportStopWorker(replacement);
+            RuntimeConfig.endExportStopWorker(worker);
+            assertThat(RuntimeConfig.awaitExportStopWorker(0L)).isFalse();
+            releaseReplacement.set(true);
+            LockSupport.unpark(replacement);
+            replacement.join(1_000L);
+            RuntimeConfig.endExportStopWorker(replacement);
+        } finally {
+            release.set(true);
+            releaseReplacement.set(true);
+            LockSupport.unpark(worker);
+            worker.join(1_000L);
+            RuntimeConfig.endExportStopWorker(worker);
         }
     }
 }

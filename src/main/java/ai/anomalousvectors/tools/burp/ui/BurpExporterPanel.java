@@ -18,6 +18,8 @@ public class BurpExporterPanel extends JPanel {
     @Serial
     private static final long serialVersionUID = 1L;
 
+    private final ConfigPanel configPanel;
+
     /**
      * Constructs the top-level tab container for the extension.
      * <p>
@@ -30,12 +32,24 @@ public class BurpExporterPanel extends JPanel {
 
         JTabbedPane tabbedPane = new JTabbedPane();
 
-        tabbedPane.addTab("Config", ScrollPanes.wrap(new ConfigPanel()));
+        configPanel = new ConfigPanel();
+
+        tabbedPane.addTab("Config", ScrollPanes.wrap(configPanel));
         tabbedPane.addTab("Log",    ScrollPanes.wrap(new LogPanel()));
         tabbedPane.addTab("Stats",  ScrollPanes.wrap(new StatsPanel()));
         tabbedPane.addTab("About",  ScrollPanes.wrap(new AboutPanel()));
 
         add(tabbedPane, BorderLayout.CENTER);
+    }
+
+    /**
+     * Closes extension-owned UI callbacks before Burp removes the suite tab.
+     *
+     * <p>Safe to invoke from Burp's unload thread. Swing components are not mutated here; the
+     * Config panel only closes its background controller and fences later callbacks.</p>
+     */
+    public void closeForUnload() {
+        configPanel.closeForUnload();
     }
 
 }

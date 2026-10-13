@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import javax.swing.AbstractAction;
@@ -84,6 +85,7 @@ import ai.anomalousvectors.tools.burp.ui.text.Doc;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.ui.text.ValidationIndicator;
 import ai.anomalousvectors.tools.burp.utils.ControlStatusBridge;
+import ai.anomalousvectors.tools.burp.utils.ExportControlBridge;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileUtil;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -548,6 +550,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     /** Action controller (transient; rebuilt on deserialization). */
     private transient ConfigController controller;
+    /** Fences background and queued EDT callbacks once extension unload begins. */
+    private transient AtomicBoolean closedForUnload = new AtomicBoolean();
 
     /** Fields panel: index -> (fieldKey -> checkbox). Populated in constructor when building Fields section. */
     private java.util.Map<String, java.util.Map<String, JCheckBox>> fieldCheckboxesByIndex;
@@ -837,7 +841,6 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private void runExportStopAsync(ConfigControlPanel.StopUiCallbacks callbacks) {
         ExportShutdownStatus.Snapshot snapshot = callbacks.snapshot();
         Thread stopThread = new Thread(() -> {
-            RuntimeConfig.beginExportStopWorker(Thread.currentThread());
             boolean forceAborted = false;
             RuntimeConfig.ExportRunToken stoppedRun = RuntimeConfig.lastInvalidatedExportRunToken();
             try {
@@ -976,19 +979,32 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                 }
             } finally {
                 FileExportService.resetForRuntime();
-                RuntimeConfig.endExportStopWorker();
+                RuntimeConfig.endExportStopWorker(Thread.currentThread());
                 boolean forced = forceAborted || RuntimeConfig.isExportStopForceAbortRequested();
                 String doneMessage = forced
                         ? ExportShutdownStatus.forceStoppedMessage()
                         : ExportShutdownStatus.stoppedMessage();
                 SwingUtilities.invokeLater(() -> {
-                    callbacks.onStopProgress().accept(doneMessage);
-                    callbacks.onStopComplete().run();
+                    if (!closedForUnload.get()) {
+                        callbacks.onStopProgress().accept(doneMessage);
+                        callbacks.onStopComplete().run();
+                    }
                 });
             }
         }, "burp-exporter-stop");
         stopThread.setDaemon(true);
-        stopThread.start();
+        synchronized (closedForUnload) {
+            if (closedForUnload.get()) {
+                return;
+            }
+            RuntimeConfig.beginExportStopWorker(stopThread);
+            try {
+                stopThread.start();
+            } catch (RuntimeException | Error e) {
+                RuntimeConfig.endExportStopWorker(stopThread);
+                throw e;
+            }
+        }
     }
 
     private static boolean isStopForceAbortRequested() {
@@ -1029,21 +1045,23 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         retryCoordinator.drainPendingRetriesDuringShutdown(budgetMs);
     }
 
-    private static void postStopProgress(ConfigControlPanel.StopUiCallbacks callbacks, String message) {
+    private void postStopProgress(ConfigControlPanel.StopUiCallbacks callbacks, String message) {
         Logger.logInfoPanelOnly("[Export] " + message);
         SwingUtilities.invokeLater(() -> {
-            if (RuntimeConfig.isExportStopping()) {
+            if (!closedForUnload.get() && RuntimeConfig.isExportStopping()) {
                 callbacks.onStopProgress().accept(message);
             }
         });
     }
 
-    private static void postStartProgress(
+    private void postStartProgress(
             RuntimeConfig.ExportRunToken token,
             ConfigControlPanel.StartUiCallbacks callbacks,
             String message) {
         SwingUtilities.invokeLater(() -> {
-            if (RuntimeConfig.isExportStarting() && RuntimeConfig.isExportRunActive(token)) {
+            if (!closedForUnload.get()
+                    && RuntimeConfig.isExportStarting()
+                    && RuntimeConfig.isExportRunActive(token)) {
                 callbacks.onStartProgress().accept(message);
             }
         });
@@ -1059,7 +1077,9 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * @param uiCallbacks callbacks from {@link ConfigControlPanel} to revert or complete Start UI state
      */
     private void startExportAsync(ConfigControlPanel.StartUiCallbacks uiCallbacks) {
-        if (!RuntimeConfig.isExportRunning() || RuntimeConfig.isExportStopping()) {
+        if (closedForUnload.get()
+                || !RuntimeConfig.isExportRunning()
+                || RuntimeConfig.isExportStopping()) {
             return;
         }
         RuntimeConfig.ExportRunToken runToken = RuntimeConfig.currentExportRunToken();
@@ -1306,7 +1326,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         RuntimeConfig.setExportStarting(false);
         String runningStatus = buildRunningStatusMessage(runtimeStartIssues, filesSelected, databaseSelected);
         SwingUtilities.invokeLater(() -> {
-            if (!RuntimeConfig.isExportRunActive(runToken)) {
+            if (closedForUnload.get() || !RuntimeConfig.isExportRunActive(runToken)) {
                 return;
             }
             uiCallbacks.onStartSuccess().run();
@@ -1433,8 +1453,10 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         BodyParameterTruncationLog.flushStartupSummary();
         BodyEnumerationSkippedLog.flushStartupSummary();
         RuntimeConfig.setExportStarting(false);
-        onControlStatus("Start aborted: " + reason);
-        uiCallbacks.onStartFailure().run();
+        if (!closedForUnload.get()) {
+            onControlStatus("Start aborted: " + reason);
+            uiCallbacks.onStartFailure().run();
+        }
     }
 
     private void abortStartFromWorker(String reason, ConfigControlPanel.StartUiCallbacks uiCallbacks) {
@@ -1448,8 +1470,10 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
         BodyEnumerationSkippedLog.flushStartupSummary();
         RuntimeConfig.setExportStarting(false);
         SwingUtilities.invokeLater(() -> {
-            onControlStatus("Start aborted: " + reason);
-            uiCallbacks.onStartFailure().run();
+            if (!closedForUnload.get()) {
+                onControlStatus("Start aborted: " + reason);
+                uiCallbacks.onStartFailure().run();
+            }
         });
     }
 
@@ -1735,13 +1759,21 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * @param message status text to display (nullable)
      */
     @Override public void onControlStatus(String message) {
-        if (RuntimeConfig.isExportStopping() || RuntimeConfig.isExportStarting()) {
+        if (closedForUnload.get()
+                || RuntimeConfig.isExportStopping()
+                || RuntimeConfig.isExportStarting()) {
             return;
         }
         String formattedMessage = formatControlStatusMessage(message);
         Runnable r = () -> {
-            StatusViews.setStatus(
-                    controlStatus, controlStatusWrapper, formattedMessage, STATUS_MIN_COLS, STATUS_MAX_COLS);
+            if (!closedForUnload.get()) {
+                StatusViews.setStatus(
+                        controlStatus,
+                        controlStatusWrapper,
+                        formattedMessage,
+                        STATUS_MIN_COLS,
+                        STATUS_MAX_COLS);
+            }
         };
         if (SwingUtilities.isEventDispatchThread()) r.run();
         else {
@@ -4032,6 +4064,28 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     }
 
     /**
+     * Closes Config-owned work and fences every later background or queued EDT callback.
+     *
+     * <p>Called explicitly by the extension unload owner before the suite tab is deregistered.
+     * Ordinary Swing hierarchy removal still uses {@link #removeNotify()} and remains reversible.
+     * This method is idempotent and does not mutate Swing components off the EDT.</p>
+     */
+    public void closeForUnload() {
+        synchronized (closedForUnload) {
+            if (!closedForUnload.compareAndSet(false, true)) {
+                return;
+            }
+        }
+        ConfigController current = controller;
+        controller = null;
+        if (current != null) {
+            current.close();
+        }
+        ControlStatusBridge.clear();
+        ExportControlBridge.clear();
+    }
+
+    /**
      * Cancels Config UI operations when Burp removes this panel from the display hierarchy.
      *
      * <p>A later action after reattachment lazily creates a fresh controller. Ordinary Export
@@ -4051,6 +4105,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     @Serial
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
         in.defaultReadObject();
+        this.closedForUnload = new AtomicBoolean();
         this.controller = new ConfigController(this);
         ControlStatusBridge.register(this::onControlStatus);
     }

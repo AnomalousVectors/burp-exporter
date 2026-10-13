@@ -214,6 +214,34 @@ class ExporterLifecycleTest {
         }
     }
 
+    @Test
+    void unloadingHandler_forceAbortsAndAwaitsRegisteredStopOwner() throws Exception {
+        try {
+            ApiFixture fixture = new ApiFixture();
+            new Exporter().initialize(fixture.api);
+            Thread stopOwner = new Thread(() -> {
+                try {
+                    Thread.sleep(30_000L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }, "test-export-stop-owner");
+            RuntimeConfig.beginExportStop();
+            RuntimeConfig.beginExportStopWorker(stopOwner);
+            stopOwner.start();
+
+            fixture.unloadHandler.get().extensionUnloaded();
+
+            assertThat(stopOwner.isAlive()).isFalse();
+            assertThat(RuntimeConfig.isExportStopping()).isFalse();
+            assertThat(RuntimeConfig.isExportStopForceAbortRequested()).isFalse();
+        } finally {
+            Tooltips.restoreSharedPopupFactory();
+            ExportReporterLifecycle.resetForTests();
+            Logger.resetState();
+        }
+    }
+
     /**
      * Asserts that every extension-owned background worker is either null or terminated after
      * extension unload, and that {@link ConfigPanel}'s startup executor has been replaced with
