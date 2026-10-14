@@ -79,18 +79,30 @@ final class TlsTestServer implements AutoCloseable {
 
     private void acceptLoop() {
         while (!closed) {
-            try (SSLSocket socket = (SSLSocket) serverSocket.accept()) {
-                socket.setSoTimeout(2_000);
-                socket.startHandshake();
-                consumeRequest(socket);
-                writeResponse(socket.getOutputStream());
-            } catch (SSLException ignored) {
-                // Trust, hostname, and client-auth rejection are expected outcomes in negative tests.
+            SSLSocket acceptedSocket;
+            try {
+                acceptedSocket = (SSLSocket) serverSocket.accept();
             } catch (SocketException e) {
                 if (!closed) {
                     failure.compareAndSet(null, e);
                     return;
                 }
+                continue;
+            } catch (IOException e) {
+                if (!closed) {
+                    failure.compareAndSet(null, e);
+                    return;
+                }
+                continue;
+            }
+
+            try (SSLSocket socket = acceptedSocket) {
+                socket.setSoTimeout(2_000);
+                socket.startHandshake();
+                consumeRequest(socket);
+                writeResponse(socket.getOutputStream());
+            } catch (SSLException | SocketException ignored) {
+                // Negative tests may reject TLS explicitly or abort the peer connection during the handshake.
             } catch (IOException e) {
                 if (!closed) {
                     failure.compareAndSet(null, e);

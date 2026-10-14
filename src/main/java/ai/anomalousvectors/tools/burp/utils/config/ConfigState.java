@@ -29,16 +29,7 @@ public final class ConfigState {
      * <p>Used as the import/normalize allowlist. Defaults may omit entries (for example
      * {@code repeater_tabs}).</p>
      */
-    public static final List<String> ALL_TRAFFIC_TOOL_TYPES = List.of(
-            "burp_ai",
-            "extensions",
-            "intruder",
-            "proxy",
-            "proxy_history",
-            "repeater",
-            "repeater_tabs",
-            "scanner",
-            "sequencer");
+    public static final List<String> ALL_TRAFFIC_TOOL_TYPES = TrafficToolCatalog.configurationIds();
 
     /**
      * Default traffic tool types: all known sources except Repeater Tabs.
@@ -46,9 +37,7 @@ public final class ConfigState {
      * <p>Repeater Tabs stays available in the UI and in imported configs, but is off by default
      * because its Start-time capture can freeze Burp.</p>
      */
-    public static final List<String> DEFAULT_TRAFFIC_TOOL_TYPES = ALL_TRAFFIC_TOOL_TYPES.stream()
-            .filter(toolType -> !"repeater_tabs".equals(toolType))
-            .toList();
+    public static final List<String> DEFAULT_TRAFFIC_TOOL_TYPES = TrafficToolCatalog.defaultConfigurationIds();
 
     /** Default findings severities: all five. */
     public static final List<String> DEFAULT_FINDINGS_SEVERITIES =
@@ -802,9 +791,8 @@ public final class ConfigState {
 
     /** Normalizes traffic tool ids to lowercase against {@link #ALL_TRAFFIC_TOOL_TYPES}. */
     public static List<String> normalizeTrafficToolTypes(List<String> values) {
-        Set<String> knownToolTypes = Set.copyOf(ALL_TRAFFIC_TOOL_TYPES);
         return normalizeLowercaseList(values).stream()
-                .filter(knownToolTypes::contains)
+                .filter(TrafficToolCatalog::isKnownConfigurationId)
                 .toList();
     }
 

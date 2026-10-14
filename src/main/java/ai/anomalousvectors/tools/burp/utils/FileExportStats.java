@@ -8,6 +8,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
+import ai.anomalousvectors.tools.burp.utils.config.TrafficToolCatalog;
+
 /**
  * Thread-safe session stats for file-based exports.
  *
@@ -36,18 +38,8 @@ public final class FileExportStats {
                     "proxy_history_snapshot",
                     "proxy_websocket_live",
                     "proxy_websocket_history"));
-    private static final List<String> TRAFFIC_TOOL_TYPE_KEYS = Collections.unmodifiableList(
-            Arrays.asList(
-                    "BURP_AI",
-                    "EXTENSIONS",
-                    "INTRUDER",
-                    "PROXY",
-                    "PROXY_HISTORY",
-                    "REPEATER",
-                    "REPEATER_TABS",
-                    "SCANNER",
-                    "SEQUENCER",
-                    "UNKNOWN"));
+    private static final List<String> TRAFFIC_TOOL_TYPE_KEYS =
+            TrafficToolCatalog.statisticsKeysWithUnknown();
     private static final int LAST_ERROR_MAX_LEN = 200;
 
     private static final Map<String, PerIndexStats> STATS = new ConcurrentHashMap<>();

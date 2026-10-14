@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
+import ai.anomalousvectors.tools.burp.utils.config.TrafficToolCatalog;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
@@ -34,18 +35,8 @@ public final class ExportStats {
                     "proxy_history_snapshot",
                     "proxy_websocket_live",
                     "proxy_websocket_history"));
-    private static final List<String> TRAFFIC_TOOL_TYPE_KEYS = Collections.unmodifiableList(
-            Arrays.asList(
-                    "BURP_AI",
-                    "EXTENSIONS",
-                    "INTRUDER",
-                    "PROXY",
-                    "PROXY_HISTORY",
-                    "REPEATER",
-                    "REPEATER_TABS",
-                    "SCANNER",
-                    "SEQUENCER",
-                    "UNKNOWN"));
+    private static final List<String> TRAFFIC_TOOL_TYPE_KEYS =
+            TrafficToolCatalog.statisticsKeysWithUnknown();
     private static final List<String> REPEATER_METADATA_SOURCE_KEYS = Collections.unmodifiableList(
             Arrays.asList(
                     "request_identity",

@@ -47,4 +47,20 @@ class TrafficLiveAttributionSummaryTest {
         assertThat(line).isEqualTo("[LiveTraffic] Traffic: attribution summary: "
                 + "openSearch={Scanner=260}; file={Scanner=260}.");
     }
+
+    @Test
+    void liveDeltasUseCanonicalToolOrderAndDisplayLabels() {
+        Map<String, Long> deltas = TrafficLiveAttributionSummary.liveDeltasForTests(
+                Map.of(),
+                Map.of(
+                        "SCANNER", 4L,
+                        "PROXY_HISTORY", 3L,
+                        "BURP_AI", 2L,
+                        "REPEATER_TABS", 1L));
+
+        assertThat(deltas).containsExactly(
+                Map.entry("Burp AI", 2L),
+                Map.entry("Proxy History", 3L),
+                Map.entry("Scanner", 4L));
+    }
 }

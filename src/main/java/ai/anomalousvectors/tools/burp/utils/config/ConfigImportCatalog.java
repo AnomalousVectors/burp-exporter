@@ -68,11 +68,6 @@ public final class ConfigImportCatalog {
     public static final Set<String> KNOWN_EXPORT_INDEXES =
             Set.copyOf(ExportFieldRegistry.INDEX_ORDER);
 
-    private static final Set<String> COMMUNITY_DISABLED_SOURCES = Set.of(ConfigKeys.SRC_FINDINGS);
-
-    private static final Set<String> COMMUNITY_DISABLED_TRAFFIC_TOOL_TYPES =
-            Set.of("burp_ai", "scanner");
-
     private ConfigImportCatalog() { }
 
     /**
@@ -81,7 +76,7 @@ public final class ConfigImportCatalog {
     public static List<String> allDataSourcesForEdition(boolean communityEdition) {
         List<String> out = new ArrayList<>();
         for (String source : DATA_SOURCES_EXPORT_ORDER) {
-            if (communityEdition && COMMUNITY_DISABLED_SOURCES.contains(source)) {
+            if (!DataSourceCapabilityPolicy.isAvailableInEdition(source, communityEdition)) {
                 continue;
             }
             out.add(source);
@@ -144,16 +139,7 @@ public final class ConfigImportCatalog {
      * Returns traffic tool types selected by default for the running Burp edition.
      */
     public static List<String> defaultTrafficToolTypesForEdition(boolean communityEdition) {
-        if (!communityEdition) {
-            return ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES;
-        }
-        List<String> out = new ArrayList<>();
-        for (String toolType : ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES) {
-            if (!COMMUNITY_DISABLED_TRAFFIC_TOOL_TYPES.contains(toolType)) {
-                out.add(toolType);
-            }
-        }
-        return List.copyOf(out);
+        return TrafficToolCatalog.defaultConfigurationIdsForEdition(communityEdition);
     }
 
     /**
@@ -241,7 +227,7 @@ public final class ConfigImportCatalog {
                 report.add(ConfigImportReport.Kind.UNKNOWN_VALUE, "dataSources", value);
                 continue;
             }
-            if (communityEdition && COMMUNITY_DISABLED_SOURCES.contains(normalized)) {
+            if (!DataSourceCapabilityPolicy.isAvailableInEdition(normalized, communityEdition)) {
                 report.add(ConfigImportReport.Kind.EDITION_STRIPPED, "dataSources", value);
                 continue;
             }
@@ -274,18 +260,17 @@ public final class ConfigImportCatalog {
             List<String> raw,
             ConfigImportReport report,
             boolean communityEdition) {
-        Set<String> known = Set.copyOf(ConfigState.ALL_TRAFFIC_TOOL_TYPES);
         List<String> accepted = new ArrayList<>();
         for (String value : raw) {
             if (value == null || value.isBlank()) {
                 continue;
             }
             String normalized = value.trim().toLowerCase(Locale.ROOT);
-            if (!known.contains(normalized)) {
+            if (!TrafficToolCatalog.isKnownConfigurationId(normalized)) {
                 report.add(ConfigImportReport.Kind.UNKNOWN_VALUE, "dataSourceOptions.traffic", value);
                 continue;
             }
-            if (communityEdition && COMMUNITY_DISABLED_TRAFFIC_TOOL_TYPES.contains(normalized)) {
+            if (!TrafficToolCatalog.isAvailableInEdition(normalized, communityEdition)) {
                 report.add(ConfigImportReport.Kind.EDITION_STRIPPED, "dataSourceOptions.traffic", value);
                 continue;
             }

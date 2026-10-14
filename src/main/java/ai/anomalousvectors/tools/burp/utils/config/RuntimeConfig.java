@@ -1,9 +1,9 @@
 package ai.anomalousvectors.tools.burp.utils.config;
 
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -34,18 +34,6 @@ import burp.api.montoya.core.ToolType;
  * Multi-method lifecycle sequences still require the caller to preserve the documented order.</p>
  */
 public final class RuntimeConfig {
-    private static final Set<String> COMMUNITY_DISABLED_SOURCES = Set.of(ConfigKeys.SRC_FINDINGS);
-    private static final Set<String> COMMUNITY_DISABLED_TRAFFIC_TOOL_TYPES = Set.of("burp_ai", "scanner");
-    private static final int TRAFFIC_TOOL_BURP_AI = 1;
-    private static final int TRAFFIC_TOOL_EXTENSIONS = 1 << 1;
-    private static final int TRAFFIC_TOOL_INTRUDER = 1 << 2;
-    private static final int TRAFFIC_TOOL_PROXY = 1 << 3;
-    private static final int TRAFFIC_TOOL_PROXY_HISTORY = 1 << 4;
-    private static final int TRAFFIC_TOOL_REPEATER = 1 << 5;
-    private static final int TRAFFIC_TOOL_REPEATER_TABS = 1 << 6;
-    private static final int TRAFFIC_TOOL_SCANNER = 1 << 7;
-    private static final int TRAFFIC_TOOL_SEQUENCER = 1 << 8;
-
     private static volatile ConfigState.State state = defaultState();
     private static volatile boolean exportRunning = false;
     private static volatile boolean exportStarting = false;
@@ -719,7 +707,7 @@ public final class RuntimeConfig {
             return false;
         }
         String normalizedSource = source.trim().toLowerCase(Locale.ROOT);
-        if (isCommunityEdition() && COMMUNITY_DISABLED_SOURCES.contains(normalizedSource)) {
+        if (!DataSourceCapabilityPolicy.isAvailableInEdition(normalizedSource, isCommunityEdition())) {
             return false;
         }
         ConfigState.State current = state;
@@ -734,7 +722,7 @@ public final class RuntimeConfig {
             return false;
         }
         String normalizedToolType = toolType.trim().toLowerCase(Locale.ROOT);
-        if (isCommunityEdition() && COMMUNITY_DISABLED_TRAFFIC_TOOL_TYPES.contains(normalizedToolType)) {
+        if (!TrafficToolCatalog.isAvailableInEdition(normalizedToolType, isCommunityEdition())) {
             return false;
         }
         ConfigState.State current = state;
@@ -1062,7 +1050,7 @@ public final class RuntimeConfig {
         return sources.stream()
                 .map(source -> source == null ? "" : source.trim().toLowerCase(Locale.ROOT))
                 .filter(source -> !source.isBlank())
-                .filter(source -> !COMMUNITY_DISABLED_SOURCES.contains(source))
+                .filter(source -> DataSourceCapabilityPolicy.isAvailableInEdition(source, true))
                 .toList();
     }
 
@@ -1073,7 +1061,7 @@ public final class RuntimeConfig {
         return trafficToolTypes.stream()
                 .map(toolType -> toolType == null ? "" : toolType.trim().toLowerCase(Locale.ROOT))
                 .filter(toolType -> !toolType.isBlank())
-                .filter(toolType -> !COMMUNITY_DISABLED_TRAFFIC_TOOL_TYPES.contains(toolType))
+                .filter(toolType -> TrafficToolCatalog.isAvailableInEdition(toolType, true))
                 .toList();
     }
 
@@ -1179,18 +1167,7 @@ public final class RuntimeConfig {
         if (normalizedToolType == null) {
             return 0;
         }
-        return switch (normalizedToolType) {
-            case "burp_ai" -> TRAFFIC_TOOL_BURP_AI;
-            case "extensions" -> TRAFFIC_TOOL_EXTENSIONS;
-            case "intruder" -> TRAFFIC_TOOL_INTRUDER;
-            case "proxy" -> TRAFFIC_TOOL_PROXY;
-            case "proxy_history" -> TRAFFIC_TOOL_PROXY_HISTORY;
-            case "repeater" -> TRAFFIC_TOOL_REPEATER;
-            case "repeater_tabs" -> TRAFFIC_TOOL_REPEATER_TABS;
-            case "scanner" -> TRAFFIC_TOOL_SCANNER;
-            case "sequencer" -> TRAFFIC_TOOL_SEQUENCER;
-            default -> 0;
-        };
+        return TrafficToolCatalog.runtimeMask(normalizedToolType);
     }
 
     private static boolean isTrafficExportEnabledForState(ConfigState.State current) {

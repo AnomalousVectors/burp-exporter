@@ -1,12 +1,12 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
-import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.config.TrafficToolCatalog;
 
 /**
  * Logs sparse live traffic attribution totals when an export run stops.
@@ -116,7 +116,7 @@ public final class TrafficLiveAttributionSummary {
     private static Map<String, Long> delta(Map<String, Long> before, Map<String, Long> after) {
         java.util.LinkedHashMap<String, Long> deltas = new java.util.LinkedHashMap<>();
         for (String key : orderedKeys(after)) {
-            if ("REPEATER_TABS".equals(key)) {
+            if (TrafficToolCatalog.Tool.REPEATER_TABS.statisticsKey().equals(key)) {
                 continue;
             }
             long value = Math.max(0L, after.getOrDefault(key, 0L) - before.getOrDefault(key, 0L));
@@ -128,16 +128,9 @@ public final class TrafficLiveAttributionSummary {
     }
 
     private static java.util.Set<String> orderedKeys(Map<String, Long> after) {
-        java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>(List.of(
-                "BURP_AI",
-                "EXTENSIONS",
-                "INTRUDER",
-                "PROXY",
-                "REPEATER",
-                "REPEATER_TABS",
-                "SCANNER",
-                "SEQUENCER",
-                TrafficRouteBucket.TOOL_TYPE_UNKNOWN));
+        java.util.LinkedHashSet<String> keys =
+                new java.util.LinkedHashSet<>(TrafficToolCatalog.statisticsKeys());
+        keys.add(TrafficRouteBucket.TOOL_TYPE_UNKNOWN);
         keys.addAll(after.keySet());
         return keys;
     }
@@ -146,12 +139,12 @@ public final class TrafficLiveAttributionSummary {
         if (key == null || key.isBlank()) {
             return "Unknown";
         }
-        return switch (key) {
-            case "BURP_AI" -> "Burp AI";
-            case "REPEATER_TABS" -> "Repeater Tabs";
-            case TrafficRouteBucket.TOOL_TYPE_UNKNOWN -> "Unknown";
-            default -> key.charAt(0) + key.substring(1).toLowerCase(java.util.Locale.ROOT);
-        };
+        if (TrafficRouteBucket.TOOL_TYPE_UNKNOWN.equals(key)) {
+            return "Unknown";
+        }
+        return TrafficToolCatalog.findByStatisticsKey(key)
+                .map(tool -> tool.displayLabel())
+                .orElseGet(() -> key.charAt(0) + key.substring(1).toLowerCase(java.util.Locale.ROOT));
     }
 
     private static String formatCounts(Map<String, Long> counts) {
