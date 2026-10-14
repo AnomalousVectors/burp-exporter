@@ -17,6 +17,7 @@ import javax.swing.event.DocumentListener;
 import ai.anomalousvectors.tools.burp.ui.text.RegexIndicatorBinder;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigImportPolicy;
 import net.miginfocom.swing.MigLayout;
 
 /**
@@ -34,8 +35,6 @@ public class ScopeGrid extends JPanel {
     /**
      * Max number of rows permitted. The Add button disables at this limit.
      */
-    private static final int MAX_ROWS = 100;
-
     private static final String TIP_ADD_ROW     = Tooltips.html("Add new row.");
     private static final String TIP_SCOPE_ENTRY = Tooltips.html("Scope entry.", "Enter a plain string or regular expression.");
     private static final String TIP_REGEX_TOGGLE = Tooltips.html("Interpret value as a regular expression.");
@@ -71,6 +70,7 @@ public class ScopeGrid extends JPanel {
         super(new MigLayout(
                 "insets 0, gapx 20, gapy 6",
                 "[fill,grow,sg tf]20[]20[sg btn,left]"));
+        requireDisplayableEntryCount(initial);
         if (initial == null || initial.isEmpty()) {
             rows.add(new Row("", true)); // default: regex ON
         } else {
@@ -83,7 +83,7 @@ public class ScopeGrid extends JPanel {
         ButtonStyles.normalize(addButton);
         Tooltips.apply(addButton, TIP_ADD_ROW);
         addButton.addActionListener(e -> {
-            if (rows.size() < MAX_ROWS) {
+            if (rows.size() < ConfigImportPolicy.MAX_CUSTOM_SCOPE_ENTRIES) {
                 rows.add(new Row("", true)); // new rows default to regex ON
                 rebuild();
             }
@@ -123,6 +123,7 @@ public class ScopeGrid extends JPanel {
      * @param entries new entries to apply
      */
     public void setEntries(List<ScopeEntryInit> entries) {
+        requireDisplayableEntryCount(entries);
         rows.clear();
         if (entries == null || entries.isEmpty()) {
             rows.add(new Row("", true));
@@ -134,10 +135,17 @@ public class ScopeGrid extends JPanel {
         rebuild();
     }
 
+    private static void requireDisplayableEntryCount(List<ScopeEntryInit> entries) {
+        if (entries != null && entries.size() > ConfigImportPolicy.MAX_CUSTOM_SCOPE_ENTRIES) {
+            throw new IllegalArgumentException("Custom scope has " + entries.size()
+                    + " entries; maximum is " + ConfigImportPolicy.MAX_CUSTOM_SCOPE_ENTRIES + ".");
+        }
+    }
+
     /**
      * Enables/disables the entire grid (fields, toggles, Add/Delete).
      *
-     * <p>The Add button remains constrained by the {@link #MAX_ROWS} rule.</p>
+     * <p>The Add button remains constrained by the shared custom-scope entry limit.</p>
      *
      * @param enabled whether controls should be enabled
      */
@@ -222,7 +230,7 @@ public class ScopeGrid extends JPanel {
      * Applies enablement state to all row components.
      */
     private void applyEnablement() {
-        boolean canAdd = enabled && rows.size() < MAX_ROWS;
+        boolean canAdd = enabled && rows.size() < ConfigImportPolicy.MAX_CUSTOM_SCOPE_ENTRIES;
         addButton.setEnabled(canAdd);
         for (int i = 0; i < rows.size(); i++) {
             Row r = rows.get(i);

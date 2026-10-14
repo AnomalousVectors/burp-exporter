@@ -10,9 +10,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import javax.swing.SwingUtilities;
 
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
-import ai.anomalousvectors.tools.burp.utils.FileUtil;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.WholeFileSave;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigImportPolicy;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigJsonMapper;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigParseResult;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -88,7 +88,7 @@ public final class ConfigController implements AutoCloseable {
         this(
                 ui,
                 newExecutor(),
-                path -> ConfigJsonMapper.parse(FileUtil.readString(path)),
+                path -> ConfigJsonMapper.parse(ConfigImportPolicy.readUtf8(path)),
                 WholeFileSave::writeUtf8,
                 SearchConnectionTester::safeTestConnection);
     }

@@ -2,6 +2,9 @@ package ai.anomalousvectors.tools.burp.ui;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -14,6 +17,7 @@ import ai.anomalousvectors.tools.burp.ui.controller.ConfigController;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
 import ai.anomalousvectors.tools.burp.utils.WholeFileSave;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigJsonMapper;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigImportPolicy;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 
@@ -21,6 +25,7 @@ class ConfigControllerImportExportIT {
 
     private static final class TestUi implements ConfigController.Ui {
         volatile String control;
+        volatile ConfigState.State importedState;
         private CountDownLatch exportDone;
         private CountDownLatch importDone;
 
@@ -51,6 +56,10 @@ class ConfigControllerImportExportIT {
                     || message.contains("not recognized"))) {
                 imp.countDown();
             }
+        }
+
+        @Override public void onImportResult(ConfigState.State state) {
+            importedState = state;
         }
     }
 
@@ -150,6 +159,31 @@ class ConfigControllerImportExportIT {
             assertThat(ui.control).contains("not recognized and were skipped");
             assertThat(ui.control).contains("sinks.files.limit");
             assertThat(ui.control).contains("All other settings were applied");
+        } finally {
+            cc.close();
+        }
+    }
+
+    @Test
+    void import_oversizedFileRejectsWithoutApplyingState() throws Exception {
+        Path tmp = TestPathSupport.createFile("cc-import-oversized", ".json");
+        try (SeekableByteChannel channel = Files.newByteChannel(tmp, StandardOpenOption.WRITE)) {
+            channel.position(ConfigImportPolicy.MAX_FILE_BYTES);
+            channel.write(ByteBuffer.wrap(new byte[] {'}'}));
+        }
+
+        TestUi ui = new TestUi();
+        ConfigController cc = new ConfigController(ui);
+        CountDownLatch importDone = new CountDownLatch(1);
+        ui.setImportLatch(importDone);
+
+        try {
+            cc.importConfigAsync(tmp);
+            assertThat(importDone.await(3, TimeUnit.SECONDS)).isTrue();
+            assertThat(ui.control)
+                    .contains("Import failed:")
+                    .contains("maximum is 10485760 bytes (10 MiB)");
+            assertThat(ui.importedState).isNull();
         } finally {
             cc.close();
         }

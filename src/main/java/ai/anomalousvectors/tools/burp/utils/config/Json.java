@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.StreamReadConstraints;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -24,8 +25,7 @@ import ai.anomalousvectors.tools.burp.utils.Version;
  */
 public final class Json {
 
-    static final ObjectMapper MAPPER = new ObjectMapper()
-            .configure(SerializationFeature.INDENT_OUTPUT, true);
+    static final ObjectMapper MAPPER = createMapper();
 
     // Version is obtained strictly from the JAR manifest's Implementation-Version.
     private static final String VERSION = Version.get();
@@ -104,6 +104,15 @@ public final class Json {
             "encodedBase64");
 
     private Json() { }
+
+    private static ObjectMapper createMapper() {
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
+                .maxNestingDepth(ConfigImportPolicy.MAX_JSON_NESTING_DEPTH)
+                .maxStringLength(ConfigImportPolicy.MAX_JSON_STRING_LENGTH)
+                .build());
+        return mapper.configure(SerializationFeature.INDENT_OUTPUT, true);
+    }
 
     /** Dedicated runtime exception for config JSON errors. */
     public static final class ConfigJsonException extends RuntimeException {
@@ -826,7 +835,7 @@ public final class Json {
         return out;
     }
 
-    private static ScopeParts parseScope(JsonNode root, ConfigImportReport report) {
+    private static ScopeParts parseScope(JsonNode root, ConfigImportReport report) throws IOException {
         JsonNode scope = root.path(LIT_SCOPE);
 
         // Current representation: simple scopes as array of strings, e.g. ["all"] or ["burp"].
@@ -865,7 +874,8 @@ public final class Json {
         return new ScopeParts(LIT_CUSTOM, List.of(), null);
     }
 
-    private static ScopeParts parseCustomObject(JsonNode custom) {
+    private static ScopeParts parseCustomObject(JsonNode custom) throws IOException {
+        ConfigImportPolicy.requireCustomScopeEntryCount("scope.custom", custom.size());
         List<String> vals = new ArrayList<>();
         List<String> kindsList = new ArrayList<>();
         for (Iterator<String> it = custom.fieldNames(); it.hasNext(); ) {
@@ -882,7 +892,8 @@ public final class Json {
         return new ScopeParts(LIT_CUSTOM, vals, kindsList);
     }
 
-    private static ScopeParts parseCustomArray(JsonNode scope, JsonNode custom) {
+    private static ScopeParts parseCustomArray(JsonNode scope, JsonNode custom) throws IOException {
+        ConfigImportPolicy.requireCustomScopeEntryCount("scope.custom", custom.size());
         List<String> vals = new ArrayList<>();
         for (JsonNode n : custom) {
             if (n.isTextual()) vals.add(n.asText());
@@ -890,6 +901,9 @@ public final class Json {
 
         List<String> kindsList = null;
         JsonNode types = scope.path("customTypes");
+        if (types.isArray()) {
+            ConfigImportPolicy.requireCustomScopeEntryCount("scope.customTypes", types.size());
+        }
         if (types.isArray() && types.size() == vals.size()) {
             kindsList = new ArrayList<>(types.size());
             for (JsonNode t : types) {
