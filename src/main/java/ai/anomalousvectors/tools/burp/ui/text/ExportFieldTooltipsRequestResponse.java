@@ -8,7 +8,7 @@ final class ExportFieldTooltipsRequestResponse {
     private ExportFieldTooltipsRequestResponse() { }
     static String requestResponseNestedTooltip(String fieldKey) {
         if (fieldKey == null) {
-            return ExportFieldTooltips.genericLeafTooltip(fieldKey);
+            return ExportFieldTooltips.genericLeafTooltip("<unknown>");
         }
         if (fieldKey.startsWith("request.body.markers.")) {
             return requestMarkerFieldTooltip(fieldKey.substring("request.body.markers.".length()));

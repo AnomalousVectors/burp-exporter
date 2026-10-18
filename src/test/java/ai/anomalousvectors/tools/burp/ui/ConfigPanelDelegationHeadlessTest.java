@@ -38,9 +38,9 @@ class ConfigPanelDelegationHeadlessTest {
 
     private void setup() throws Exception {
         ui = new TestUi();
-        defaultFileRoot = TestPathSupport.defaultUiFileRoot();
+        defaultFileRoot = TestPathSupport.isolatedUiFileRoot();
         Assumptions.assumeTrue(TestPathSupport.isWritableDirectory(defaultFileRoot),
-                "Default UI file root is not writable: " + defaultFileRoot);
+                "Isolated UI file root is not writable: " + defaultFileRoot);
         TestPathSupport.cleanupExportArtifacts(defaultFileRoot);
         AtomicReference<ConfigPanel> ref = new AtomicReference<>();
         SwingUtilities.invokeAndWait(() -> {

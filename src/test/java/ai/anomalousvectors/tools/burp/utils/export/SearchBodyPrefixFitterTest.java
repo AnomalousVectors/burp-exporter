@@ -102,9 +102,7 @@ class SearchBodyPrefixFitterTest {
         Map<?, ?> fittedMeta = (Map<?, ?>) fitted.document().get("meta");
         assertThat(fittedMeta.get("search_truncated")).isEqualTo(Boolean.TRUE);
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> body = (Map<String, Object>) ((Map<String, Object>) fitted.document().get("response"))
-                .get("body");
+        Map<?, ?> body = (Map<?, ?>) ((Map<?, ?>) fitted.document().get("response")).get("body");
         assertThat(body.get("truncated")).isEqualTo(Boolean.TRUE);
         assertThat(body.get("length")).isEqualTo(originalLength);
         String b64 = (String) body.get("b64");
@@ -114,9 +112,8 @@ class SearchBodyPrefixFitterTest {
         assertThat(decodedB64).isNotNull();
         assertThat(decodedB64.length())
                 .isLessThan(Base64.getEncoder().encodeToString(new byte[wireBytes]).length());
-        @SuppressWarnings("unchecked")
-        Map<String, Object> originalBody =
-                (Map<String, Object>) ((Map<String, Object>) prepared.document().get("response")).get("body");
+        Map<?, ?> originalBody =
+                (Map<?, ?>) ((Map<?, ?>) prepared.document().get("response")).get("body");
         assertThat(originalBody.get("truncated")).isNull();
     }
 
@@ -138,8 +135,7 @@ class SearchBodyPrefixFitterTest {
         PreparedExportDocument fitted = SearchBodyPrefixFitter.fitToLiveBudget(prepared);
         assertThat(SearchBodyPrefixFitter.didTruncate(prepared, fitted)).isTrue();
         assertThat(fitted.resolvedBulkBytes()).isLessThanOrEqualTo(ceiling);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> fittedIssue = (Map<String, Object>) fitted.document().get("issue");
+        Map<?, ?> fittedIssue = (Map<?, ?>) fitted.document().get("issue");
         assertThat(((String) fittedIssue.get("description")).length()).isLessThan((int) ceiling + 64);
     }
 
@@ -165,11 +161,10 @@ class SearchBodyPrefixFitterTest {
 
         PreparedExportDocument fitted = SearchBodyPrefixFitter.fitToLiveBudget(prepared);
         assertThat(fitted.resolvedBulkBytes()).isLessThanOrEqualTo(ceiling);
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> headers =
-                (List<Map<String, Object>>) ((Map<String, Object>) fitted.document().get("request")).get("headers");
-        assertThat(headers.get(0).get("truncated")).isEqualTo(Boolean.TRUE);
-        assertThat(((String) headers.get(0).get("value")).length()).isLessThan((int) ceiling);
+        List<?> headers = (List<?>) ((Map<?, ?>) fitted.document().get("request")).get("headers");
+        Map<?, ?> fittedHeader = (Map<?, ?>) headers.get(0);
+        assertThat(fittedHeader.get("truncated")).isEqualTo(Boolean.TRUE);
+        assertThat(((String) fittedHeader.get("value")).length()).isLessThan((int) ceiling);
     }
 
     @Test
@@ -204,11 +199,10 @@ class SearchBodyPrefixFitterTest {
 
         PreparedExportDocument fitted = SearchBodyPrefixFitter.fitToLiveBudget(prepared);
         assertThat(fitted.resolvedBulkBytes()).isLessThanOrEqualTo(ceiling);
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> rr = (List<Map<String, Object>>) fitted.document().get("requests_responses");
-        @SuppressWarnings("unchecked")
-        Map<String, Object> fittedBody =
-                (Map<String, Object>) ((Map<String, Object>) rr.get(0).get("response")).get("body");
+        List<?> rr = (List<?>) fitted.document().get("requests_responses");
+        Map<?, ?> fittedPair = (Map<?, ?>) rr.get(0);
+        Map<?, ?> fittedBody =
+                (Map<?, ?>) ((Map<?, ?>) fittedPair.get("response")).get("body");
         assertThat(fittedBody.get("truncated")).isEqualTo(Boolean.TRUE);
     }
 

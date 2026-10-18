@@ -136,7 +136,8 @@ public final class ManagedStorageQuota {
             long delta,
             long maximumBytes) throws IOException {
         Path quota = quotaPath(category, projectId);
-        try (FileChannel channel = openQuotaFile(quota); FileLock ignored = acquireQuotaLock(channel)) {
+        try (FileChannel channel = openQuotaFile(quota); FileLock quotaLock = acquireQuotaLock(channel)) {
+            requireValidLock(quotaLock);
             long current = readUsage(channel);
             long next;
             try {
@@ -155,8 +156,15 @@ public final class ManagedStorageQuota {
 
     private static void reset(String projectId, Category category) throws IOException {
         Path quota = quotaPath(category, projectId);
-        try (FileChannel channel = openQuotaFile(quota); FileLock ignored = acquireQuotaLock(channel)) {
+        try (FileChannel channel = openQuotaFile(quota); FileLock quotaLock = acquireQuotaLock(channel)) {
+            requireValidLock(quotaLock);
             writeUsage(channel, 0L);
+        }
+    }
+
+    private static void requireValidLock(FileLock lock) throws IOException {
+        if (!lock.isValid()) {
+            throw new IOException("Managed-storage quota lock became invalid before update.");
         }
     }
 
@@ -165,7 +173,11 @@ public final class ManagedStorageQuota {
         if (Files.isDirectory(quotas, LinkOption.NOFOLLOW_LINKS)) {
             try (DirectoryStream<Path> quotaFiles = Files.newDirectoryStream(quotas, "*.quota")) {
                 for (Path quota : quotaFiles) {
-                    String name = quota.getFileName().toString();
+                    Path fileName = quota.getFileName();
+                    if (fileName == null) {
+                        continue;
+                    }
+                    String name = fileName.toString();
                     for (Category category : Category.values()) {
                         String suffix = "." + category.quotaName + ".quota";
                         if (name.endsWith(suffix)) {
@@ -192,8 +204,12 @@ public final class ManagedStorageQuota {
                     for (Path project : projectStream) {
                         if (Files.isDirectory(project, LinkOption.NOFOLLOW_LINKS)
                                 && !Files.isSymbolicLink(project)) {
+                            Path fileName = project.getFileName();
+                            if (fileName == null) {
+                                continue;
+                            }
                             projects.add(ManagedDiskPaths.sanitizeProjectId(
-                                    project.getFileName().toString()));
+                                    fileName.toString()));
                         }
                     }
                 }
@@ -204,8 +220,10 @@ public final class ManagedStorageQuota {
 
     private static void validateProjectDirectory(Path directory, String projectId) throws IOException {
         Path projectDirectory = directory.toAbsolutePath().normalize().getParent();
+        Path projectDirectoryName = projectDirectory == null ? null : projectDirectory.getFileName();
         if (projectDirectory == null
-                || !projectId.equals(projectDirectory.getFileName().toString())) {
+                || projectDirectoryName == null
+                || !projectId.equals(projectDirectoryName.toString())) {
             throw new IOException("Managed-storage directory does not match its Burp project.");
         }
     }

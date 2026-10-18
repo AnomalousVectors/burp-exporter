@@ -90,7 +90,7 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
  * A deserialized panel must not be attached to a display hierarchy; construct a new panel for
  * continued use.</p>
  */
-public class StatsPanel extends JPanel {
+public final class StatsPanel extends JPanel {
     @Serial private static final long serialVersionUID = 1L;
 
     private static final String[] CHART_STYLE_NAMES = { "Simple", "Smooth", "Accessible" };
@@ -453,15 +453,15 @@ public class StatsPanel extends JPanel {
     private final JPanel cardsRow;
     private final JPanel lowerPanel;
     private final JPanel miscStatsCard;
-    private final Map<String, List<Component>> miscSectionComponents;
-    private final Map<String, TimeSeries> docsSeriesByIndex = new HashMap<>();
-    private final Map<String, TimeSeries> kibSeriesByIndex = new HashMap<>();
-    private final Map<String, TimeSeries> fileDocsSeriesByIndex = new HashMap<>();
-    private final Map<String, TimeSeries> fileKibSeriesByIndex = new HashMap<>();
-    private final Map<String, Long> previousSuccessByIndex = new HashMap<>();
-    private final Map<String, Long> previousBytesByIndex = new HashMap<>();
-    private final Map<String, Long> previousFileSuccessByIndex = new HashMap<>();
-    private final Map<String, Long> previousFileBytesByIndex = new HashMap<>();
+    private final HashMap<String, List<Component>> miscSectionComponents;
+    private final HashMap<String, TimeSeries> docsSeriesByIndex = new HashMap<>();
+    private final HashMap<String, TimeSeries> kibSeriesByIndex = new HashMap<>();
+    private final HashMap<String, TimeSeries> fileDocsSeriesByIndex = new HashMap<>();
+    private final HashMap<String, TimeSeries> fileKibSeriesByIndex = new HashMap<>();
+    private final HashMap<String, Long> previousSuccessByIndex = new HashMap<>();
+    private final HashMap<String, Long> previousBytesByIndex = new HashMap<>();
+    private final HashMap<String, Long> previousFileSuccessByIndex = new HashMap<>();
+    private final HashMap<String, Long> previousFileBytesByIndex = new HashMap<>();
     private long lastLoggedToolSourceFallbacks = -1;
     private long firstSampleAtMs = -1;
     private long previousSampleAtMs = -1;
@@ -600,7 +600,7 @@ public class StatsPanel extends JPanel {
         ));
         miscStatsCard = miscState.card();
         miscStatsCard.setName("miscStatsCard");
-        miscSectionComponents = miscState.sections();
+        miscSectionComponents = new HashMap<>(miscState.sections());
         final Map<String, JLabel> miscValues = miscState.values();
         exportRunningValue = miscValues.get("Export Running");
         softOutageValue = miscValues.get("Soft Outage");

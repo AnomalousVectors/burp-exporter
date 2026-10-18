@@ -34,6 +34,8 @@ import burp.api.montoya.core.ToolType;
  * Multi-method lifecycle sequences still require the caller to preserve the documented order.</p>
  */
 public final class RuntimeConfig {
+    /** Serializes transitions that replace the active export-run generation and related flags. */
+    private static final Object EXPORT_RUN_TRANSITION_LOCK = new Object();
     private static volatile ConfigState.State state = defaultState();
     private static volatile boolean exportRunning = false;
     private static volatile boolean exportStarting = false;
@@ -264,31 +266,33 @@ public final class RuntimeConfig {
      *
      * @param running new running state
      */
-    public static synchronized void setExportRunning(boolean running) {
-        boolean wasRunning = exportRunning;
-        if (!running) {
-            invalidateExportRun();
-            exportRunning = false;
-            exportStarting = false;
-            fileExportDisabledForCurrentRun = false;
-            databaseDisabledForCurrentRun = false;
-            searchRecoveryReplay = false;
-            if (!exportStopping) {
+    public static void setExportRunning(boolean running) {
+        synchronized (EXPORT_RUN_TRANSITION_LOCK) {
+            boolean wasRunning = exportRunning;
+            if (!running) {
+                invalidateExportRun();
+                exportRunning = false;
+                exportStarting = false;
+                fileExportDisabledForCurrentRun = false;
+                databaseDisabledForCurrentRun = false;
+                searchRecoveryReplay = false;
+                if (!exportStopping) {
+                    clearExportStopForceAbort();
+                    clearResolvedIndexNamesForCurrentRun();
+                }
+            } else if (!wasRunning) {
+                activeExportRun.set(new ExportRunToken(exportRunGeneration.incrementAndGet()));
+                exportRunning = true;
+                fileExportDisabledForCurrentRun = false;
+                databaseDisabledForCurrentRun = false;
+                searchRecoveryReplay = false;
+                retainSearchStatsVisibility = false;
                 clearExportStopForceAbort();
-                clearResolvedIndexNamesForCurrentRun();
+            } else {
+                exportRunning = true;
             }
-        } else if (!wasRunning) {
-            activeExportRun.set(new ExportRunToken(exportRunGeneration.incrementAndGet()));
-            exportRunning = true;
-            fileExportDisabledForCurrentRun = false;
-            databaseDisabledForCurrentRun = false;
-            searchRecoveryReplay = false;
-            retainSearchStatsVisibility = false;
-            clearExportStopForceAbort();
-        } else {
-            exportRunning = true;
+            refreshTrafficExportGate();
         }
-        refreshTrafficExportGate();
     }
 
     /**
@@ -297,19 +301,21 @@ public final class RuntimeConfig {
      * <p>Production lifecycle code must use {@link #setExportRunning(boolean)} and
      * {@link #invalidateExportRun()} instead.</p>
      */
-    public static synchronized void resetExportRunForTests() {
-        exportRunning = false;
-        exportStarting = false;
-        exportStopping = false;
-        searchRecoveryReplay = false;
-        activeExportRun.set(ExportRunToken.invalid());
-        lastInvalidatedExportRun.set(ExportRunToken.invalid());
-        exportRunGeneration.set(0L);
-        exportStopForceAbort.set(false);
-        exportStopWorker.set(null);
-        exportStopDeadlineNanos.set(0L);
-        clearResolvedIndexNamesForCurrentRun();
-        refreshTrafficExportGate();
+    public static void resetExportRunForTests() {
+        synchronized (EXPORT_RUN_TRANSITION_LOCK) {
+            exportRunning = false;
+            exportStarting = false;
+            exportStopping = false;
+            searchRecoveryReplay = false;
+            activeExportRun.set(ExportRunToken.invalid());
+            lastInvalidatedExportRun.set(ExportRunToken.invalid());
+            exportRunGeneration.set(0L);
+            exportStopForceAbort.set(false);
+            exportStopWorker.set(null);
+            exportStopDeadlineNanos.set(0L);
+            clearResolvedIndexNamesForCurrentRun();
+            refreshTrafficExportGate();
+        }
     }
 
     /**

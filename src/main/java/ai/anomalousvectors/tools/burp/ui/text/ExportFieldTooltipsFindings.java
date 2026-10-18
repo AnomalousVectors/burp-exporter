@@ -87,7 +87,7 @@ final class ExportFieldTooltipsFindings {
 
     static String findingsTooltipByPattern(String fieldKey) {
         if (fieldKey == null) {
-            return ExportFieldTooltips.genericLeafTooltip(fieldKey);
+            return ExportFieldTooltips.genericLeafTooltip("<unknown>");
         }
         if (fieldKey.startsWith("requests_responses.burp.")) {
             return findingsPairBurpTooltip(fieldKey.substring("requests_responses.burp.".length()));

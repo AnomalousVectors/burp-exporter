@@ -1,6 +1,7 @@
 package ai.anomalousvectors.tools.burp.utils;
 
 import java.io.IOException;
+import java.io.Serial;
 import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -60,6 +61,8 @@ public final class DiskSpaceGuard {
      * summary that callers should prefer for UI status text.</p>
      */
     public static final class LowDiskSpaceException extends IOException {
+        @Serial private static final long serialVersionUID = 1L;
+
         private final String userMessage;
 
         /**
@@ -248,7 +251,8 @@ public final class DiskSpaceGuard {
             return ManagedDiskPaths.managedRootDirectory();
         }
         Path normalized = target.toAbsolutePath().normalize();
-        String fileName = normalized.getFileName() == null ? "" : normalized.getFileName().toString();
+        Path name = normalized.getFileName();
+        String fileName = name == null ? "" : name.toString();
         return fileName.contains(".") ? normalized.getParent() : normalized;
     }
 

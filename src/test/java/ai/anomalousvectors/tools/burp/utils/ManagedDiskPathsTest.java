@@ -16,11 +16,14 @@ import java.nio.file.attribute.PosixFileAttributeView;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.UserPrincipal;
 import java.util.EnumSet;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
+import ai.anomalousvectors.tools.burp.testutils.Reflect;
+import ai.anomalousvectors.tools.burp.Exporter;
 
 /** Tests protected-root validation, permissions, cleanup, and live-instance ownership. */
 class ManagedDiskPathsTest {
@@ -44,7 +47,8 @@ class ManagedDiskPathsTest {
         Path spill = ManagedDiskPaths.ensureManagedDirectory(ManagedDiskPaths.spillDirectory());
         Path sensitiveFile = FileUtil.writeTempFile("managed-storage-", ".tmp", "sensitive");
 
-        assertThat(cleanup.filesDeleted()).isGreaterThanOrEqualTo(2L);
+        assertThat(cleanup.entriesDeleted()).isEqualTo(2L);
+        assertThat(cleanup.bytesDeleted()).isEqualTo(9L);
         assertThat(testRoot.resolve("spill")).doesNotExist();
         assertThat(spill).isDirectory();
         assertThat(Files.isSymbolicLink(spill)).isFalse();
@@ -70,7 +74,8 @@ class ManagedDiskPathsTest {
 
         try (FileChannel channel = FileChannel.open(
                 activeOwner, StandardOpenOption.READ, StandardOpenOption.WRITE);
-                FileLock ignored = channel.lock()) {
+                FileLock lock = channel.lock()) {
+            assertThat(lock.isValid()).isTrue();
             ManagedDiskPaths.setManagedRootForTests(testRoot);
             ManagedDiskPaths.CleanupResult cleanup = ManagedDiskPaths.initialize();
 
@@ -79,6 +84,74 @@ class ManagedDiskPathsTest {
             assertThat(cleanup.activeInstancesSkipped()).isEqualTo(1L);
             assertThat(cleanup.complete()).isTrue();
         }
+    }
+
+    @Test
+    void closeInstance_removesOwnedTreeAndReinitializeFindsNoAbandonedEntries() throws Exception {
+        testRoot = TestPathSupport.createDirectory("managed-close-parent").resolve("managed");
+        ManagedDiskPaths.setManagedRootForTests(testRoot);
+        ManagedDiskPaths.initialize();
+        Path spill = ManagedDiskPaths.ensureManagedDirectory(ManagedDiskPaths.spillDirectory());
+        ManagedDiskPaths.ensureManagedDirectory(ManagedDiskPaths.proxyCorrelationDirectory());
+        Path temporaryFile = FileUtil.writeTempFile("managed-close-", ".tmp", "sensitive");
+        Path instance = spill.getParent().getParent().getParent();
+
+        ManagedDiskPaths.CleanupResult cleanup = ManagedDiskPaths.closeInstance();
+
+        assertThat(cleanup.complete()).isTrue();
+        assertThat(cleanup.entriesDeleted()).isEqualTo(8L);
+        assertThat(cleanup.bytesDeleted()).isEqualTo(9L);
+        assertThat(instance).doesNotExist();
+        assertThat(temporaryFile).doesNotExist();
+        ManagedDiskPaths.CleanupResult nextLoad = ManagedDiskPaths.initialize();
+        assertThat(nextLoad.entriesDeleted()).isZero();
+        assertThat(nextLoad.bytesDeleted()).isZero();
+        assertThat(nextLoad.complete()).isTrue();
+        assertThat(ManagedDiskPaths.closeInstance().complete()).isTrue();
+        assertThat(ManagedDiskPaths.closeInstance().entriesDeleted()).isZero();
+    }
+
+    @Test
+    void startupCleanup_reportsEmptyStructureAtDebugWithoutClaimingDiscardedData() throws Exception {
+        testRoot = TestPathSupport.createDirectory("managed-empty-parent").resolve("managed");
+        Path abandoned = Files.createDirectories(testRoot.resolve("instances/abandoned/empty"));
+        Files.write(abandoned.getParent().resolve(".owner.lock"), new byte[0]);
+        ManagedDiskPaths.setManagedRootForTests(testRoot);
+        var messages = new CopyOnWriteArrayList<String>();
+        Logger.LogListener listener = (level, message) -> messages.add(level + " " + message);
+        Logger.registerListener(listener);
+        try {
+            Reflect.callStatic(Exporter.class, "initializeManagedStorage");
+            assertThat(messages).contains(
+                    "DEBUG [ManagedStorage] Removed 3 empty temporary filesystem entries "
+                            + "(directories/zero-byte files); no file-content bytes were discarded.");
+            assertThat(messages).noneMatch(message -> message.startsWith("INFO [ManagedStorage]"));
+        } finally {
+            Logger.unregisterListener(listener);
+        }
+        assertThat(abandoned.getParent()).doesNotExist();
+    }
+
+    @Test
+    void startupCleanup_keepsDiscardedFileContentsVisibleAtInfo() throws Exception {
+        testRoot = TestPathSupport.createDirectory("managed-data-parent").resolve("managed");
+        Path abandoned = Files.createDirectories(testRoot.resolve("instances/abandoned"));
+        Files.write(abandoned.resolve(".owner.lock"), new byte[0]);
+        Files.writeString(abandoned.resolve("pending.json"), "sensitive");
+        ManagedDiskPaths.setManagedRootForTests(testRoot);
+        var messages = new CopyOnWriteArrayList<String>();
+        Logger.LogListener listener = (level, message) -> messages.add(level + " " + message);
+        Logger.registerListener(listener);
+        try {
+            Reflect.callStatic(Exporter.class, "initializeManagedStorage");
+            assertThat(messages).contains(
+                    "INFO [ManagedStorage] Discarded abandoned temporary file contents: 9 bytes; "
+                            + "removed 3 filesystem entries (including directories and lock files). "
+                            + "Unfinished export state is not replayed.");
+        } finally {
+            Logger.unregisterListener(listener);
+        }
+        assertThat(abandoned).doesNotExist();
     }
 
     @Test

@@ -16,11 +16,13 @@ class OfferedLoadGovernorTest {
         Fixture fixture = new Fixture();
         OfferedLoadGovernor governor = fixture.governor();
 
-        try (OfferedLoadGovernor.Permit ignored =
-                governor.acquirePermit(OfferedLoadGovernor.INITIAL_BYTES_PER_SECOND)) {
+        OfferedLoadGovernor.Permit initial =
+                governor.acquirePermit(OfferedLoadGovernor.INITIAL_BYTES_PER_SECOND);
+        try (initial) {
             assertThat(fixture.now.get()).isZero();
         }
-        try (OfferedLoadGovernor.Permit ignored = governor.acquirePermit(64L * 1024L)) {
+        OfferedLoadGovernor.Permit next = governor.acquirePermit(64L * 1024L);
+        try (next) {
             assertThat(fixture.now.get()).isEqualTo(TimeUnit.SECONDS.toNanos(1L));
         }
     }
@@ -140,8 +142,9 @@ class OfferedLoadGovernorTest {
         fixture.stop.set(true);
         long before = fixture.now.get();
 
-        try (OfferedLoadGovernor.Permit ignored =
-                governor.acquirePermit(OfferedLoadGovernor.INITIAL_BYTES_PER_SECOND)) {
+        OfferedLoadGovernor.Permit stopped =
+                governor.acquirePermit(OfferedLoadGovernor.INITIAL_BYTES_PER_SECOND);
+        try (stopped) {
             assertThat(fixture.now.get()).isEqualTo(before);
             assertThat(fixture.parkCalls.get()).isZero();
         } finally {

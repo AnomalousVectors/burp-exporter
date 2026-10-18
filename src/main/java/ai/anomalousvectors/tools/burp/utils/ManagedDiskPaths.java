@@ -356,8 +356,12 @@ public final class ManagedDiskPaths {
     }
 
     private static void createPrivateDirectory(Path directory) throws IOException {
+        Path parent = directory.getParent();
+        if (parent == null) {
+            throw new IOException("Managed directory has no parent: " + directory);
+        }
         PosixFileAttributeView posix = Files.getFileAttributeView(
-                directory.getParent(), PosixFileAttributeView.class);
+                parent, PosixFileAttributeView.class);
         if (posix != null) {
             FileAttribute<Set<PosixFilePermission>> permissions =
                     PosixFilePermissions.asFileAttribute(PRIVATE_DIRECTORY_PERMISSIONS);
@@ -391,7 +395,10 @@ public final class ManagedDiskPaths {
     private static CleanupResult cleanupAbandonedStorageLocked(InstanceLease lease) throws IOException {
         Path cleanupLockPath = lease.root().resolve(CLEANUP_LOCK_NAME);
         FileChannel cleanupChannel = openSharedLockFile(cleanupLockPath);
-        try (cleanupChannel; FileLock ignored = acquireCleanupLock(cleanupChannel)) {
+        try (cleanupChannel; FileLock cleanupLock = acquireCleanupLock(cleanupChannel)) {
+            if (!cleanupLock.isValid()) {
+                throw new IOException("Managed-storage cleanup lock became invalid before cleanup.");
+            }
             CleanupResult result = cleanupLegacyLayout(lease.root());
             try (DirectoryStream<Path> stream = Files.newDirectoryStream(lease.instancesDirectory())) {
                 for (Path candidate : stream) {
@@ -614,9 +621,16 @@ public final class ManagedDiskPaths {
         }
     }
 
-    /** Startup or unload cleanup accounting. */
+    /**
+     * Startup or unload cleanup accounting.
+     *
+     * @param entriesDeleted removed filesystem entries, including directories and owner-lock files
+     * @param bytesDeleted removed file-content bytes; directories contribute zero
+     * @param failures entries or cleanup operations that could not be completed
+     * @param activeInstancesSkipped instance trees preserved because their owner locks are held
+     */
     public record CleanupResult(
-            long filesDeleted,
+            long entriesDeleted,
             long bytesDeleted,
             long failures,
             long activeInstancesSkipped) {
@@ -635,7 +649,7 @@ public final class ManagedDiskPaths {
 
         CleanupResult plus(CleanupResult other) {
             return new CleanupResult(
-                    filesDeleted + other.filesDeleted,
+                    entriesDeleted + other.entriesDeleted,
                     bytesDeleted + other.bytesDeleted,
                     failures + other.failures,
                     activeInstancesSkipped + other.activeInstancesSkipped);
@@ -657,14 +671,14 @@ public final class ManagedDiskPaths {
             FileLock ownerLock) { }
 
     private static final class MutableCleanup {
-        private long filesDeleted;
+        private long entriesDeleted;
         private long bytesDeleted;
         private long failures;
 
         private void recordDelete(Path path, long bytes) {
             try {
                 if (Files.deleteIfExists(path)) {
-                    filesDeleted++;
+                    entriesDeleted++;
                     bytesDeleted += Math.max(0L, bytes);
                 }
             } catch (IOException | RuntimeException e) {
@@ -673,7 +687,7 @@ public final class ManagedDiskPaths {
         }
 
         private CleanupResult result() {
-            return new CleanupResult(filesDeleted, bytesDeleted, failures, 0L);
+            return new CleanupResult(entriesDeleted, bytesDeleted, failures, 0L);
         }
     }
 }

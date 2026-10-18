@@ -74,7 +74,7 @@ import net.miginfocom.swing.MigLayout;
  * <p><strong>Threading:</strong> All UI mutations occur on the EDT. Logger coalesces, bounds, and
  * time-slices callbacks so sustained logging cannot monopolize Swing event delivery.</p>
  */
-public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
+public final class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -125,7 +125,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
     // Search state and highlighting
     private final transient HighlighterManager highlighterManager;
-    private List<int[]> matches = List.of(); // [start, end]
+    private ArrayList<int[]> matches = new ArrayList<>(); // [start, end]
     private int matchIndex = -1;
 
     // Persistence
@@ -408,7 +408,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
             renderedAggregates.clear();
             viewDirty = false;
             clearSearchHighlights();
-            matches = List.of();
+            matches = new ArrayList<>();
             matchIndex = -1;
             updateMatchCount();
             Logger.internalTrace("LogPanel: cleared, matches reset");
@@ -986,7 +986,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
         if (q == null || q.isEmpty()) {
             searchRecomputeTimer.stop();
             clearSearchHighlights();
-            matches = List.of();
+            matches = new ArrayList<>();
             updateMatchCount();
             return;
         }
@@ -1009,7 +1009,7 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
 
         final String q = searchField.getText();
         if (q == null || q.isEmpty()) {
-            matches = List.of();
+            matches = new ArrayList<>();
             updateMatchCount();
             return;
         }
@@ -1019,13 +1019,13 @@ public class LogPanel extends JPanel implements Logger.ReplayableLogListener {
             final TextQuery tq = new TextQuery(
                     q, searchCaseToggle.isSelected(), searchRegexToggle.isSelected(), true
             );
-            matches = TextSearchEngine.findAll(hay, tq);
+            matches = new ArrayList<>(TextSearchEngine.findAll(hay, tq));
             highlighterManager.apply(matches);
             Logger.internalTrace(
-                    "LogPanel highlight recompute, matches=" + (matches == null ? 0 : matches.size())
+                    "LogPanel highlight recompute, matches=" + matches.size()
             );
         } catch (BadLocationException | RuntimeException ex) {
-            matches = List.of();
+            matches = new ArrayList<>();
             Logger.internalDebug("LogPanel highlight recompute failed: " + ex);
         }
         updateMatchCount();

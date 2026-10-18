@@ -526,7 +526,8 @@ class FileExportServiceTest {
                             lockPath,
                             StandardOpenOption.CREATE,
                             StandardOpenOption.WRITE);
-                    FileLock ignored = channel.lock()) {
+                    FileLock lock = channel.lock()) {
+                assertThat(lock.isValid()).isTrue();
                 List<FileExportService.FileInitResult> results =
                         FileExportService.createSelectedExportFiles(List.of(ConfigKeys.SRC_TRAFFIC));
 

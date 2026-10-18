@@ -27,6 +27,8 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -209,6 +211,38 @@ class ChunkedBulkSenderTest {
 
         assertThat(capturedDocumentsForFileEmit(harness.stream())).hasSize(1);
         assertThat(queue).containsExactly(secondEntry);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, false", "true, true", "true, false"})
+    void ndjsonQueueInputStream_leavesSizeCappedDocQueued_whenProducerFillsFreedSlots(
+            boolean running, boolean starting) throws Exception {
+        ConfigState.State previousState = RuntimeConfig.getState();
+        boolean previousRunning = RuntimeConfig.isExportRunning();
+        boolean previousStarting = RuntimeConfig.isExportStarting();
+        try {
+            RuntimeConfig.updateState(stateWithOpenSearchCreds("", ""));
+            RuntimeConfig.setExportRunning(running);
+            RuntimeConfig.setExportStarting(starting);
+            TrafficQueueEntry firstEntry = TrafficQueueEntry.from(trafficDoc("Proxy"));
+            TrafficQueueEntry secondEntry = TrafficQueueEntry.from(trafficDoc("Proxy"));
+            TrafficQueueEntry producerEntry = TrafficQueueEntry.from(trafficDoc("Proxy"));
+            PollRefillQueue queue = new PollRefillQueue(producerEntry);
+            queue.offer(secondEntry);
+            long maxBytes = firstEntry.prepared().resolvedBulkBytes() + 1L;
+            StreamHarness harness = newStreamHarness(
+                    queue, firstEntry, 10, maxBytes, TimeUnit.SECONDS.toNanos(1));
+
+            harness.stream().readAllBytes();
+
+            assertThat(capturedDocumentsForFileEmit(harness.stream())).singleElement().isSameAs(firstEntry.prepared());
+            assertThat(queue).containsExactly(secondEntry);
+            assertThat(queue.pollWasCalled()).isFalse();
+        } finally {
+            RuntimeConfig.setExportRunning(previousRunning);
+            RuntimeConfig.setExportStarting(previousStarting);
+            RuntimeConfig.updateState(previousState);
+        }
     }
 
     @Test
@@ -395,5 +429,32 @@ class ChunkedBulkSenderTest {
             InputStream stream,
             AtomicInteger attempted,
             AtomicLong attemptedBytes) {
+    }
+
+    /** Simulates a producer claiming a slot immediately after the drain removes an entry. */
+    private static final class PollRefillQueue extends LinkedBlockingQueue<TrafficQueueEntry> {
+        private static final long serialVersionUID = 1L;
+
+        private final transient TrafficQueueEntry producerEntry;
+        private boolean pollCalled;
+
+        private PollRefillQueue(TrafficQueueEntry producerEntry) {
+            super(1);
+            this.producerEntry = producerEntry;
+        }
+
+        @Override
+        public TrafficQueueEntry poll() {
+            pollCalled = true;
+            TrafficQueueEntry entry = super.poll();
+            if (entry != null) {
+                super.offer(producerEntry);
+            }
+            return entry;
+        }
+
+        private boolean pollWasCalled() {
+            return pollCalled;
+        }
     }
 }

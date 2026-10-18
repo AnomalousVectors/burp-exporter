@@ -30,7 +30,7 @@ class ExportRunContextTest {
         RuntimeConfig.setExportRunning(false);
         RuntimeConfig.setExportRunning(true);
 
-        BatchSizeController batchController = new BatchSizeController();
+        BatchSizeController batchController = BatchSizeController.isolatedController();
         int batchBefore = batchController.getCurrentBatchSize();
         BulkByteBudget.resetForStart();
         long bytesBefore = BulkByteBudget.currentMaxBytes();

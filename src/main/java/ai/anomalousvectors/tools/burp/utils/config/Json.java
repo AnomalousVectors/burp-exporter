@@ -1,6 +1,7 @@
 package ai.anomalousvectors.tools.burp.utils.config;
 
 import java.io.IOException;
+import java.io.Serial;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
@@ -116,6 +117,8 @@ public final class Json {
 
     /** Dedicated runtime exception for config JSON errors. */
     public static final class ConfigJsonException extends RuntimeException {
+        @Serial private static final long serialVersionUID = 1L;
+
         /**
          * Creates a config JSON exception with its serialization cause.
          *

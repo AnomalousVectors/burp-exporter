@@ -1,7 +1,9 @@
 package ai.anomalousvectors.tools.burp.ui.primitives;
 
-import javax.swing.JSeparator;
 import java.awt.Dimension;
+import java.io.Serial;
+
+import javax.swing.JSeparator;
 
 /**
  * 2px high separator for denser visual grouping.
@@ -9,6 +11,8 @@ import java.awt.Dimension;
  * <p>EDT: used as a standard Swing component.</p>
  */
 public final class ThickSeparator extends JSeparator {
+
+    @Serial private static final long serialVersionUID = 1L;
 
     @Override
     public Dimension getPreferredSize() {

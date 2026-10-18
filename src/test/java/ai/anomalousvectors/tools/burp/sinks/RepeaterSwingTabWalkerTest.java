@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.GridLayout;
+import java.io.Serial;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -264,6 +265,8 @@ class RepeaterSwingTabWalkerTest {
             Component repeaterRoot) { }
 
     private static final class FailingTabbedPane extends JTabbedPane {
+        @Serial private static final long serialVersionUID = 1L;
+
         private int failBeforeIndex = -1;
         private int failAfterIndex = -1;
 

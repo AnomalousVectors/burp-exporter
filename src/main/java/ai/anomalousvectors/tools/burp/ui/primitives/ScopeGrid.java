@@ -1,5 +1,7 @@
 package ai.anomalousvectors.tools.burp.ui.primitives;
 
+import java.io.IOException;
+import java.io.ObjectInputStream;
 import java.io.Serial;
 import java.io.Serializable;
 import java.util.ArrayList;
@@ -28,7 +30,7 @@ import net.miginfocom.swing.MigLayout;
  *
  * <p><strong>EDT:</strong> Public mutators expect to be called on the EDT.</p>
  */
-public class ScopeGrid extends JPanel {
+public final class ScopeGrid extends JPanel {
 
     @Serial private static final long serialVersionUID = 1L;
 
@@ -47,7 +49,7 @@ public class ScopeGrid extends JPanel {
         @Serial private static final long serialVersionUID = 1L;
     }
 
-    private final List<Row> rows = new ArrayList<>();
+    private final ArrayList<Row> rows = new ArrayList<>();
     private final JButton addButton = new Tooltips.HtmlButton("Add");
 
     /**
@@ -60,6 +62,8 @@ public class ScopeGrid extends JPanel {
      * Not serialized; set after construction by the owning panel.
      */
     private transient Runnable onContentChange;
+    /** Rebuilds non-serializable row listeners before a restored grid becomes displayable. */
+    private transient boolean rebuildAfterDeserialization;
 
     /**
      * Constructs the grid with optional seed entries.
@@ -82,6 +86,13 @@ public class ScopeGrid extends JPanel {
         addButton.setName("scope.custom.add");
         ButtonStyles.normalize(addButton);
         Tooltips.apply(addButton, TIP_ADD_ROW);
+        bindAddAction();
+
+        rebuild();
+    }
+
+    /** Wires the transient Add action after construction or deserialization. */
+    private void bindAddAction() {
         addButton.addActionListener(e -> {
             if (rows.size() < ConfigImportPolicy.MAX_CUSTOM_SCOPE_ENTRIES) {
                 rows.add(new Row("", true)); // new rows default to regex ON
@@ -90,7 +101,6 @@ public class ScopeGrid extends JPanel {
             // No else: silently ignore beyond cap (button is disabled anyway when at cap)
         });
 
-        rebuild();
     }
 
     /**
@@ -165,6 +175,21 @@ public class ScopeGrid extends JPanel {
      */
     public void setOnContentChange(Runnable runnable) {
         this.onContentChange = runnable;
+    }
+
+    /**
+     * Restores Add and row action listeners before a deserialized grid is attached to Swing.
+     *
+     * <p>Caller must invoke on the EDT. Each restored grid is rewired only once.</p>
+     */
+    @Override
+    public void addNotify() {
+        if (rebuildAfterDeserialization) {
+            rebuildAfterDeserialization = false;
+            bindAddAction();
+            rebuild();
+        }
+        super.addNotify();
     }
 
     private void fireContentChange() {
@@ -258,7 +283,7 @@ public class ScopeGrid extends JPanel {
         private final JCheckBox  toggle = new Tooltips.HtmlCheckBox(".*");
         private final JLabel     indicator = new Tooltips.HtmlLabel(""); // ✓ / ✖ glyph
         private final JButton    delete = new Tooltips.HtmlButton("Delete");
-        private final transient AutoCloseable binding;
+        private transient AutoCloseable binding;
         private boolean deleteBound;
         private boolean contentChangeListenerAttached;
 
@@ -273,6 +298,15 @@ public class ScopeGrid extends JPanel {
             toggle.setSelected(isRegex);
             ButtonStyles.normalize(delete);
             binding = RegexIndicatorBinder.bind(field, toggle, null, false, indicator);
+        }
+
+        /** Recreates the regex binding and lets the owning grid restore row action listeners. */
+        @Serial
+        private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+            in.defaultReadObject();
+            binding = RegexIndicatorBinder.bind(field, toggle, null, false, indicator);
+            deleteBound = false;
+            contentChangeListenerAttached = false;
         }
 
         /**
@@ -329,5 +363,12 @@ public class ScopeGrid extends JPanel {
                 onDelete.run();
             });
         }
+    }
+
+    /** Marks row action listeners for restoration when this grid next joins a display hierarchy. */
+    @Serial
+    private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
+        in.defaultReadObject();
+        rebuildAfterDeserialization = true;
     }
 }

@@ -363,9 +363,6 @@ public final class FindingsIndexReporter {
                         return null;
                     }
                     Map<String, Object> doc = buildFindingDoc(work.issue(), work.burpInScope());
-                    if (doc == null) {
-                        return null;
-                    }
                     return ExportDocumentIdentity.prepare(indexName, "findings", doc);
                 },
                 (chunk, outcome, nextChunkTarget) ->
@@ -549,9 +546,6 @@ public final class FindingsIndexReporter {
                         return null;
                     }
                     Map<String, Object> doc = buildFindingDoc(work.issue(), work.burpInScope());
-                    if (doc == null) {
-                        return null;
-                    }
                     return ExportDocumentIdentity.prepare(indexName, "findings", doc);
                 },
                 (chunk, outcome, nextChunkTarget) ->

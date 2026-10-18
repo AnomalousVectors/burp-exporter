@@ -93,7 +93,7 @@ public final class ConfigImportCatalog {
             List<String> sources,
             boolean communityEdition) {
         if (sources == null || sources.isEmpty()) {
-            return sources == null ? List.of() : List.of();
+            return List.of();
         }
         if (isAllDataSourcesSelected(sources, communityEdition)) {
             return null;

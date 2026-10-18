@@ -200,9 +200,15 @@ public class Exporter implements BurpExtension {
     private static void initializeManagedStorage() {
         try {
             ManagedDiskPaths.CleanupResult cleanup = ManagedDiskPaths.initialize();
-            if (cleanup.filesDeleted() > 0L) {
-                Logger.logInfoPanelOnly("[ManagedStorage] Discarded " + cleanup.filesDeleted()
-                        + " abandoned temporary artifacts (" + cleanup.bytesDeleted() + " bytes).");
+            if (cleanup.bytesDeleted() > 0L) {
+                Logger.logInfoPanelOnly("[ManagedStorage] Discarded abandoned temporary file contents: "
+                        + cleanup.bytesDeleted() + " bytes; removed " + cleanup.entriesDeleted()
+                        + " filesystem entries (including directories and lock files). "
+                        + "Unfinished export state is not replayed.");
+            } else if (cleanup.entriesDeleted() > 0L) {
+                Logger.logDebug("[ManagedStorage] Removed " + cleanup.entriesDeleted()
+                        + " empty temporary filesystem entries (directories/zero-byte files); "
+                        + "no file-content bytes were discarded.");
             }
             if (cleanup.activeInstancesSkipped() > 0L) {
                 Logger.logDebug("[ManagedStorage] Preserved " + cleanup.activeInstancesSkipped()

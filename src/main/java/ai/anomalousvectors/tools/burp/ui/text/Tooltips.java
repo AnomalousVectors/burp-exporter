@@ -53,6 +53,8 @@ public final class Tooltips {
     private static final int COMBO_ITEM_TIP_GAP_PX = 8;
     private static PopupFactory previousPopupFactory;
     private static PopupFactory installedPopupFactory;
+    /** Protects replacement and restoration of Swing's process-wide popup factory. */
+    private static final Object POPUP_FACTORY_LOCK = new Object();
 
     /** Hover delay before showing a tooltip (initial and when moving to another control). */
     public static final int TOOLTIP_SHOW_DELAY_MS = 100;
@@ -140,14 +142,16 @@ public final class Tooltips {
         return new Point(x, y);
     }
 
-    private static synchronized void installWindowClampedPopupFactory() {
-        PopupFactory current = PopupFactory.getSharedInstance();
-        if (current == installedPopupFactory || current instanceof WindowClampedPopupFactory) {
-            return;
+    private static void installWindowClampedPopupFactory() {
+        synchronized (POPUP_FACTORY_LOCK) {
+            PopupFactory current = PopupFactory.getSharedInstance();
+            if (current == installedPopupFactory || current instanceof WindowClampedPopupFactory) {
+                return;
+            }
+            previousPopupFactory = current;
+            installedPopupFactory = new WindowClampedPopupFactory(current);
+            PopupFactory.setSharedInstance(installedPopupFactory);
         }
-        previousPopupFactory = current;
-        installedPopupFactory = new WindowClampedPopupFactory(current);
-        PopupFactory.setSharedInstance(installedPopupFactory);
     }
 
     /**
@@ -157,14 +161,16 @@ public final class Tooltips {
      * cleanup does not overwrite a newer factory installed by Burp or another extension. Invoke
      * during extension teardown after tooltip events have stopped.</p>
      */
-    public static synchronized void restoreSharedPopupFactory() {
-        if (installedPopupFactory != null
-                && previousPopupFactory != null
-                && PopupFactory.getSharedInstance() == installedPopupFactory) {
-            PopupFactory.setSharedInstance(previousPopupFactory);
+    public static void restoreSharedPopupFactory() {
+        synchronized (POPUP_FACTORY_LOCK) {
+            if (installedPopupFactory != null
+                    && previousPopupFactory != null
+                    && PopupFactory.getSharedInstance() == installedPopupFactory) {
+                PopupFactory.setSharedInstance(previousPopupFactory);
+            }
+            installedPopupFactory = null;
+            previousPopupFactory = null;
         }
-        installedPopupFactory = null;
-        previousPopupFactory = null;
     }
 
     private static Rectangle resolveClampBounds(Component owner) {
@@ -398,20 +404,15 @@ public final class Tooltips {
             if (spaceLeft >= width) {
                 candidates.add(left);
             }
-            if (spaceBelow >= height || spaceBelow >= spaceAbove) {
-                candidates.add(below);
-            }
-            if (spaceAbove >= height) {
-                candidates.add(above);
-            }
-        } else {
-            // Prefer below/above first: Config auth columns are usually too narrow for a full-width tip.
-            if (spaceBelow >= height || spaceBelow >= spaceAbove) {
-                candidates.add(below);
-            }
-            if (spaceAbove >= height) {
-                candidates.add(above);
-            }
+        }
+        if (spaceBelow >= height || spaceBelow >= spaceAbove) {
+            candidates.add(below);
+        }
+        if (spaceAbove >= height) {
+            candidates.add(above);
+        }
+        if (!preferRight) {
+            // Config authentication columns prefer vertical placement because they are narrow.
             if (spaceRight >= width) {
                 candidates.add(right);
             }
@@ -420,13 +421,7 @@ public final class Tooltips {
             }
         }
         if (candidates.isEmpty()) {
-            if (preferRight) {
-                if (spaceRight >= spaceLeft) {
-                    candidates.add(right);
-                } else {
-                    candidates.add(left);
-                }
-            } else if (spaceRight >= spaceLeft) {
+            if (spaceRight >= spaceLeft) {
                 candidates.add(right);
             } else {
                 candidates.add(left);
@@ -651,7 +646,7 @@ public final class Tooltips {
      *
      * <p>Caller must construct and mutate on the EDT. The type has no custom transient state.</p>
      */
-    public static class HtmlCheckBox extends JCheckBox {
+    public static final class HtmlCheckBox extends JCheckBox {
         @Serial private static final long serialVersionUID = 1L;
 
         /**
@@ -869,7 +864,7 @@ public final class Tooltips {
     public static final class ItemTooltipComboBox<E> extends JComboBox<E> {
         @Serial private static final long serialVersionUID = 1L;
 
-        private final Map<Object, String> itemTooltips;
+        private final java.util.HashMap<Object, String> itemTooltips;
         private transient Popup itemTooltipPopup;
         private transient JList<?> popupList;
         private transient MouseAdapter popupTooltipHandler;
@@ -907,7 +902,7 @@ public final class Tooltips {
                 }
             });
             syncSelectedTooltip();
-            if (items != null && items.length > 0) {
+            if (items.length > 0) {
                 E longest = items[0];
                 for (E item : items) {
                     if (String.valueOf(item).length() > String.valueOf(longest).length()) {

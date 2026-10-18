@@ -488,9 +488,6 @@ public final class SitemapIndexReporter {
 
     private static PreparedExportDocument prepareSitemapWorkItem(String indexName, SitemapWorkItem work) {
         Map<String, Object> doc = buildSitemapDoc(work.item(), work.burpInScope());
-        if (doc == null) {
-            return null;
-        }
         return ExportDocumentIdentity.prepare(indexName, "sitemap", doc);
     }
 

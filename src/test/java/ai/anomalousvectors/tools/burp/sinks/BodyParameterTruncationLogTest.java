@@ -8,6 +8,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import javax.swing.SwingUtilities;
 
@@ -151,6 +154,35 @@ class BodyParameterTruncationLogTest {
     }
 
     @Test
+    void concurrentLiveTruncations_preserveUniqueAndOverflowCounts() throws Exception {
+        BodyParameterTruncationLog.flushStartupSummary();
+        List<HttpRequest> requests = uniqueRequests(100);
+
+        try (ExecutorService executor = Executors.newFixedThreadPool(8)) {
+            List<Future<Void>> results = executor.invokeAll(requests.stream()
+                    .<java.util.concurrent.Callable<Void>>map(request -> () -> {
+                        BodyParameterTruncationLog.record(request, null, Map.of(), 1);
+                        return null;
+                    })
+                    .toList());
+            for (Future<Void> result : results) {
+                result.get();
+            }
+        }
+        BodyParameterTruncationLog.flushStopSummary();
+        flushLogListeners();
+
+        assertThat(debugMessages)
+                .filteredOn(message -> message.contains("BODY parameters truncated to "))
+                .hasSize(BodyParameterTruncationLog.LIVE_UNIQUE_URL_LOG_CAP);
+        assertThat(debugMessages)
+                .filteredOn(message -> message.contains("25 additional unique request.url"))
+                .hasSize(2);
+        assertThat(ExportStats.getDocsBodyParamsTruncated()).isEqualTo(100);
+        assertThat(ExportStats.getBodyParamsDroppedTotal()).isEqualTo(100);
+    }
+
+    @Test
     void formatStartupSummaryForTests_listsSampleUrls() {
         Map<String, Integer> totals = new LinkedHashMap<>();
         totals.put("https://example.test/a", 4);
@@ -170,5 +202,15 @@ class BodyParameterTruncationLogTest {
 
     private static void flushLogListeners() throws Exception {
         SwingUtilities.invokeAndWait(() -> {});
+    }
+
+    private static List<HttpRequest> uniqueRequests(int count) {
+        return java.util.stream.IntStream.range(0, count)
+                .mapToObj(index -> {
+                    HttpRequest request = mock(HttpRequest.class);
+                    when(request.url()).thenReturn("https://example.test/concurrent-" + index);
+                    return request;
+                })
+                .toList();
     }
 }

@@ -1,5 +1,6 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
+import java.io.Serial;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -14,6 +15,7 @@ import ai.anomalousvectors.tools.burp.utils.ExportPressureLogThrottler;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
@@ -599,12 +601,23 @@ public final class TrafficExportQueue {
      * layers per-tool-type and per-source counts derived from {@link ChunkedBulkSender.Result}.
      * {@link BulkOutcomeRecorder} already clamps {@code sent} to {@code [0, attempted]}; the
      * per-route failure maps only apply when the clamped success count is below the attempted
-     * total.</p>
+     * total. Any acknowledged item updates destination health, including partial successes and
+     * final Stop-drain acknowledgments. Only an unsuppressed failure with no acknowledged items
+     * advances the consecutive-failure counter; empty and stale-run outcomes do not.</p>
      */
     static void applyBulkOutcome(ChunkedBulkSender.Result result, long durationMs, int targetBatch) {
+        if (!ExportRunContext.allowsRunMutation()) {
+            return;
+        }
         BulkOutcomeRecorder.RecordResult recorded = BulkOutcomeRecorder.recordDetailed(
                 TrafficRouteBucket.INDEX_KEY, "Traffic", "Bulk push",
                 result.attemptedCount, result.successCount, true, result.breakdown);
+        // Streaming sends bypass the prepared/retry coordinator's destination-health accounting.
+        if (recorded.sent() > 0) {
+            ExportStats.recordOpenSearchSuccess();
+        } else if (result.attemptedCount > 0 && !recorded.failuresSuppressed()) {
+            ExportStats.recordOpenSearchFailure();
+        }
         ExportStats.recordLastLiveBulkDurationMs(TrafficRouteBucket.INDEX_KEY, durationMs);
         BulkByteBudget.recordBulkLatency(durationMs);
         ExportStats.recordLastLiveBulkShape(targetBatch, result.attemptedCount);
@@ -779,6 +792,8 @@ public final class TrafficExportQueue {
      * remove so {@link ChunkedBulkSender} drains stay O(1) for byte observability.
      */
     private static final class MeteredQueue extends LinkedBlockingQueue<TrafficQueueEntry> {
+        @Serial private static final long serialVersionUID = 1L;
+
 
         private MeteredQueue(int capacity) {
             super(capacity);

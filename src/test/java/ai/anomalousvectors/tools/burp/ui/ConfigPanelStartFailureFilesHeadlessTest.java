@@ -417,6 +417,7 @@ class ConfigPanelStartFailureFilesHeadlessTest {
 
     @Test
     void start_withFilesEnabledButNoFormatSelected_revertsUi_and_reportsStatus() throws Exception {
+        Path exportRoot = TestPathSupport.isolatedUiFileRoot();
         try {
             AtomicReference<ConfigPanel> ref = new AtomicReference<>();
             SwingUtilities.invokeAndWait(() -> {
@@ -437,7 +438,7 @@ class ConfigPanelStartFailureFilesHeadlessTest {
                 fileFormatGroup.clearSelection();
 
                 JTextField filePathField = JTextField.class.cast(get(p, "filePathField"));
-                filePathField.setText(TestPathSupport.defaultUiFileRoot().toString());
+                filePathField.setText(exportRoot.toString());
                 ref.set(p);
             });
             ConfigPanel panel = Objects.requireNonNull(ref.get());

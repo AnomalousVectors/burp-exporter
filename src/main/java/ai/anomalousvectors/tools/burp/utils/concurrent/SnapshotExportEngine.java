@@ -90,8 +90,8 @@ public final class SnapshotExportEngine {
         }
 
         private void flushFinished() {
-            if (activeFlushTasks.decrementAndGet() == 0) {
-                synchronized (this) {
+            synchronized (this) {
+                if (activeFlushTasks.decrementAndGet() == 0) {
                     notifyAll();
                 }
             }

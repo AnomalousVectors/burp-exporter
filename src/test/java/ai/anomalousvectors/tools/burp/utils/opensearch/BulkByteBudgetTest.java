@@ -27,7 +27,7 @@ class BulkByteBudgetTest {
     private void prepare() {
         BulkRateLimitBackoff.clear();
         IndexingRetryCoordinator.getInstance().setSoftCapacityOutageForTests(false);
-        BatchSizeController.setInstance(new BatchSizeController());
+        BatchSizeController.setInstance(BatchSizeController.isolatedController());
         nowNanos.set(0L);
         OfferedLoadGovernor.setSharedForTests(OfferedLoadGovernor.createForTests(
                 nowNanos::get,

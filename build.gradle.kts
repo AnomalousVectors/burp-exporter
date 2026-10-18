@@ -1,4 +1,5 @@
 import java.util.Collections
+import java.nio.file.Files
 import org.gradle.api.tasks.testing.TestDescriptor
 import org.gradle.api.tasks.testing.TestListener
 import org.gradle.api.tasks.testing.TestResult
@@ -91,10 +92,8 @@ val verboseTests: Boolean =
 tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.addAll(
         listOf(
-            "-Xlint:deprecation",
-            "-Xlint:unchecked",
-            "-Xlint:cast",
-            "-Xlint:rawtypes",
+            "-Xlint:all",
+            "-Werror",
         ),
     )
 }
@@ -129,6 +128,12 @@ tasks.test {
     }
 
     workingDir = project.projectDir
+    // Keep test spools and native temporary files separate from a running Burp instance.
+    systemProperty("java.io.tmpdir", temporaryDir.absolutePath)
+    doFirst {
+        // A preceding clean task may remove the directory created during configuration.
+        Files.createDirectories(temporaryDir.toPath())
+    }
     systemProperty("java.awt.headless", "true")
     systemProperty("burp.exporter.version", project.version.toString())
     // Forward OpenSearch URL/creds from Gradle -P or env into the test JVM (forked process does not inherit -P)

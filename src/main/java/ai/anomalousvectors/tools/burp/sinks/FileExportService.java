@@ -717,7 +717,11 @@ public final class FileExportService {
         private void acquireDirectoryLock() {
             try {
                 Files.createDirectories(rootPath);
-                Files.createDirectories(lockPath.getParent());
+                Path lockDirectory = lockPath.getParent();
+                if (lockDirectory == null) {
+                    throw new IOException("File-export lock path has no parent directory: " + lockPath);
+                }
+                Files.createDirectories(lockDirectory);
                 lockChannel = FileChannel.open(
                         lockPath,
                         StandardOpenOption.CREATE,
@@ -804,7 +808,7 @@ public final class FileExportService {
             }
         }
 
-        private void scanExistingFiles() {
+        private synchronized void scanExistingFiles() {
             if (!Files.isDirectory(rootPath)) {
                 return;
             }

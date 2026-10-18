@@ -34,6 +34,8 @@ import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
  */
 public final class TriStateCheckBox extends JCheckBox {
 
+    @Serial private static final long serialVersionUID = 1L;
+
     public enum State {
         SELECTED,
         INDETERMINATE,
@@ -41,6 +43,8 @@ public final class TriStateCheckBox extends JCheckBox {
     }
 
     public static final class TriStateButtonModel extends javax.swing.JToggleButton.ToggleButtonModel {
+        @Serial private static final long serialVersionUID = 1L;
+
         private State state = State.DESELECTED;
 
         public TriStateButtonModel(State initial) {

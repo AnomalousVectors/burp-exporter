@@ -115,9 +115,11 @@ import net.miginfocom.swing.MigLayout;
  * <p><strong>Responsibilities:</strong> render the UI, compose/parse {@link ConfigState.State},
  * and delegate long-running work to {@link ConfigController}.</p>
  *
- * <p><strong>Threading:</strong> callers construct and interact with this panel on the EDT.</p>
+ * <p><strong>Threading:</strong> callers construct and interact with this panel on the EDT.
+ * Transient action, lifecycle, and synchronization collaborators are rebuilt by Java
+ * deserialization before the panel is reused.</p>
  */
-public class ConfigPanel extends JPanel implements ConfigController.Ui {
+public final class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     @Serial private static final long serialVersionUID = 1L;
 
@@ -130,6 +132,8 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private static final String TLS_MODE_ENTER_TEST_CONNECTION = "os.tlsMode.enterTestConnection";
     private static final int STATUS_MIN_COLS = 20;
     private static final int STATUS_MAX_COLS = 200;
+    /** Owns replacement of the extension-wide startup worker during unload and test teardown. */
+    private static final Object STARTUP_EXECUTOR_LOCK = new Object();
     /** Background executor for Start-path OpenSearch bootstrap work. */
     private static volatile ExecutorService startupExecutor = newStartupExecutor();
 
@@ -152,10 +156,12 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * {@link Workers#DEFAULT_SHUTDOWN_TIMEOUT_MS} milliseconds, the current thread's interrupt
      * flag is restored and the replacement executor is still installed.</p>
      */
-    public static synchronized void shutdownStartupExecutor() {
-        ExecutorService current = startupExecutor;
-        Workers.awaitExecutorShutdown(current, Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS);
-        startupExecutor = newStartupExecutor();
+    public static void shutdownStartupExecutor() {
+        synchronized (STARTUP_EXECUTOR_LOCK) {
+            ExecutorService current = startupExecutor;
+            Workers.awaitExecutorShutdown(current, Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS);
+            startupExecutor = newStartupExecutor();
+        }
     }
 
     private final TriStateCheckBox settingsCheckbox = new TriStateCheckBox("Settings", TriStateCheckBox.State.SELECTED);
@@ -553,22 +559,24 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private transient ConfigController controller;
     /** Fences background and queued EDT callbacks once extension unload begins. */
     private transient AtomicBoolean closedForUnload = new AtomicBoolean();
+    /** Serializes Stop-thread launch against extension unload without locking on an atomic value. */
+    private transient Object unloadLock = new Object();
 
     /** Fields panel: index -> (fieldKey -> checkbox). Populated in constructor when building Fields section. */
-    private java.util.Map<String, java.util.Map<String, JCheckBox>> fieldCheckboxesByIndex;
+    private java.util.HashMap<String, java.util.Map<String, JCheckBox>> fieldCheckboxesByIndex;
     /**
      * Required-field display labels per index, kept so {@link #refreshFieldsSectionsEnabled()}
      * can re-disable them after the per-section recursive enable/disable pass; they are visual
      * indicators of always-included fields and must remain non-interactive regardless of whether
      * the parent section is currently enabled.
      */
-    private java.util.Map<String, java.util.List<JLabel>> requiredFieldLabelsByIndex;
+    private java.util.HashMap<String, java.util.List<JLabel>> requiredFieldLabelsByIndex;
     /** Fields panel: index -> expand button; used for enable/disable when Data Source is toggled. */
-    private java.util.Map<String, JButton> fieldsExpandButtons;
+    private java.util.HashMap<String, JButton> fieldsExpandButtons;
     /** Fields panel: index -> sub-panel of checkboxes; used for enable/disable when Data Source is toggled. */
-    private java.util.Map<String, JPanel> fieldsSubPanels;
+    private java.util.HashMap<String, JPanel> fieldsSubPanels;
     /** Fields panel: index -> header row panel (label + expand button); used for enable/disable when Data Source is toggled. */
-    private java.util.Map<String, JPanel> fieldsSectionHeaderRows;
+    private java.util.HashMap<String, JPanel> fieldsSectionHeaderRows;
     /** Creates the panel with its default controller. Caller must invoke on the EDT. */
     public ConfigPanel() { this(null); }
 
@@ -634,11 +642,11 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
                         ConfigPanel::checkboxTextStartInset,
                         this::wireSourcesExpandCollapse,
                         fieldsRuntimeUpdater);
-        fieldCheckboxesByIndex = fieldsSection.fieldCheckboxesByIndex();
-        requiredFieldLabelsByIndex = fieldsSection.requiredFieldLabelsByIndex();
-        fieldsExpandButtons = fieldsSection.expandButtonsByIndex();
-        fieldsSubPanels = fieldsSection.subPanelsByIndex();
-        fieldsSectionHeaderRows = fieldsSection.sectionHeaderRows();
+        fieldCheckboxesByIndex = new java.util.HashMap<>(fieldsSection.fieldCheckboxesByIndex());
+        requiredFieldLabelsByIndex = new java.util.HashMap<>(fieldsSection.requiredFieldLabelsByIndex());
+        fieldsExpandButtons = new java.util.HashMap<>(fieldsSection.expandButtonsByIndex());
+        fieldsSubPanels = new java.util.HashMap<>(fieldsSection.subPanelsByIndex());
+        fieldsSectionHeaderRows = new java.util.HashMap<>(fieldsSection.sectionHeaderRows());
         JPanel fieldsPanel = new ConfigFieldsPanel(
                 fieldsExpandButtons,
                 fieldsSubPanels,
@@ -991,7 +999,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
             }
         }, "burp-exporter-stop");
         stopThread.setDaemon(true);
-        synchronized (closedForUnload) {
+        synchronized (unloadLock) {
             if (closedForUnload.get()) {
                 return;
             }
@@ -4066,7 +4074,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
      * This method is idempotent and does not mutate Swing components off the EDT.</p>
      */
     public void closeForUnload() {
-        synchronized (closedForUnload) {
+        synchronized (unloadLock) {
             if (!closedForUnload.compareAndSet(false, true)) {
                 return;
             }
@@ -4101,6 +4109,7 @@ public class ConfigPanel extends JPanel implements ConfigController.Ui {
     private void readObject(ObjectInputStream in) throws IOException, ClassNotFoundException {
         in.defaultReadObject();
         this.closedForUnload = new AtomicBoolean();
+        this.unloadLock = new Object();
         this.controller = new ConfigController(this);
         ControlStatusBridge.register(this::onControlStatus);
     }

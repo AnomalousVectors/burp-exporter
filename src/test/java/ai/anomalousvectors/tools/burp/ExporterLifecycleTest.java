@@ -16,6 +16,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.awt.Component;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -35,6 +37,7 @@ import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.FileUtil;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.ProductInfo;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -146,13 +149,15 @@ class ExporterLifecycleTest {
     }
 
     @Test
-    void unloadingHandler_deregistersResources_and_stopsBackgroundWork() {
+    void unloadingHandler_deregistersResources_and_stopsBackgroundWork() throws IOException {
         Tooltips.restoreSharedPopupFactory();
         PopupFactory popupFactoryBeforeInitialize = PopupFactory.getSharedInstance();
         try {
             ApiFixture fixture = new ApiFixture();
             new Exporter().initialize(fixture.api);
 
+            Path temporaryFile = FileUtil.writeTempFile("unload-owned-", ".tmp", "sensitive");
+            Path storageInstance = temporaryFile.getParent().getParent();
             RuntimeConfig.setExportRunning(true);
             ExporterIndexStatsReporter.start();
             SettingsIndexReporter.start();
@@ -170,6 +175,7 @@ class ExporterLifecycleTest {
             assertThat(PopupFactory.getSharedInstance()).isSameAs(popupFactoryBeforeInitialize);
             assertAllWorkersTerminated(startupExecutorBeforeUnload);
             assertThat(getStaticList(Logger.class, "LISTENERS")).isEmpty();
+            assertThat(storageInstance).doesNotExist();
 
             verify(fixture.httpRegistration).deregister();
             verify(fixture.proxyRequestRegistration).deregister();

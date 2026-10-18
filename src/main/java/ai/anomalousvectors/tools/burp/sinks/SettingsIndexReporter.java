@@ -211,7 +211,7 @@ public final class SettingsIndexReporter {
 
         Map<String, Object> doc = new LinkedHashMap<>();
         Map<String, Object> burp = new LinkedHashMap<>();
-        burp.put("project_id", projectId != null ? projectId : "");
+        burp.put("project_id", projectId);
         burp.put("version", safeBurpVersion(api));
         doc.put("burp", burp);
         doc.put("project", settingsProject != null ? settingsProject : Map.of());

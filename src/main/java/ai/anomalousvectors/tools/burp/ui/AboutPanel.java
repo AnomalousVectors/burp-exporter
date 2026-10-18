@@ -30,7 +30,9 @@ import net.miginfocom.swing.MigLayout;
  *
  * <p>Caller must construct this panel on the EDT because it creates and wires Swing components.</p>
  */
-public class AboutPanel extends JPanel {
+public final class AboutPanel extends JPanel {
+
+    @Serial private static final long serialVersionUID = 1L;
 
     private static final int SECTION_GAP_BOTTOM = 12;
     /** Extra space under the brand block so it stands apart from the extension title. */

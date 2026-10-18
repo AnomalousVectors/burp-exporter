@@ -20,6 +20,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Committed-diff whitespace checks need the parent revision.
+          fetch-depth: 2
 
       - name: Validate Gradle Wrapper
         uses: gradle/wrapper-validation-action@v3
@@ -35,6 +38,11 @@ jobs:
 
       - name: Grant Gradle execute permission
         run: chmod +x gradlew
+
+      - name: Verify Java quality gates
+        run: |
+          ./gradlew --no-daemon compileJava compileTestJava spotlessCheck spotbugsMain spotbugsTest
+          git diff-tree --check --no-commit-id -r HEAD
 
       - name: Build extension
         run: ./gradlew --no-daemon clean build

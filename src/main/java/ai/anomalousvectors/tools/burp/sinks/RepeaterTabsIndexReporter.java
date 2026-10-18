@@ -84,6 +84,11 @@ public final class RepeaterTabsIndexReporter {
     private static final AtomicInteger STARTUP_SESSION_SEQUENCE = new AtomicInteger(0);
     private static final AtomicInteger CAPTURE_WINDOW_GENERATION = new AtomicInteger(-1);
     private static volatile RepeaterTabMetadata currentStartupSelectionMetadata;
+
+    /** Publishes metadata selected by the current startup tab walk. */
+    private static void setCurrentStartupSelectionMetadata(RepeaterTabMetadata metadata) {
+        currentStartupSelectionMetadata = metadata;
+    }
     private static volatile String currentStartupSessionId = RepeaterMetadataTraceLabels.NONE;
     private static volatile StartupExportStatsSnapshot startupExportStatsSnapshot =
             StartupExportStatsSnapshot.empty();
@@ -233,7 +238,7 @@ public final class RepeaterTabsIndexReporter {
         STARTUP_DUPLICATE_SLOT_TRACE_COUNTS.clear();
         QUEUED_FOR_EXPORT.clear();
         SCOPE_FILTERED_FOR_EXPORT.clear();
-        currentStartupSelectionMetadata = null;
+        setCurrentStartupSelectionMetadata(null);
         currentStartupSessionId = RepeaterMetadataTraceLabels.NONE;
         startupExportStatsSnapshot = StartupExportStatsSnapshot.empty();
     }
@@ -381,7 +386,7 @@ public final class RepeaterTabsIndexReporter {
                         REPEATER_TOOL_TITLE,
                         CAPTURED::size,
                         RepeaterTabsIndexReporter::topLevelRepeaterTabMetadata,
-                        metadata -> currentStartupSelectionMetadata = metadata);
+                        RepeaterTabsIndexReporter::setCurrentStartupSelectionMetadata);
         if (result.failure() != null) {
             logStartupTabWalkFailure(0, 0, result.failure());
         }
@@ -942,9 +947,6 @@ public final class RepeaterTabsIndexReporter {
             out.append(": ").append(throwable.getMessage());
         }
         StackTraceElement[] stack = throwable.getStackTrace();
-        if (stack == null) {
-            stack = new StackTraceElement[0];
-        }
         int frames = Math.min(stack.length, 5);
         if (frames > 0) {
             out.append(" @ ");
@@ -1286,7 +1288,7 @@ public final class RepeaterTabsIndexReporter {
 
         @Override
         public void setActiveMetadata(RepeaterTabMetadata metadata) {
-            currentStartupSelectionMetadata = metadata;
+            setCurrentStartupSelectionMetadata(metadata);
         }
 
         @Override

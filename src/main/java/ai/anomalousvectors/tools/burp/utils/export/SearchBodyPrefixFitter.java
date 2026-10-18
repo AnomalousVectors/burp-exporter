@@ -291,8 +291,7 @@ public final class SearchBodyPrefixFitter {
 
     private static void collectPayloadSlots(Object node, List<PayloadSlot> slots) {
         if (node instanceof Map<?, ?> mapObj) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = (Map<String, Object>) mapObj;
+            Map<String, Object> map = mutableStringKeyedMap(mapObj);
             if (isPayloadMap(map)) {
                 slots.add(new PayloadSlot(map));
             }
@@ -314,8 +313,7 @@ public final class SearchBodyPrefixFitter {
 
     private static void collectStringSlots(Object node, List<StringSlot> slots, int minChars) {
         if (node instanceof Map<?, ?> mapObj) {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = (Map<String, Object>) mapObj;
+            Map<String, Object> map = mutableStringKeyedMap(mapObj);
             // Payload byte/text fields are handled together; skip double-shrinking empty stubs.
             boolean payload = isPayloadMap(map);
             for (Map.Entry<String, Object> entry : map.entrySet()) {
@@ -474,12 +472,11 @@ public final class SearchBodyPrefixFitter {
         return best;
     }
 
-    @SuppressWarnings("unchecked")
     private static ListRef largestTrimList(Object node) {
         ListRef best = null;
         long bestScore = 0L;
         if (node instanceof Map<?, ?> mapObj) {
-            Map<String, Object> map = (Map<String, Object>) mapObj;
+            Map<String, Object> map = mutableStringKeyedMap(mapObj);
             for (Map.Entry<String, Object> entry : map.entrySet()) {
                 Object value = entry.getValue();
                 if (value instanceof List<?> list && !list.isEmpty()) {
@@ -488,7 +485,7 @@ public final class SearchBodyPrefixFitter {
                         long score = estimateListScore(list);
                         if (score > bestScore) {
                             bestScore = score;
-                            best = new ListRef((List<Object>) list);
+                            best = new ListRef(list);
                         }
                     }
                 }
@@ -546,18 +543,20 @@ public final class SearchBodyPrefixFitter {
         return 0L;
     }
 
-    private static Map<String, Object> deepCopyMap(Map<String, Object> source) {
+    private static Map<String, Object> deepCopyMap(Map<?, ?> source) {
         Map<String, Object> copy = new LinkedHashMap<>(source.size());
-        for (Map.Entry<String, Object> entry : source.entrySet()) {
-            copy.put(entry.getKey(), deepCopyValue(entry.getValue()));
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            if (!(entry.getKey() instanceof String key)) {
+                throw new IllegalArgumentException("Search document maps must use string keys");
+            }
+            copy.put(key, deepCopyValue(entry.getValue()));
         }
         return copy;
     }
 
-    @SuppressWarnings("unchecked")
     private static Object deepCopyValue(Object value) {
         if (value instanceof Map<?, ?> map) {
-            return deepCopyMap((Map<String, Object>) map);
+            return deepCopyMap(map);
         }
         if (value instanceof Collection<?> collection) {
             List<Object> copy = new ArrayList<>(collection.size());
@@ -569,10 +568,25 @@ public final class SearchBodyPrefixFitter {
         return value;
     }
 
-    private static final class ListRef {
-        private final List<Object> list;
+    /*
+     * Approved suppression: every key is checked as a String immediately before this cast. Java
+     * generic erasure cannot express that verified runtime invariant, while the fitter must retain
+     * the original mutable map so it can replace values safely during truncation.
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> mutableStringKeyedMap(Map<?, ?> map) {
+        for (Object key : map.keySet()) {
+            if (!(key instanceof String)) {
+                throw new IllegalArgumentException("Search document maps must use string keys");
+            }
+        }
+        return (Map<String, Object>) map;
+    }
 
-        private ListRef(List<Object> list) {
+    private static final class ListRef {
+        private final List<?> list;
+
+        private ListRef(List<?> list) {
             this.list = list;
         }
     }

@@ -188,10 +188,11 @@ class ProxyWebSocketLiveHandlerTest {
     }
 
     private static void withTextActionFactories(Runnable action) {
-        try (MockedStatic<TextMessageReceivedAction> receivedActions =
-                        mockStatic(TextMessageReceivedAction.class);
-                MockedStatic<TextMessageToBeSentAction> sentActions =
-                        mockStatic(TextMessageToBeSentAction.class)) {
+        MockedStatic<TextMessageReceivedAction> receivedActions =
+                mockStatic(TextMessageReceivedAction.class);
+        MockedStatic<TextMessageToBeSentAction> sentActions =
+                mockStatic(TextMessageToBeSentAction.class);
+        try (receivedActions; sentActions) {
             action.run();
         }
     }

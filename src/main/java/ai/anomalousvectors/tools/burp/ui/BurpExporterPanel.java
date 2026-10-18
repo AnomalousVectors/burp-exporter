@@ -13,7 +13,7 @@ import ai.anomalousvectors.tools.burp.ui.primitives.ScrollPanes;
  * <p>
  * Hosts the Config, Log, Stats, and About panels in a single {@link JTabbedPane}.</p>
  */
-public class BurpExporterPanel extends JPanel {
+public final class BurpExporterPanel extends JPanel {
 
     @Serial
     private static final long serialVersionUID = 1L;
@@ -28,7 +28,7 @@ public class BurpExporterPanel extends JPanel {
      * {@link JTabbedPane} wrapped with scroll panes.</p>
      */
     public BurpExporterPanel() {
-        setLayout(new BorderLayout());
+        super(new BorderLayout());
 
         JTabbedPane tabbedPane = new JTabbedPane();
 

@@ -311,6 +311,17 @@ record SinkCountTableSnapshot(List<String> columns, List<Row> rows) {
         }
 
         @Override
+        public boolean equals(Object other) {
+            return this == other
+                    || other instanceof HumanByteCount that && bytes == that.bytes;
+        }
+
+        @Override
+        public int hashCode() {
+            return Long.hashCode(bytes);
+        }
+
+        @Override
         public String toString() {
             return StatsPanelFormatters.formatBytesHuman(bytes);
         }

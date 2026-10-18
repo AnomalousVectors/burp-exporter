@@ -2,29 +2,31 @@ package ai.anomalousvectors.tools.burp.testutils;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.FileVisitResult;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Creates test-only paths under {@code build/tmp} instead of the system temp directory.
  *
  * <p>This keeps test artifacts out of the user's OS temp folder while still giving each test an
- * isolated workspace. Methods are thread-safe under normal Gradle test execution because each path
- * includes a random suffix.</p>
+ * isolated workspace. The shared UI fixture is JVM-specific and must not be used by concurrent
+ * file-writing tests. Cleanup rejects paths outside the test root and never follows symlinks.</p>
  */
 public final class TestPathSupport {
 
-    private static final Path ROOT = Path.of("build", "tmp", "burp-exporter-tests");
-    private static final Path DEFAULT_UI_FILE_ROOT_PARENT = Path.of("/path");
-    private static final Path DEFAULT_UI_FILE_ROOT = Path.of("/path/to/directory");
-    private static final AtomicBoolean DEFAULT_UI_ROOT_CLEANED = new AtomicBoolean(false);
+    private static final Path ROOT = Path.of("build", "tmp", "burp-exporter-tests")
+            .toAbsolutePath().normalize();
+    private static final Path UI_FILE_ROOT = ROOT.resolve("ui-files-" + UUID.randomUUID());
 
     static {
         Runtime.getRuntime().addShutdownHook(new Thread(
-                TestPathSupport::cleanReservedDefaultUiRootTree,
+                TestPathSupport::cleanIsolatedUiRootTree,
                 "burp-exporter-test-path-cleanup"));
     }
 
@@ -38,8 +40,8 @@ public final class TestPathSupport {
      * @throws IOException when the directory cannot be created
      */
     public static Path createDirectory(String prefix) throws IOException {
-        Files.createDirectories(ROOT);
-        return Files.createDirectories(ROOT.resolve(prefix + "-" + UUID.randomUUID()));
+        prepareTestRoot();
+        return Files.createTempDirectory(ROOT, prefix + "-");
     }
 
     /**
@@ -51,29 +53,37 @@ public final class TestPathSupport {
      * @throws IOException when the file cannot be created
      */
     public static Path createFile(String prefix, String suffix) throws IOException {
-        Files.createDirectories(ROOT);
-        return Files.createFile(ROOT.resolve(prefix + "-" + UUID.randomUUID() + suffix));
+        prepareTestRoot();
+        return Files.createTempFile(ROOT, prefix + "-", suffix);
     }
 
-    /** Returns the default file root shown in the ConfigPanel UI. */
-    public static Path defaultUiFileRoot() {
-        ensureDefaultUiFileRootPrepared();
-        return DEFAULT_UI_FILE_ROOT;
+    /**
+     * Creates the isolated UI export fixture below {@code build/tmp}.
+     *
+     * <p>File-writing tests explicitly assign this path to the UI instead of using the
+     * operator-facing default. Existing fixture contents remain until explicit test cleanup.</p>
+     *
+     * @return absolute, JVM-specific test directory
+     * @throws IOException if ownership validation or directory creation fails
+     */
+    public static Path isolatedUiFileRoot() throws IOException {
+        prepareTestRoot();
+        return Files.createDirectories(requireOwnedDirectory(UI_FILE_ROOT));
     }
 
     /**
      * Returns whether the provided directory can be created and written.
      *
-     * <p>When the reserved default UI root is checked, suite-start cleanup runs first so tests do
-     * not inherit stale files from prior runs.</p>
+     * <p>Only directories below the test root are eligible; an operator path is never probed.</p>
+     *
+     * @param root test-owned directory
+     * @return whether the directory can be created and written safely
      */
     public static boolean isWritableDirectory(Path root) {
-        if (DEFAULT_UI_FILE_ROOT.equals(root)) {
-            ensureDefaultUiFileRootPrepared();
-        }
         try {
-            Files.createDirectories(root);
-            Path probe = Files.createTempFile(root, "burp-exporter-test-write-", ".tmp");
+            Path owned = requireOwnedDirectory(root);
+            Files.createDirectories(owned);
+            Path probe = Files.createTempFile(owned, "burp-exporter-test-write-", ".tmp");
             Files.deleteIfExists(probe);
             return true;
         } catch (IOException | RuntimeException e) {
@@ -81,20 +91,33 @@ public final class TestPathSupport {
         }
     }
 
-    /** Deletes exporter test artifacts from the provided directory when they exist. */
+    /**
+     * Deletes exporter artifacts only from a test-owned directory.
+     *
+     * <p>The shared UI fixture is removed completely; other fixtures retain non-export files.
+     * Neither symlink directories nor symlink files are followed.</p>
+     *
+     * @param root directory strictly below the test root; {@code null} is ignored
+     * @throws IOException if the directory is outside the test root, crosses a symlink, or
+     *     deletion fails
+     */
     public static void cleanupExportArtifacts(Path root) throws IOException {
-        if (DEFAULT_UI_FILE_ROOT.equals(root)) {
-            cleanReservedDefaultUiRootTree();
+        if (root == null) {
             return;
         }
-        if (root == null || !Files.isDirectory(root)) {
+        Path owned = requireOwnedDirectory(root);
+        if (UI_FILE_ROOT.equals(owned)) {
+            deleteOwnedTree(owned);
+            return;
+        }
+        if (!Files.isDirectory(owned, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
         List<Path> toDelete = new ArrayList<>();
-        try (var stream = Files.list(root)) {
+        try (var stream = Files.list(owned)) {
             for (Path path : stream.toList()) {
                 String fileName = path.getFileName() == null ? "" : path.getFileName().toString();
-                if (Files.isRegularFile(path)
+                if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
                         && (fileName.endsWith(".jsonl") || fileName.endsWith(".ndjson"))) {
                     toDelete.add(path);
                 }
@@ -105,49 +128,57 @@ public final class TestPathSupport {
         }
     }
 
-    /**
-     * Prepares the reserved default UI export root once per JVM.
-     *
-     * <p>This is the file-side equivalent of centralized test OpenSearch cleanup: before the suite
-     * uses {@code /path/to/directory}, remove the synthetic {@code /path} tree from earlier runs
-     * and then recreate the configured directory. Cleanup is intentionally scoped to this exact
-     * synthetic test path and is best-effort.</p>
-     */
-    public static void ensureDefaultUiFileRootPrepared() {
-        if (DEFAULT_UI_ROOT_CLEANED.compareAndSet(false, true)) {
-            cleanReservedDefaultUiRootTree();
-        }
-        try {
-            Files.createDirectories(DEFAULT_UI_FILE_ROOT);
-        } catch (IOException | RuntimeException ignored) {
-            // Best-effort preparation for the reserved synthetic default UI root.
-        }
+    private static void prepareTestRoot() throws IOException {
+        requireOwnedDirectory(ROOT.resolve("entry"));
+        Files.createDirectories(ROOT);
     }
 
-    /** Resets the one-time default-root cleanup guard for focused tests of this helper. */
-    static void resetDefaultUiFileRootPreparationForTests() {
-        DEFAULT_UI_ROOT_CLEANED.set(false);
-    }
-
-    private static void cleanReservedDefaultUiRootTree() {
-        try {
-            deleteRecursively(DEFAULT_UI_FILE_ROOT_PARENT);
-        } catch (IOException | RuntimeException ignored) {
-            // Best-effort cleanup for the reserved synthetic default UI tree.
+    private static Path requireOwnedDirectory(Path path) throws IOException {
+        if (path == null) {
+            throw new IOException("Test directory is required.");
         }
-    }
-
-    private static void deleteRecursively(Path path) throws IOException {
-        if (path == null || !Files.exists(path)) {
-            return;
+        Path normalized = path.toAbsolutePath().normalize();
+        if (normalized.equals(ROOT) || !normalized.startsWith(ROOT)) {
+            throw new IOException("Path is outside the test-owned directory boundary.");
         }
-        if (Files.isDirectory(path)) {
-            try (var stream = Files.list(path)) {
-                for (Path child : stream.toList()) {
-                    deleteRecursively(child);
-                }
+        for (Path current = normalized; current != null && current.startsWith(ROOT);
+                current = current.getParent()) {
+            if (Files.isSymbolicLink(current)) {
+                throw new IOException("Test-owned directory crosses a symbolic link.");
             }
         }
-        Files.deleteIfExists(path);
+        return normalized;
+    }
+
+    private static void cleanIsolatedUiRootTree() {
+        try {
+            deleteOwnedTree(UI_FILE_ROOT);
+        } catch (IOException | RuntimeException ignored) {
+            // Only this JVM's fixture is eligible; Gradle clean can reclaim it after a failed delete.
+        }
+    }
+
+    private static void deleteOwnedTree(Path path) throws IOException {
+        Path owned = requireOwnedDirectory(path);
+        if (!Files.exists(owned, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        // walkFileTree does not follow symlinks unless FOLLOW_LINKS is explicitly requested.
+        Files.walkFileTree(owned, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                Files.delete(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path directory, IOException failure) throws IOException {
+                if (failure != null) {
+                    throw failure;
+                }
+                Files.delete(directory);
+                return FileVisitResult.CONTINUE;
+            }
+        });
     }
 }

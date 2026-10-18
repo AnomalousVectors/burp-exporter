@@ -18,7 +18,7 @@ class BatchSizeControllerTest {
 
     @BeforeEach
     public void setUp() {
-        controller = new BatchSizeController();
+        controller = BatchSizeController.isolatedController();
         BatchSizeController.setInstance(controller);
     }
 

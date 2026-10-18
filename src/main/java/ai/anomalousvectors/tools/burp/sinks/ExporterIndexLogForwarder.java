@@ -104,7 +104,9 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
         doc.put("meta", ExportMetaFields.meta(SCHEMA_VERSION));
 
         // Reject newest when full — avoid drop-oldest churn under pressure.
-        queue.offer(doc);
+        if (!queue.offer(doc)) {
+            return;
+        }
     }
 
     private static boolean isBulkLifecycleNoise(String message) {

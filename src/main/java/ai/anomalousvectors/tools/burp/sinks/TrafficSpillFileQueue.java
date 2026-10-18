@@ -516,7 +516,11 @@ final class TrafficSpillFileQueue {
     }
 
     private static long parseSequence(Path path) {
-        String file = path.getFileName().toString();
+        Path fileName = path.getFileName();
+        if (fileName == null) {
+            return -1L;
+        }
+        String file = fileName.toString();
         int lastDash = file.lastIndexOf('-');
         if (lastDash > 0) {
             int dot = file.indexOf('.', lastDash + 1);
@@ -682,7 +686,11 @@ final class TrafficSpillFileQueue {
     private void cleanupTempFilesLocked() {
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory, "*.tmp")) {
             for (Path tmp : stream) {
-                String name = tmp.getFileName().toString();
+                Path fileName = tmp.getFileName();
+                if (fileName == null) {
+                    continue;
+                }
+                String name = fileName.toString();
                 String targetName = name.substring(0, name.length() - ".tmp".length());
                 if (isOwnedSpillFile(tmp.resolveSibling(targetName))) {
                     long bytes = sizeOf(tmp);
@@ -697,7 +705,11 @@ final class TrafficSpillFileQueue {
     }
 
     private boolean isOwnedSpillFile(Path path) {
-        String fileName = path.getFileName().toString();
+        Path name = path.getFileName();
+        if (name == null) {
+            return false;
+        }
+        String fileName = name.toString();
         if (fileName.startsWith(projectId + "-")) {
             return true;
         }

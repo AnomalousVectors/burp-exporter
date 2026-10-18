@@ -4,6 +4,7 @@ import java.awt.FontMetrics;
 import java.awt.Graphics2D;
 import java.awt.geom.AffineTransform;
 import java.awt.geom.Rectangle2D;
+import java.io.Serial;
 import java.util.List;
 
 import org.jfree.chart.axis.AxisState;
@@ -19,6 +20,8 @@ import org.jfree.chart.ui.TextAnchor;
  * and numbers (not outside the labels on the chart edge).
  */
 final class StatsChartRangeAxis extends NumberAxis {
+
+    @Serial private static final long serialVersionUID = 1L;
 
     /** Horizontal space for the rotated unit label (Docs/sec, GiB, …). */
     static final double LABEL_COLUMN_WIDTH = 16.0;

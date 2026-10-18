@@ -383,7 +383,11 @@ class ProxyCorrelationSpool {
     }
 
     private boolean isOwnedArtifact(Path path) {
-        String name = path.getFileName().toString();
+        Path fileName = path.getFileName();
+        if (fileName == null) {
+            return false;
+        }
+        String name = fileName.toString();
         if (!name.startsWith(projectId + FILE_TOKEN_SEPARATOR)) {
             return false;
         }

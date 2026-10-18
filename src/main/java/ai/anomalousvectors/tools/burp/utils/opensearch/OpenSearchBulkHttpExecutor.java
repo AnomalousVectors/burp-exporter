@@ -1,6 +1,7 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
 import java.io.IOException;
+import java.io.Serial;
 import java.net.URI;
 import java.util.Locale;
 import java.util.concurrent.ExecutionException;
@@ -64,6 +65,8 @@ final class OpenSearchBulkHttpExecutor {
      * <p>No HTTP request has started when this exception is thrown.</p>
      */
     static final class LiveBudgetChangedException extends IOException {
+        @Serial private static final long serialVersionUID = 1L;
+
         private final long liveBudget;
 
         LiveBudgetChangedException(long bodyBytes, long liveBudget) {
@@ -121,7 +124,8 @@ final class OpenSearchBulkHttpExecutor {
             byte[] body,
             BulkResponseHandler<T> handler) throws IOException {
         byte[] ndjson = body == null ? new byte[0] : body;
-        try (OfferedLoadGovernor.Permit permit = OfferedLoadGovernor.acquire(ndjson.length)) {
+        OfferedLoadGovernor.Permit permit = OfferedLoadGovernor.acquire(ndjson.length);
+        try (permit) {
             long liveBudget = Math.max(1L, BulkByteBudget.currentMaxBytes());
             if (ndjson.length > liveBudget) {
                 throw new LiveBudgetChangedException(ndjson.length, liveBudget);

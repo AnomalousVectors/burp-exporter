@@ -75,11 +75,13 @@ public final class UrlParameterTruncationLog {
         }
         ExportStats.recordUrlParamsTruncated(droppedUrlParams);
         String dedupeUrl = dedupeUrl(request, service, requestDoc);
-        if (startupAccumulationActive) {
-            recordStartup(dedupeUrl, droppedUrlParams);
-        } else {
-            recordLive(dedupeUrl, droppedUrlParams);
+        synchronized (LOCK) {
+            if (startupAccumulationActive) {
+                recordStartupLocked(dedupeUrl, droppedUrlParams);
+                return;
+            }
         }
+        recordLive(dedupeUrl, droppedUrlParams);
     }
 
     /**
@@ -144,45 +146,52 @@ public final class UrlParameterTruncationLog {
         }
     }
 
-    private static void recordStartup(String url, int droppedUrlParams) {
-        synchronized (LOCK) {
-            STARTUP_URL_DROPPED_TOTALS.compute(url, (k, v) -> v == null ? droppedUrlParams : v + droppedUrlParams);
-            startupTruncatedDocCount++;
-        }
+    /** Records startup state while the caller holds {@link #LOCK}. */
+    private static void recordStartupLocked(String url, int droppedUrlParams) {
+        STARTUP_URL_DROPPED_TOTALS.compute(url, (k, v) -> v == null ? droppedUrlParams : v + droppedUrlParams);
+        startupTruncatedDocCount++;
     }
 
     private static void recordLive(String url, int droppedUrlParams) {
-        if (LIVE_LOGGED_URLS.add(url)) {
-            ParameterIntegrityDetailReporter.report(
-                    "live",
-                    "url_params_truncated",
-                    1,
-                    Map.of(url, 1),
-                    Map.of("dropped_url_params", droppedUrlParams),
-                    "request.parameters and derived query fields may omit URL rows beyond the cap; request.url remains complete",
-                    ParameterIntegrityDetailReporter.UrlListPolicy.FULL);
-            if (liveUniqueUrlLogsEmitted < LIVE_UNIQUE_URL_LOG_CAP) {
-                liveUniqueUrlLogsEmitted++;
-                Logger.logDebug(formatLiveLine(droppedUrlParams));
+        boolean firstForUrl;
+        String logLine = null;
+        synchronized (LOCK) {
+            firstForUrl = LIVE_LOGGED_URLS.add(url);
+            if (!firstForUrl) {
                 return;
             }
-            liveOverflowUniqueUrls++;
-            maybeEmitLiveOverflowSummary();
-            return;
+            if (liveUniqueUrlLogsEmitted < LIVE_UNIQUE_URL_LOG_CAP) {
+                liveUniqueUrlLogsEmitted++;
+                logLine = formatLiveLine(droppedUrlParams);
+            } else {
+                liveOverflowUniqueUrls++;
+                logLine = overflowSummaryIfDueLocked();
+            }
         }
-        maybeEmitLiveOverflowSummary();
+        ParameterIntegrityDetailReporter.report(
+                "live",
+                "url_params_truncated",
+                1,
+                Map.of(url, 1),
+                Map.of("dropped_url_params", droppedUrlParams),
+                "request.parameters and derived query fields may omit URL rows beyond the cap; request.url remains complete",
+                ParameterIntegrityDetailReporter.UrlListPolicy.FULL);
+        if (logLine != null) {
+            Logger.logDebug(logLine);
+        }
     }
 
-    private static void maybeEmitLiveOverflowSummary() {
+    /** Returns a periodic overflow summary while the caller holds {@link #LOCK}. */
+    private static String overflowSummaryIfDueLocked() {
         if (liveOverflowUniqueUrls <= 0 || liveOverflowUniqueUrls % 25 != 0) {
-            return;
+            return null;
         }
         long additional = liveOverflowUniqueUrls - liveOverflowUniqueUrlsLastLogged;
         if (additional <= 0) {
-            return;
+            return null;
         }
         liveOverflowUniqueUrlsLastLogged = liveOverflowUniqueUrls;
-        Logger.logDebug(formatOverflowSummary(additional));
+        return formatOverflowSummary(additional);
     }
 
     private static String formatOverflowSummary(long additionalUniqueUrls) {

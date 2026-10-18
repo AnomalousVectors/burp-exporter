@@ -22,7 +22,7 @@ public final class BatchSizeController {
     private static final int SMOOTHING_WINDOW = 5;
     private static final double SMOOTHING_THRESHOLD = 0.95;
 
-    private static volatile BatchSizeController instance;
+    private static volatile BatchSizeController instance = new BatchSizeController();
 
     private final AtomicInteger current = new AtomicInteger(INITIAL);
     private final Deque<Integer> successSizes = new ArrayDeque<>(SMOOTHING_WINDOW);
@@ -33,28 +33,38 @@ public final class BatchSizeController {
      *
      * <p>Production callers normally obtain the shared instance from {@link #getInstance()}.</p>
      */
-    public BatchSizeController() {
+    private BatchSizeController() {
+    }
+
+    /**
+     * Creates an isolated controller for tests or independent simulations.
+     *
+     * <p>The returned controller does not replace or share state with the production singleton.</p>
+     *
+     * @return fresh controller initialized to the default batch size
+     */
+    public static BatchSizeController isolatedController() {
+        return new BatchSizeController();
     }
 
     /**
      * Returns the shared batch-size controller instance.
      *
-     * <p>Safe to call from any thread. Lazily creates the singleton on first access.</p>
+     * <p>Safe to call from any thread. The singleton is created during class initialization.</p>
+     *
+     * @return active shared controller
      */
-    public static synchronized BatchSizeController getInstance() {
-        if (instance == null) {
-            instance = new BatchSizeController();
-        }
+    public static BatchSizeController getInstance() {
         return instance;
     }
 
     /**
      * Replaces the shared instance for isolated tests.
      *
-     * @param c replacement controller; {@code null} makes the next access create a fresh instance
+     * @param c replacement controller; {@code null} immediately installs a fresh instance
      */
     static void setInstance(BatchSizeController c) {
-        instance = c;
+        instance = c == null ? new BatchSizeController() : c;
     }
 
     /**

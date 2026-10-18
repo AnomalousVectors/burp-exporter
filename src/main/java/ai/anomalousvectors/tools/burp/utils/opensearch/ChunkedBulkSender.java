@@ -759,9 +759,13 @@ public final class ChunkedBulkSender {
     }
 
     /**
-     * InputStream that produces NDJSON by draining from a queue one document at a time.
-     * Used as the body of a chunked bulk request. Only one doc's bytes are held in memory
-     * at a time. Stops when batch count, size, or time limit is reached.
+     * Streams one bounded bulk request from the traffic queue on its caller thread.
+     *
+     * <p>Only one document's serialized bytes are retained at a time, and the stream stops at the
+     * configured document, byte, or time boundary. This stream is intentionally not thread-safe:
+     * {@link #pushForRun(String, String, String, BlockingQueue, int, long, long)} constructs and
+     * consumes each instance synchronously with {@link InputStream#readAllBytes()}, so its cursor
+     * and byte counters are thread-confined.</p>
      */
     private static final class NdjsonQueueInputStream extends InputStream {
         private final BlockingQueue<TrafficQueueEntry> queue;
@@ -860,12 +864,6 @@ public final class ChunkedBulkSender {
                         noteTrafficPrefixTruncation(prepared, maxBytes);
                     }
                 }
-                if (attemptedRef.get() > 0 && runningBytes + docBytes > maxBytes) {
-                    queue.offer(entry);
-                    buffer = new byte[0];
-                    pos = 0;
-                    return false;
-                }
                 pos = 0;
                 attemptedRef.incrementAndGet();
                 runningBytes += docBytes;
@@ -884,6 +882,24 @@ public final class ChunkedBulkSender {
                     firstEntry = null;
                 } else {
                     if ((System.nanoTime() - batchStartNanos) >= maxWaitNanos) {
+                        return null;
+                    }
+                    entry = queue.peek();
+                    if (entry == null) {
+                        return null;
+                    }
+                    boolean enabled = true;
+                    if (RuntimeConfig.isExportRunning() && RuntimeConfig.isExportReady()) {
+                        RuntimeConfig.TrafficExportGate gate = RuntimeConfig.trafficExportGate();
+                        enabled = gate.anyTrafficExportEnabled()
+                                && TrafficRouteBucket.isRouteEnabled(
+                                        TrafficRouteBucket.fromPrepared(entry.prepared()), gate);
+                    }
+                    if (enabled
+                            && attemptedRef.get() > 0
+                            && runningBytes + entry.prepared().resolvedBulkBytes() > maxBytes) {
+                        // Leave the next document in the queue, including during Stop. Polling
+                        // and offering it back could lose it if a producer takes the freed slot.
                         return null;
                     }
                     entry = queue.poll();

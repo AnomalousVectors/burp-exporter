@@ -172,10 +172,15 @@ final class TlsTestServer implements AutoCloseable {
 
     /** {@inheritDoc} */
     @Override
-    public void close() throws Exception {
+    public void close() throws IOException {
         closed = true;
         serverSocket.close();
-        acceptThread.join(TimeUnit.SECONDS.toMillis(2));
+        try {
+            acceptThread.join(TimeUnit.SECONDS.toMillis(2));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while stopping TLS test server", e);
+        }
         IOException observedFailure = failure.get();
         if (observedFailure != null) {
             throw new AssertionError("TLS test server failed", observedFailure);
