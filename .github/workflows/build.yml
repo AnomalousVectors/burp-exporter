@@ -10,31 +10,39 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build-release:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.props.outputs.version }}
+      filename: ${{ steps.props.outputs.filename }}
+      sha256: ${{ steps.props.outputs.sha256 }}
+      source-sha: ${{ steps.props.outputs.source-sha }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Committed-diff whitespace checks need the parent revision.
           fetch-depth: 2
-
-      - name: Validate Gradle Wrapper
-        uses: gradle/wrapper-validation-action@v3
+          persist-credentials: false
 
       - name: Set up JDK 21 (Corretto)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           java-version: '21'
           distribution: 'corretto'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          # Keep the existing GitHub-backed cache rather than enabling enhanced caching.
+          cache-provider: basic
+          validate-wrappers: true
 
       - name: Grant Gradle execute permission
         run: chmod +x gradlew
@@ -44,8 +52,10 @@ jobs:
           ./gradlew --no-daemon compileJava compileTestJava spotlessCheck spotbugsMain spotbugsTest
           git diff-tree --check --no-commit-id -r HEAD
 
-      - name: Build extension
-        run: ./gradlew --no-daemon clean build
+      - name: Build extension (without destination credentials)
+        run: |
+          echo 'CI runs without destination credentials; credentialed local integration verification remains required.' >> "$GITHUB_STEP_SUMMARY"
+          ./gradlew --no-daemon clean build
 
       - name: Print failing tests from JUnit XML
         if: failure()
@@ -82,7 +92,7 @@ jobs:
 
       - name: Upload test reports on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-reports
           path: |
@@ -90,11 +100,14 @@ jobs:
             build/test-results/test/
           if-no-files-found: ignore
 
-      - name: Read Gradle properties
+      - name: Identify verified artifact
         id: props
         run: |
           python3 <<'PY'
           import os
+          import hashlib
+          import re
+          import subprocess
           from pathlib import Path
 
           props = {}
@@ -105,27 +118,116 @@ jobs:
               key, value = line.split("=", 1)
               props[key.strip()] = value.strip()
 
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"basename={props['archivesBaseName']}\n")
-              fh.write(f"version={props['version']}\n")
+          basename, version = props['archivesBaseName'], props['version']
+          if not all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', value) for value in (basename, version)):
+              raise SystemExit('Unsafe release basename or version')
+          filename = f'{basename}-{version}.jar'
+          artifact = Path('build/libs') / filename
+          if artifact.is_symlink() or not artifact.is_file():
+              raise SystemExit('Expected distributable is missing or is a symlink')
+          source_sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if source_sha != os.environ['GITHUB_SHA']:
+              raise SystemExit('Checkout does not match the workflow commit')
+          with artifact.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write(f'version={version}\nfilename={filename}\nsha256={digest}\nsource-sha={source_sha}\n')
           PY
 
-      - name: Delete existing release and tag
-        run: |
-          gh release delete v${{ steps.props.outputs.version }} -y || true
-          git push origin :refs/tags/v${{ steps.props.outputs.version }} || true
+      - name: Upload verified distributable
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: verified-extension
+          path: build/libs/${{ steps.props.outputs.filename }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    # No checkout or build scripts run with the release job's write-capable token.
+    steps:
+      - name: Download verified distributable from this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: verified
+          merge-multiple: true
+          digest-mismatch: error
+
+      - name: Verify artifact and source identity
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FILENAME: ${{ needs.build.outputs.filename }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+          SOURCE_SHA: ${{ needs.build.outputs.source-sha }}
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import os
+          import re
+          from pathlib import Path
+
+          filename = os.environ['FILENAME']
+          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*\.jar', filename):
+              raise SystemExit('Unsafe artifact filename')
+          artifact = Path('verified') / filename
+          if artifact.is_symlink() or not artifact.is_file():
+              raise SystemExit('Expected verified artifact is missing or is a symlink')
+          with artifact.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          if digest != os.environ['EXPECTED_SHA256'] or os.environ['SOURCE_SHA'] != os.environ['GITHUB_SHA']:
+              raise SystemExit('Artifact digest or source commit mismatch; release was not modified')
+          print(f'Verified {filename}: sha256:{digest}; source {os.environ["SOURCE_SHA"]}')
+          PY
+
+      - name: Delete existing development release and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ needs.build.outputs.version }}
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          # Preserve development-release replacement, but ignore only genuine not-found responses.
+          base = f'{os.environ["GITHUB_API_URL"]}/repos/{os.environ["GITHUB_REPOSITORY"]}'
+          tag = urllib.parse.quote(os.environ['RELEASE_TAG'], safe='')
+          headers = {'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+                     'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
+          def request(method, path):
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers, method=method), timeout=30) as response:
+                      body = response.read()
+                      return json.loads(body) if body else None
+              except urllib.error.HTTPError as error:
+                  if error.code != 404:
+                      raise
+                  return None
+
+          release = request('GET', f'/releases/tags/{tag}')
+          if release is not None:
+              request('DELETE', f'/releases/{release["id"]}')
+          request('DELETE', f'/git/refs/tags/{tag}')
+          PY
 
       - name: Create or update GitHub Release
-        uses: ncipollo/release-action@v1
+        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
-          tag: v${{ steps.props.outputs.version }}
-          name: v${{ steps.props.outputs.version }}
+          tag: v${{ needs.build.outputs.version }}
+          name: v${{ needs.build.outputs.version }}
+          commit: ${{ needs.build.outputs.source-sha }}
           allowUpdates: true
           replacesArtifacts: true
           artifactErrorsFailBuild: true
-          artifacts: build/libs/${{ steps.props.outputs.basename }}-${{ steps.props.outputs.version }}.jar
-          token: ${{ secrets.GITHUB_TOKEN }}
+          artifacts: verified/${{ needs.build.outputs.filename }}
+          token: ${{ github.token }}
           body: |
             Always use the latest.
