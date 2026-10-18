@@ -310,3 +310,5 @@ tasks.assemble {
 tasks.build {
     dependsOn("fatJar")
 }
+
+apply(from = "gradle/runtime-attributions.gradle.kts")

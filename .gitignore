@@ -2,16 +2,16 @@
 !*/
 
 # Allowed Files
-!.gitignore
-!build.gradle.kts
-!gradle.properties
-!gradlew
-!gradlew.bat
-!LICENSE
-!README.md
-!settings.gradle.kts
+!/.gitignore
+!/build.gradle.kts
+!/gradle.properties
+!/gradlew
+!/gradlew.bat
+!/LICENSE
+!/README.md
+!/settings.gradle.kts
 
 # Allowed dirs
-!.github/**
-!gradle/**
-!src/**
+!/.github/**
+!/gradle/**
+!/src/**
