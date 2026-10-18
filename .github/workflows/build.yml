@@ -42,6 +42,8 @@ jobs:
         with:
           # Keep the existing GitHub-backed cache rather than enabling enhanced caching.
           cache-provider: basic
+          # Master builds own the shared cache; other workflows and refs only read it.
+          cache-read-only: ${{ github.ref != 'refs/heads/master' }}
           validate-wrappers: true
 
       - name: Grant Gradle execute permission
