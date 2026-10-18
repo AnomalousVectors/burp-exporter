@@ -1,5 +1,6 @@
 import java.util.Collections
 import java.nio.file.Files
+import java.util.jar.JarFile
 import org.gradle.api.tasks.testing.TestDescriptor
 import org.gradle.api.tasks.testing.TestListener
 import org.gradle.api.tasks.testing.TestResult
@@ -43,15 +44,16 @@ dependencies {
     compileOnly(libs.spotbugsAnnotations)
 
     // implementation
-    implementation(libs.jackson3Core)
-    implementation(libs.jackson3Databind)
     implementation(libs.jacksonCore)
     implementation(libs.jacksonDatabind)
     implementation(libs.miglayoutSwing)
     implementation(libs.jakartaJsonApi)
-    implementation(libs.glassfishJson)
-    implementation(libs.opensearchJava)
-    implementation(libs.elasticsearchJava)
+    // Index/mapping operations use Jackson JSON-P, not the optional JSON-B mapper.
+    implementation(libs.opensearchJava) {
+        exclude(group = "jakarta.json.bind", module = "jakarta.json.bind-api")
+        exclude(group = "org.eclipse", module = "yasson")
+        exclude(group = "org.eclipse.parsson", module = "parsson")
+    }
     implementation(libs.elasticsearchRestClient)
     implementation(libs.awsSdkAuth)
     implementation(libs.awsSdkRegions)
@@ -83,6 +85,12 @@ dependencies {
 
     // runtimeOnly
     runtimeOnly(libs.logbackClassic)
+    runtimeOnly(libs.parsson)
+}
+
+// Profile credentials use synchronous STS/SSO clients; retain their Apache5 transport.
+configurations.configureEach {
+    exclude(group = "software.amazon.awssdk", module = "netty-nio-client")
 }
 
 // Toggle with: gradlew test -PverboseTests=true
@@ -121,6 +129,8 @@ spotless {
 }
 
 tasks.test {
+    dependsOn("fatJar")
+    inputs.file(provider { tasks.named<Jar>("fatJar").get().archiveFile.get() }).withPropertyName("packagedJar")
     useJUnitPlatform {
         if (project.hasProperty("excludeIntegration")) {
             excludeTags("integration")
@@ -133,6 +143,8 @@ tasks.test {
     doFirst {
         // A preceding clean task may remove the directory created during configuration.
         Files.createDirectories(temporaryDir.toPath())
+        systemProperty("burp.exporter.packagedJar", tasks.named<Jar>("fatJar").get().archiveFile.get().asFile.absolutePath)
+        systemProperty("burp.exporter.runtimeJars", configurations.runtimeClasspath.get().asPath)
     }
     systemProperty("java.awt.headless", "true")
     systemProperty("burp.exporter.version", project.version.toString())
@@ -229,6 +241,31 @@ tasks.withType<Javadoc>().configureEach {
     }
 }
 
+// Each synchronous AWS service contributes a distinct warm-up provider at this shared path.
+val sdkWarmupService = "META-INF/services/software.amazon.awssdk.core.warmup.SdkWarmUpProvider"
+val mergedServiceRoot = layout.buildDirectory.dir("generated/runtime-services")
+val mergeSdkWarmupService = tasks.register("mergeSdkWarmupService") {
+    description = "Preserves every resolved AWS service warm-up provider in the distributable."
+    inputs.files(configurations.runtimeClasspath).withPropertyName("runtimeClasspath")
+    outputs.file(mergedServiceRoot.map { it.file(sdkWarmupService) })
+    doLast {
+        val providers = sortedSetOf<String>()
+        configurations.runtimeClasspath.get().filter { it.extension == "jar" }.forEach { file ->
+            JarFile(file).use { jar ->
+                jar.getJarEntry(sdkWarmupService)?.let { entry ->
+                    jar.getInputStream(entry).bufferedReader(Charsets.UTF_8).useLines { lines ->
+                        lines.map { it.substringBefore('#').trim() }.filter { it.isNotEmpty() }
+                            .forEach { providers.add(it) }
+                    }
+                }
+            }
+        }
+        val output = mergedServiceRoot.get().file(sdkWarmupService).asFile
+        Files.createDirectories(output.parentFile.toPath())
+        Files.writeString(output.toPath(), providers.joinToString("\n", postfix = "\n"), Charsets.UTF_8)
+    }
+}
+
 tasks.register<Jar>("fatJar") {
     group = "build"
     description = "Assembles a fat JAR containing compiled classes and runtime dependencies."
@@ -246,13 +283,20 @@ tasks.register<Jar>("fatJar") {
     }
 
     from(sourceSets.main.get().output)
+    dependsOn(mergeSdkWarmupService)
+    from(mergedServiceRoot)
 
     dependsOn(configurations.runtimeClasspath)
     from({
         configurations.runtimeClasspath.get()
             .filter { it.name.endsWith("jar") }
             .map { zipTree(it) }
-    })
+    }) {
+        // Logback's web-container integration is unrelated to the extension's SLF4J backend.
+        exclude("META-INF/services/jakarta.servlet.ServletContainerInitializer")
+        exclude("ch/qos/logback/classic/servlet/**")
+        exclude(sdkWarmupService)
+    }
 }
 
 tasks.named<Jar>("jar") {
