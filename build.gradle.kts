@@ -69,7 +69,7 @@ dependencies {
     // testImplementation
     testImplementation(platform(libs.junitBom))
     testImplementation(libs.junitJupiter)
-    testImplementation(libs.junitPlatformSuite)
+    testImplementation(libs.junitPlatformLauncher)
     testImplementation(libs.mockitoCore)
     testImplementation(libs.mockitoJunitJupiter)
     testImplementation(libs.assertjCore)
@@ -78,8 +78,6 @@ dependencies {
 
     // testRuntimeOnly
     testRuntimeOnly(libs.junitJupiterEngine)
-    testRuntimeOnly(libs.junitPlatformLauncher)
-    testRuntimeOnly(libs.junitPlatformSuiteEngine)
     testRuntimeOnly(libs.brotli4jNativeWindows)
     testRuntimeOnly(libs.brotli4jNativeLinux)
 
@@ -96,6 +94,7 @@ configurations.configureEach {
 // Toggle with: gradlew test -PverboseTests=true
 val verboseTests: Boolean =
     (project.findProperty("verboseTests")?.toString()?.toBooleanStrictOrNull()) ?: false
+val excludeIntegration: Boolean = project.hasProperty("excludeIntegration")
 
 tasks.withType<JavaCompile>().configureEach {
     options.compilerArgs.addAll(
@@ -131,8 +130,9 @@ spotless {
 tasks.test {
     dependsOn("fatJar")
     inputs.file(provider { tasks.named<Jar>("fatJar").get().archiveFile.get() }).withPropertyName("packagedJar")
+    inputs.property("excludeIntegration", excludeIntegration)
     useJUnitPlatform {
-        if (project.hasProperty("excludeIntegration")) {
+        if (excludeIntegration) {
             excludeTags("integration")
         }
     }
@@ -141,6 +141,11 @@ tasks.test {
     // Keep test spools and native temporary files separate from a running Burp instance.
     systemProperty("java.io.tmpdir", temporaryDir.absolutePath)
     doFirst {
+        logger.lifecycle(if (excludeIntegration) {
+            "Verification lane: CI/unit and packaged runtime; integration-tagged tests excluded."
+        } else {
+            "Verification lane: full; integration-tagged tests included subject to destination availability."
+        })
         // A preceding clean task may remove the directory created during configuration.
         Files.createDirectories(temporaryDir.toPath())
         systemProperty("burp.exporter.packagedJar", tasks.named<Jar>("fatJar").get().archiveFile.get().asFile.absolutePath)

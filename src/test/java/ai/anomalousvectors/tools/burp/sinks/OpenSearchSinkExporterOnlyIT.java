@@ -5,7 +5,9 @@ import java.util.EnumSet;
 import java.util.List;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.indices.DeleteIndexRequest;
 
@@ -19,9 +21,11 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 /**
  * Exercises the Exporter-index lifecycle against a live OpenSearch test cluster.
  *
- * <p>The Exporter index is created through the {@code exporter} source selection. Run this test
- * through {@link OpenSearchIntegrationSuite}.</p>
+ * <p>The Exporter index is created through the {@code exporter} source selection. Root-owned
+ * cleanup runs after all selected Jupiter tests finish.</p>
  */
+@Tag("integration")
+@ExtendWith(OpenSearchCleanupExtension.class)
 class OpenSearchSinkExporterOnlyIT {
 
     @Test

@@ -6,7 +6,9 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.indices.DeleteIndexRequest;
 
@@ -19,8 +21,10 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 
 /**
  * Integration test: create/delete/recreate subset of indices.
- * Run via {@link OpenSearchIntegrationSuite}; tag "integration" is on the suite.
+ * Root-owned cleanup runs after all selected Jupiter tests finish.
  */
+@Tag("integration")
+@ExtendWith(OpenSearchCleanupExtension.class)
 class OpenSearchSinkSubsetIT {
 
     private static final int WAIT_AFTER_DELETE_MS = 500;

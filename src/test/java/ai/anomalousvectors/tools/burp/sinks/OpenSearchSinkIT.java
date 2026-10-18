@@ -7,7 +7,9 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.indices.DeleteIndexRequest;
 
@@ -22,8 +24,10 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
  * Exercises index lifecycle operations against a live OpenSearch test cluster.
  *
  * <p>These tests verify index creation, existence reporting, deletion, and re-creation through
- * {@link OpenSearchSink}. Run them through {@link OpenSearchIntegrationSuite}.</p>
+ * {@link OpenSearchSink}. Root-owned cleanup runs after all selected Jupiter tests finish.</p>
  */
+@Tag("integration")
+@ExtendWith(OpenSearchCleanupExtension.class)
 class OpenSearchSinkIT {
 
     /**

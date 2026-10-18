@@ -2,9 +2,10 @@ package ai.anomalousvectors.tools.burp.sinks;
 
 import java.io.IOException;
 
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.indices.DeleteIndexRequest;
 
@@ -12,12 +13,14 @@ import ai.anomalousvectors.tools.burp.testutils.OpenSearchReachable;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 
 /**
- * Runs last in {@link OpenSearchIntegrationSuite} and deletes all test-created exporter indexes.
+ * Verifies the broad test-cluster cleanup helper independently of test-class ordering.
  *
- * <p>Cleanup is broad by design for the dedicated test OpenSearch instance: quiesce recurring
- * reporters first, then delete the current exporter index prefix so no exporter state is left
- * behind after the suite.</p>
+ * <p>Cleanup is broad only within the fixed exporter test-index prefix on the shared cluster.
+ * It quiesces recurring reporters before deletion and leaves other project/platform indexes
+ * untouched. {@link OpenSearchCleanupExtension} owns final root cleanup.</p>
  */
+@Tag("integration")
+@ExtendWith(OpenSearchCleanupExtension.class)
 public class OpenSearchCleanupIT {
 
     @Test
@@ -41,19 +44,18 @@ public class OpenSearchCleanupIT {
     }
 
     /**
-     * Deletes all exporter-managed indices from the dedicated integration-test cluster.
+     * Deletes the fixed exporter test-index prefix from the shared integration-test cluster.
      *
      * <p>This cleanup is best-effort by design. It first resets recurring exporter lifecycle state
      * and then deletes the current default prefix so later tests start from a clean cluster.</p>
      */
-    @AfterAll
     public static void deleteExporterIndexesNow() {
         try {
             ExportReporterLifecycle.resetForTests();
             OpenSearchClient client = OpenSearchReachable.getClient();
             deletePrefix(client, IndexNaming.INDEX_PREFIX);
         } catch (IOException | RuntimeException ignored) {
-            // Best-effort suite cleanup for the dedicated test cluster.
+            // Best-effort cleanup is verified by the post-build exporter-index inventory.
         }
     }
 

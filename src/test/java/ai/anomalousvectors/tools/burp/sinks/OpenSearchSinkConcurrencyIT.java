@@ -9,7 +9,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -19,8 +21,10 @@ import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 
 /**
  * Concurrency smoke test: creating multiple indices in parallel should not deadlock or throw.
- * Run via {@link OpenSearchIntegrationSuite}; tag "integration" is on the suite.
+ * Root-owned cleanup runs after all selected Jupiter tests finish.
  */
+@Tag("integration")
+@ExtendWith(OpenSearchCleanupExtension.class)
 class OpenSearchSinkConcurrencyIT {
 
     // Standard short names
