@@ -27,7 +27,6 @@ import javax.swing.SwingConstants;
 import javax.swing.UIManager;
 
 import ai.anomalousvectors.tools.burp.ui.primitives.ScrollPanes;
-import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.ProductInfo;
 import ai.anomalousvectors.tools.burp.utils.Version;
 import net.miginfocom.swing.MigLayout;
@@ -148,7 +147,7 @@ public final class AboutPanel extends JPanel {
     private static JPanel buildLinkRow(
             String labelText, String url, Font bodyFont, LinkOpener opener) {
         // The link keeps its preferred width beside the label; spare window space stays on the right.
-        JPanel row = new JPanel(new MigLayout("insets 0, gapx 6, hidemode 3", "[][left]", "[]"));
+        JPanel row = new JPanel(new MigLayout("insets 0, gapx 6", "[][left]", "[]"));
         row.setOpaque(false);
 
         JLabel label = new JLabel(labelText);
@@ -169,33 +168,18 @@ public final class AboutPanel extends JPanel {
         open.getAccessibleContext().setAccessibleDescription(url);
         label.setLabelFor(open);
 
-        JLabel status = new JLabel();
-        status.setName("about.release.status");
-        status.setFont(bodyFont);
-        status.setVisible(false);
         open.addActionListener(event -> {
             try {
                 opener.open(URI.create(url));
-                showLinkStatus(status, "Open request sent to your default browser.");
-            } catch (IOException | UnsupportedOperationException | SecurityException failure) {
-                showLinkStatus(status, "Could not open the default browser.");
-                Logger.logWarnPanelOnly("[About] Default-browser launch failed ("
-                        + failure.getClass().getSimpleName() + ").");
+            } catch (IOException | UnsupportedOperationException | SecurityException ignored) {
+                // Browser handoff is best-effort; it must not add About content or log events.
             }
         });
         bindEnter(open);
 
         row.add(label);
         row.add(open);
-        row.add(status, "newline, skip 1");
         return row;
-    }
-
-    private static void showLinkStatus(JLabel status, String text) {
-        status.setText(text);
-        status.setVisible(true);
-        status.revalidate();
-        status.repaint();
     }
 
     /** Keeps normal button Space/focus behavior and adds Enter without a mouse-only event path. */

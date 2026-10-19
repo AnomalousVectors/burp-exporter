@@ -48,11 +48,12 @@ class AboutPanelReleaseLinkTest {
     void link_preservesExactUrlAndAccessibleName_withoutActingUntilClicked() throws Exception {
         SwingUtilities.invokeAndWait(() -> {
             List<URI> opened = new ArrayList<>();
+            List<String> logs = new ArrayList<>();
+            Logger.registerListener((level, message) -> logs.add(level + ": " + message));
             var panel = new AboutPanel(opened::add);
             JButton open = find(panel, "about.release.open", JButton.class);
-            JLabel status = find(panel, "about.release.status", JLabel.class);
             assertThat(opened).isEmpty();
-            assertThat(status.isVisible()).isFalse();
+            assertThat(find(panel, "about.release.status", JLabel.class)).isNull();
             assertThat(open.getText()).isEqualTo(ProductInfo.REPOSITORY_URL);
             assertThat(open.isFocusable()).isTrue();
             assertThat(open.isFocusPainted()).isTrue();
@@ -65,8 +66,9 @@ class AboutPanelReleaseLinkTest {
             assertThat(find(panel, "about.release.copy", JButton.class)).isNull();
             open.doClick(0);
             assertThat(opened).containsExactly(URI.create(ProductInfo.REPOSITORY_URL));
-            assertThat(status.getText()).isEqualTo("Open request sent to your default browser.");
-            assertThat(status.isVisible()).isTrue();
+            assertThat(find(panel, "about.release.status", JLabel.class)).isNull();
+            assertThat(open.getParent().getComponents()).hasSize(2);
+            assertThat(logs).isEmpty();
         });
     }
 
@@ -85,8 +87,10 @@ class AboutPanelReleaseLinkTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"io", "unsupported", "security"})
-    void browserFailure_isVisibleWithoutExposingPlatformDetails(String kind) throws Exception {
+    void browserFailure_doesNotAddAboutContentOrLogEvents(String kind) throws Exception {
         SwingUtilities.invokeAndWait(() -> {
+            List<String> logs = new ArrayList<>();
+            Logger.registerListener((level, message) -> logs.add(level + ": " + message));
             var panel = new AboutPanel(uri -> {
                 switch (kind) {
                     case "io" -> throw new IOException("private OS detail");
@@ -94,10 +98,11 @@ class AboutPanelReleaseLinkTest {
                     default -> throw new SecurityException("private OS detail");
                 }
             });
-            find(panel, "about.release.open", JButton.class).doClick(0);
-            JLabel status = find(panel, "about.release.status", JLabel.class);
-            assertThat(status.isVisible()).isTrue();
-            assertThat(status.getText()).isEqualTo("Could not open the default browser.");
+            JButton open = find(panel, "about.release.open", JButton.class);
+            open.doClick(0);
+            assertThat(find(panel, "about.release.status", JLabel.class)).isNull();
+            assertThat(open.getParent().getComponents()).hasSize(2);
+            assertThat(logs).isEmpty();
         });
     }
 
@@ -133,7 +138,7 @@ class AboutPanelReleaseLinkTest {
                 assertThat(open.getX()).isLessThan(200);
                 assertThat(open.getY() + open.getHeight() / 2)
                         .isBetween(label.getY(), label.getY() + label.getHeight());
-                assertThat(row.getComponents()).hasSize(3); // Label, hyperlink, initially hidden status only.
+                assertThat(row.getComponents()).hasSize(2); // Original label and hyperlink only.
 
                 var image = new BufferedImage(width, panel.getHeight(), BufferedImage.TYPE_INT_RGB);
                 var graphics = image.createGraphics();
@@ -143,10 +148,11 @@ class AboutPanelReleaseLinkTest {
                     graphics.dispose();
                 }
                 rendered.set(image);
-                int linkX = open.getX();
+                var bounds = open.getBounds();
                 open.doClick(0);
                 layoutTree(panel);
-                assertThat(open.getX()).as("Status feedback must not shift the hyperlink").isEqualTo(linkX);
+                assertThat(open.getBounds()).as("Clicking must not change the hyperlink layout").isEqualTo(bounds);
+                assertThat(row.getComponents()).hasSize(2);
             } finally {
                 UIManager.put("Panel.background", previousBackground);
                 UIManager.put("Label.foreground", previousForeground);
