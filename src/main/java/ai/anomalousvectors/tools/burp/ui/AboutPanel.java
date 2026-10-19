@@ -9,18 +9,25 @@ import java.awt.Font;
 import java.awt.GradientPaint;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.Insets;
 import java.awt.RenderingHints;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
+import java.awt.event.ActionEvent;
 import java.io.IOException;
 import java.io.Serial;
+import java.net.URI;
+import java.util.Objects;
 
+import javax.swing.AbstractAction;
+import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.KeyStroke;
+import javax.swing.SwingConstants;
 import javax.swing.UIManager;
 
 import ai.anomalousvectors.tools.burp.ui.primitives.ScrollPanes;
+import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.ProductInfo;
 import ai.anomalousvectors.tools.burp.utils.Version;
 import net.miginfocom.swing.MigLayout;
@@ -61,15 +68,20 @@ public final class AboutPanel extends JPanel {
 
     /** Creates the About panel UI on the EDT. */
     public AboutPanel() {
+        this(AboutPanel::browse);
+    }
+
+    /** Separates OS browser effects from EDT control wiring without changing their owner. */
+    AboutPanel(LinkOpener opener) {
         setLayout(new BorderLayout());
 
         String version = Version.get();
-        JPanel content = buildContent(version);
+        JPanel content = buildContent(version, Objects.requireNonNull(opener));
 
         add(ScrollPanes.wrapNoHorizontalScroll(content), BorderLayout.CENTER);
     }
 
-    private static JPanel buildContent(String version) {
+    private static JPanel buildContent(String version, LinkOpener opener) {
         JPanel panel = new JPanel(new MigLayout("insets 12, wrap 1, fillx", "[grow,left]"));
         panel.setOpaque(true);
         panel.setBackground(UIManager.getColor("Panel.background"));
@@ -82,7 +94,7 @@ public final class AboutPanel extends JPanel {
         panel.add(buildPlainRow(ProductInfo.EXTENSION_NAME, extensionNameFont), bodyIndent + ", gapbottom 2");
         panel.add(buildPlainRow("Version " + version, bodyFont), bodyIndent + ", gapbottom " + SECTION_GAP_BOTTOM);
         panel.add(buildDescriptionRow(bodyFont), bodyIndent + ", growx, gapbottom " + SECTION_GAP_BOTTOM);
-        panel.add(buildLinkRow(ProductInfo.REPOSITORY_LABEL, ProductInfo.REPOSITORY_URL, bodyFont),
+        panel.add(buildLinkRow(ProductInfo.REPOSITORY_LABEL, ProductInfo.REPOSITORY_URL, bodyFont, opener),
                 bodyIndent + ", growx");
         return panel;
     }
@@ -133,27 +145,71 @@ public final class AboutPanel extends JPanel {
         return description;
     }
 
-    private static JPanel buildLinkRow(String labelText, String url, Font bodyFont) {
-        JPanel row = new JPanel(new MigLayout("insets 0, gapx 6", "[][grow,left]", "[]"));
+    private static JPanel buildLinkRow(
+            String labelText, String url, Font bodyFont, LinkOpener opener) {
+        // The link keeps its preferred width beside the label; spare window space stays on the right.
+        JPanel row = new JPanel(new MigLayout("insets 0, gapx 6, hidemode 3", "[][left]", "[]"));
         row.setOpaque(false);
 
         JLabel label = new JLabel(labelText);
         label.setFont(bodyFont);
         label.setForeground(UIManager.getColor("Label.foreground"));
 
-        JLabel urlLabel = new JLabel(url);
-        urlLabel.setFont(bodyFont);
-        urlLabel.setForeground(readableLinkColor(defaultColor(UIManager.getColor("Panel.background"), Color.WHITE)));
-        urlLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        urlLabel.addMouseListener(new MouseAdapter() {
-            @Override public void mouseClicked(MouseEvent e) {
-                openLink(url);
+        JButton open = new JButton(url);
+        open.setName("about.release.open");
+        open.setFont(bodyFont);
+        open.setForeground(readableLinkColor(defaultColor(UIManager.getColor("Panel.background"), Color.WHITE)));
+        open.setContentAreaFilled(false);
+        open.setBorderPainted(false);
+        open.setMargin(new Insets(0, 0, 0, 0));
+        open.setHorizontalAlignment(SwingConstants.LEADING);
+        open.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        open.setToolTipText("Open the latest release in your default browser.");
+        open.getAccessibleContext().setAccessibleName("Open latest release in browser");
+        open.getAccessibleContext().setAccessibleDescription(url);
+        label.setLabelFor(open);
+
+        JLabel status = new JLabel();
+        status.setName("about.release.status");
+        status.setFont(bodyFont);
+        status.setVisible(false);
+        open.addActionListener(event -> {
+            try {
+                opener.open(URI.create(url));
+                showLinkStatus(status, "Open request sent to your default browser.");
+            } catch (IOException | UnsupportedOperationException | SecurityException failure) {
+                showLinkStatus(status, "Could not open the default browser.");
+                Logger.logWarnPanelOnly("[About] Default-browser launch failed ("
+                        + failure.getClass().getSimpleName() + ").");
             }
         });
+        bindEnter(open);
 
         row.add(label);
-        row.add(urlLabel, "growx");
+        row.add(open);
+        row.add(status, "newline, skip 1");
         return row;
+    }
+
+    private static void showLinkStatus(JLabel status, String text) {
+        status.setText(text);
+        status.setVisible(true);
+        status.revalidate();
+        status.repaint();
+    }
+
+    /** Keeps normal button Space/focus behavior and adds Enter without a mouse-only event path. */
+    private static void bindEnter(JButton button) {
+        String actionKey = "activate-release-control";
+        button.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke("ENTER"), actionKey);
+        button.getActionMap().put(actionKey, new AbstractAction() {
+            @Serial private static final long serialVersionUID = 1L;
+
+            @Override
+            public void actionPerformed(ActionEvent event) {
+                button.doClick(0);
+            }
+        });
     }
 
     private static Color defaultColor(Color color, Color fallback) {
@@ -193,14 +249,25 @@ public final class AboutPanel extends JPanel {
         return normalized <= 0.03928 ? normalized / 12.92 : Math.pow((normalized + 0.055) / 1.055, 2.4);
     }
 
-    private static void openLink(String url) {
+    private static void browse(URI uri) throws IOException {
         if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
-            return;
+            throw new UnsupportedOperationException("Default-browser launching is not supported.");
         }
-        try {
-            Desktop.getDesktop().browse(java.net.URI.create(url));
-        } catch (IOException | IllegalArgumentException ignored) {
-        }
+        Desktop.getDesktop().browse(uri);
+    }
+
+    /** Browser launch operation; invoked only by an explicit release-link action on the EDT. */
+    @FunctionalInterface
+    interface LinkOpener {
+        /**
+         * Hands the fixed release URI to the platform browser.
+         *
+         * @param uri release URI selected by the operator
+         * @throws IOException if the platform cannot launch its registered browser
+         * @throws UnsupportedOperationException if browser launching is unavailable
+         * @throws SecurityException if platform policy denies browser launching
+         */
+        void open(URI uri) throws IOException;
     }
 
     /**

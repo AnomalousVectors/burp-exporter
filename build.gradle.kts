@@ -292,16 +292,7 @@ tasks.register<Jar>("fatJar") {
     from(mergedServiceRoot)
 
     dependsOn(configurations.runtimeClasspath)
-    from({
-        configurations.runtimeClasspath.get()
-            .filter { it.name.endsWith("jar") }
-            .map { zipTree(it) }
-    }) {
-        // Logback's web-container integration is unrelated to the extension's SLF4J backend.
-        exclude("META-INF/services/jakarta.servlet.ServletContainerInitializer")
-        exclude("ch/qos/logback/classic/servlet/**")
-        exclude(sdkWarmupService)
-    }
+    // Runtime dependency expansion and owner-qualified legal metadata live in the attribution script.
 }
 
 tasks.named<Jar>("jar") {

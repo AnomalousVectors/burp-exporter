@@ -6,8 +6,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 import javax.swing.JLabel;
+import javax.swing.AbstractButton;
 import javax.swing.JScrollPane;
 import javax.swing.JTextArea;
+import javax.swing.SwingUtilities;
 
 import org.junit.jupiter.api.Test;
 
@@ -28,39 +30,38 @@ class AboutPanelVersionHeadlessTest {
     }
 
     @Test
-    void text_includes_version_from_system_property_override() {
+    void text_includes_version_from_system_property_override() throws Exception {
         try {
             previous = System.getProperty("burp.exporter.version");
             System.setProperty("burp.exporter.version", "1.2.3-test");
 
-            AboutPanel p = new AboutPanel();
-            String txt = collectVisibleText(p);
-            List<JLabel> labels = findLabels(p);
+            SwingUtilities.invokeAndWait(() -> {
+                AboutPanel p = new AboutPanel();
+                String txt = collectVisibleText(p);
+                List<JLabel> labels = findLabels(p);
 
-            assertThat(txt)
-                    .contains(ProductInfo.ORGANIZATION_NAME)
-                    .contains(ProductInfo.ORGANIZATION_TAGLINE)
-                    .contains(ProductInfo.EXTENSION_NAME)
-                    .contains("Version 1.2.3-test")
-                    .contains(
-                            "Continuously exports settings, sitemap data, issues, and traffic to indexed databases for agentic penetration testing and research.")
-                    .contains(ProductInfo.REPOSITORY_LABEL)
-                    .contains(ProductInfo.REPOSITORY_URL);
-            assertThat(txt)
-                    .doesNotContain("Always use the ")
-                    .doesNotContain(ProductInfo.EXTENSION_NAME + " v1.2.3-test")
-                    .doesNotContain("OpenSearch:")
-                    .doesNotContain("https://github.com/AnomalousVectors/opensearch")
-                    .doesNotContain("https://github.com/AnomalousVectors/burp-exporter\n");
-            assertThat(txt)
-                    .doesNotContain("Body export")
-                    .doesNotContain("body.b64")
-                    .doesNotContain("body.text")
-                    .doesNotContain("gzip, x-gzip, deflate, br, zstd, compress, x-compress");
-            assertThat(labels).filteredOn(label -> "latest".equals(label.getText())).isEmpty();
-            assertThat(labels).filteredOn(label -> ProductInfo.REPOSITORY_URL.equals(label.getText()))
-                    .hasSize(1)
-                    .allSatisfy(label -> assertThat(label.getMouseListeners()).isNotEmpty());
+                assertThat(txt)
+                        .contains(ProductInfo.ORGANIZATION_NAME)
+                        .contains(ProductInfo.ORGANIZATION_TAGLINE)
+                        .contains(ProductInfo.EXTENSION_NAME)
+                        .contains("Version 1.2.3-test")
+                        .contains(
+                                "Continuously exports settings, sitemap data, issues, and traffic to indexed databases for agentic penetration testing and research.")
+                        .contains(ProductInfo.REPOSITORY_LABEL)
+                        .contains(ProductInfo.REPOSITORY_URL);
+                assertThat(txt)
+                        .doesNotContain("Always use the ")
+                        .doesNotContain(ProductInfo.EXTENSION_NAME + " v1.2.3-test")
+                        .doesNotContain("OpenSearch:")
+                        .doesNotContain("https://github.com/AnomalousVectors/opensearch")
+                        .doesNotContain("https://github.com/AnomalousVectors/burp-exporter\n");
+                assertThat(txt)
+                        .doesNotContain("Body export")
+                        .doesNotContain("body.b64")
+                        .doesNotContain("body.text")
+                        .doesNotContain("gzip, x-gzip, deflate, br, zstd, compress, x-compress");
+                assertThat(labels).filteredOn(label -> "latest".equals(label.getText())).isEmpty();
+            });
         } finally {
             restore();
         }
@@ -102,6 +103,9 @@ class AboutPanelVersionHeadlessTest {
             }
             if (c instanceof JTextArea area) {
                 sb.append(area.getText()).append('\n');
+            }
+            if (c instanceof AbstractButton button) {
+                sb.append(button.getText()).append('\n');
             }
             if (c instanceof JScrollPane sp) {
                 Component view = sp.getViewport().getView();

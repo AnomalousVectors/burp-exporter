@@ -11,6 +11,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,6 +22,9 @@ import java.util.Set;
 import java.util.jar.JarFile;
 import java.util.regex.Pattern;
 
+import javax.imageio.ImageIO;
+import javax.swing.SwingUtilities;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -29,6 +33,44 @@ class PackagedJarTest {
 
     private static final String SERVLET_SERVICE = "META-INF/services/jakarta.servlet.ServletContainerInitializer";
     private static final String MERGED_SERVICE = "META-INF/services/software.amazon.awssdk.core.warmup.SdkWarmUpProvider";
+
+    @Test
+    void applicationResources_survivePackagingByteForByteAndRemainLoadable() throws Exception {
+        Path resources = Path.of("src/main/resources");
+        try (var paths = Files.walk(resources);
+                JarFile jar = new JarFile(packagedJar().toFile());
+                URLClassLoader loader = runtimeLoader()) {
+            for (Path source : paths.filter(Files::isRegularFile).toList()) {
+                String name = resources.relativize(source).toString().replace(File.separatorChar, '/');
+                assertThat(jar.getJarEntry(name)).as("Application resource: %s", name).isNotNull();
+                try (var input = loader.getResourceAsStream(name)) {
+                    assertThat(input).as("Isolated resource lookup: %s", name).isNotNull();
+                    assertThat(input.readAllBytes()).as(name).isEqualTo(Files.readAllBytes(source));
+                }
+            }
+        }
+    }
+
+    @Test
+    void isolatedUi_initializesSourcesNoticeFromThePackagedImage() throws Exception {
+        try (URLClassLoader loader = runtimeLoader()) {
+            try (var input = loader.getResourceAsStream("ui/notice-info.png")) {
+                assertThat(input).as("Required Sources notice icon").isNotNull();
+                var image = ImageIO.read(input);
+                assertThat(image).as("Decodable packaged PNG").isNotNull();
+                assertThat(image.getWidth()).isPositive();
+                assertThat(image.getHeight()).isPositive();
+            }
+            // Initialize the real UI class, not its source-classpath twin, on Swing's EDT.
+            SwingUtilities.invokeAndWait(() -> {
+                try {
+                    Class.forName("ai.anomalousvectors.tools.burp.ui.ConfigSourcesPanel", true, loader);
+                } catch (ClassNotFoundException failure) {
+                    throw new AssertionError(failure);
+                }
+            });
+        }
+    }
 
     @Test
     void runtimeJars_haveNoDuplicateNonModuleClassesOrLostServiceProviders() throws Exception {

@@ -161,9 +161,19 @@ val generateRuntimeAttributions = tasks.register("generateRuntimeAttributions") 
 tasks.named<Jar>("fatJar") {
     dependsOn(generateRuntimeAttributions)
     from(attributionRoot)
+    // Filter only dependency inputs: application assets such as ui/notice-info.png are not notices.
     // Upstream generic filenames move to owner-qualified paths; no arbitrary first-wins license.
-    exclude { isAttributionResource(it.relativePath.pathString) &&
-        !it.relativePath.pathString.startsWith("META-INF/burp-exporter/") }
+    from({
+        configurations.getByName("runtimeClasspath")
+            .filter { it.name.endsWith("jar") }
+            .map { zipTree(it) }
+    }) {
+        // Logback's web-container integration is unrelated to the extension's SLF4J backend.
+        exclude("META-INF/services/jakarta.servlet.ServletContainerInitializer")
+        exclude("ch/qos/logback/classic/servlet/**")
+        exclude("META-INF/services/software.amazon.awssdk.core.warmup.SdkWarmUpProvider")
+        exclude { isAttributionResource(it.relativePath.pathString) }
+    }
 }
 
 tasks.named<Test>("test") {

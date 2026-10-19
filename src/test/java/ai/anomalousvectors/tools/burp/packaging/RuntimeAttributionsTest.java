@@ -110,12 +110,14 @@ class RuntimeAttributionsTest {
 
     @Test
     void projectLicense_isExactAndGenericFirstWinsLegalFilesAreAbsent() throws Exception {
+        Path applicationResources = Path.of("src/main/resources");
         try (JarFile packaged = packagedJar();
                 InputStream license = Files.newInputStream(Path.of("LICENSE"));
                 InputStream bundled = resource(packaged, ROOT + "LICENSE.txt")) {
             assertThat(sha256(bundled)).isEqualTo(sha256(license));
             assertThat(packaged.stream().filter(entry -> !entry.isDirectory()).map(entry -> entry.getName())
-                    .filter(name -> isLegal(name) && !name.startsWith(ROOT)).toList()).isEmpty();
+                    .filter(name -> isLegal(name) && !name.startsWith(ROOT))
+                    .filter(name -> !Files.isRegularFile(applicationResources.resolve(name))).toList()).isEmpty();
         }
     }
 
