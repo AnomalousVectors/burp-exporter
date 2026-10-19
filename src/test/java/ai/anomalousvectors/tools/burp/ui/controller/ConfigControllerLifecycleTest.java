@@ -28,7 +28,6 @@ class ConfigControllerLifecycleTest {
         TestUi ui = new TestUi();
         CountDownLatch firstStarted = new CountDownLatch(1);
         CountDownLatch releaseFirst = new CountDownLatch(1);
-        CountDownLatch firstFinished = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(3);
         ConfigController controller = new ConfigController(
                 ui,
@@ -39,7 +38,6 @@ class ConfigControllerLifecycleTest {
                     if (url.contains("first")) {
                         firstStarted.countDown();
                         awaitIgnoringInterrupt(releaseFirst);
-                        firstFinished.countDown();
                         return connectionStatus("first");
                     }
                     return connectionStatus("second");
@@ -53,14 +51,14 @@ class ConfigControllerLifecycleTest {
             assertThat(ui.databaseStatus).contains("second");
 
             releaseFirst.countDown();
-            assertThat(firstFinished.await(2, TimeUnit.SECONDS)).isTrue();
-            flushEdt();
+            awaitWorkerCompletions(executor);
 
             assertThat(ui.databaseStatus).contains("second");
             assertThat(ui.databaseUpdates).containsExactly(ui.databaseStatus);
         } finally {
             releaseFirst.countDown();
             controller.close();
+            awaitWorkerCompletions(executor);
         }
     }
 
@@ -71,7 +69,6 @@ class ConfigControllerLifecycleTest {
         ConfigState.State secondState = mock(ConfigState.State.class);
         CountDownLatch firstStarted = new CountDownLatch(1);
         CountDownLatch releaseFirst = new CountDownLatch(1);
-        CountDownLatch firstFinished = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(3);
         ConfigController controller = new ConfigController(
                 ui,
@@ -80,7 +77,6 @@ class ConfigControllerLifecycleTest {
                     if (path.getFileName().toString().startsWith("first")) {
                         firstStarted.countDown();
                         awaitIgnoringInterrupt(releaseFirst);
-                        firstFinished.countDown();
                         return emptyImport(firstState);
                     }
                     return emptyImport(secondState);
@@ -96,14 +92,14 @@ class ConfigControllerLifecycleTest {
             assertThat(ui.importedStates).containsExactly(secondState);
 
             releaseFirst.countDown();
-            assertThat(firstFinished.await(2, TimeUnit.SECONDS)).isTrue();
-            flushEdt();
+            awaitWorkerCompletions(executor);
 
             assertThat(ui.importedStates).containsExactly(secondState);
             assertThat(ui.controlStatus).contains("second.json");
         } finally {
             releaseFirst.countDown();
             controller.close();
+            awaitWorkerCompletions(executor);
         }
     }
 
@@ -112,7 +108,6 @@ class ConfigControllerLifecycleTest {
         TestUi ui = new TestUi();
         CountDownLatch probeStarted = new CountDownLatch(1);
         CountDownLatch releaseProbe = new CountDownLatch(1);
-        CountDownLatch probeFinished = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(3);
         ConfigController controller = new ConfigController(
                 ui,
@@ -122,18 +117,22 @@ class ConfigControllerLifecycleTest {
                 (destination, url) -> {
                     probeStarted.countDown();
                     awaitIgnoringInterrupt(releaseProbe);
-                    probeFinished.countDown();
                     return connectionStatus("after-close");
                 });
 
-        controller.testConnectionAsync(ConfigState.SearchDestination.OPEN_SEARCH, "https://example.com");
-        assertThat(probeStarted.await(2, TimeUnit.SECONDS)).isTrue();
-        controller.close();
-        releaseProbe.countDown();
-        assertThat(probeFinished.await(2, TimeUnit.SECONDS)).isTrue();
-        flushEdt();
+        try {
+            controller.testConnectionAsync(ConfigState.SearchDestination.OPEN_SEARCH, "https://example.com");
+            assertThat(probeStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            controller.close();
+            releaseProbe.countDown();
+            awaitWorkerCompletions(executor);
 
-        assertThat(ui.databaseUpdates).isEmpty();
+            assertThat(ui.databaseUpdates).isEmpty();
+        } finally {
+            releaseProbe.countDown();
+            controller.close();
+            awaitWorkerCompletions(executor);
+        }
     }
 
     @Test
@@ -142,7 +141,6 @@ class ConfigControllerLifecycleTest {
         ConfigState.State importedState = mock(ConfigState.State.class);
         CountDownLatch exportStarted = new CountDownLatch(1);
         CountDownLatch releaseExport = new CountDownLatch(1);
-        CountDownLatch exportFinished = new CountDownLatch(1);
         ExecutorService executor = Executors.newFixedThreadPool(3);
         ConfigController controller = new ConfigController(
                 ui,
@@ -151,7 +149,6 @@ class ConfigControllerLifecycleTest {
                 (path, json, replacement) -> {
                     exportStarted.countDown();
                     awaitIgnoringInterrupt(releaseExport);
-                    exportFinished.countDown();
                 },
                 (destination, url) -> connectionStatus("unused"));
         try {
@@ -166,13 +163,13 @@ class ConfigControllerLifecycleTest {
             assertThat(ui.controlStatus).contains("newer.json");
 
             releaseExport.countDown();
-            assertThat(exportFinished.await(2, TimeUnit.SECONDS)).isTrue();
-            flushEdt();
+            awaitWorkerCompletions(executor);
 
             assertThat(ui.controlStatus).contains("newer.json");
         } finally {
             releaseExport.countDown();
             controller.close();
+            awaitWorkerCompletions(executor);
         }
     }
 
@@ -196,7 +193,11 @@ class ConfigControllerLifecycleTest {
         }
     }
 
-    private static void flushEdt() throws Exception {
+    /** Stub return precedes EDT submission; cancelled Futures also need not mean worker exit. */
+    private static void awaitWorkerCompletions(ExecutorService executor) throws Exception {
+        // Graceful shutdown lets stale completions reach their real fences before controller.close().
+        executor.shutdown();
+        assertThat(executor.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
         SwingUtilities.invokeAndWait(() -> { });
     }
 

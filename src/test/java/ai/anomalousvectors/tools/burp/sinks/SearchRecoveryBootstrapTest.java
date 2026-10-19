@@ -2,13 +2,16 @@ package ai.anomalousvectors.tools.burp.sinks;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
@@ -17,16 +20,30 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 class SearchRecoveryBootstrapTest {
 
     private final CountDownLatch releaseReplay = new CountDownLatch(1);
+    private final CountDownLatch watchdogElapsed = new CountDownLatch(1);
+    private final ExecutorService replayExecutor = Executors.newSingleThreadExecutor();
+    private final Logger.LogListener watchdogListener = (level, message) -> {
+        if ("WARN".equals(level) && message.contains("phase=snapshot_replay waitedMs=20 ")) {
+            watchdogElapsed.countDown();
+        }
+    };
 
     @AfterEach
-    void resetRuntime() {
+    void resetRuntime() throws InterruptedException {
         releaseReplay.countDown();
         ExportRunToken token = RuntimeConfig.currentExportRunToken();
         RuntimeConfig.setExportRunning(false);
         StartupSnapshotCoordinator.cancelRun(token);
-        StartupSnapshotCoordinator.awaitIdle(token, 2_000L);
-        StartupSnapshotCoordinator.resetForTests();
-        RuntimeConfig.resetExportRunForTests();
+        replayExecutor.shutdownNow();
+        try {
+            // The outer replay finally block must finish before resetting run-global flags.
+            assertThat(replayExecutor.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(StartupSnapshotCoordinator.awaitIdle(token, 2_000L)).isTrue();
+        } finally {
+            Logger.unregisterListener(watchdogListener);
+            StartupSnapshotCoordinator.resetForTests();
+            RuntimeConfig.resetExportRunForTests();
+        }
     }
 
     @Test
@@ -34,8 +51,9 @@ class SearchRecoveryBootstrapTest {
         RuntimeConfig.setExportRunning(true);
         ExportRunToken token = RuntimeConfig.currentExportRunToken();
         CountDownLatch replayStarted = new CountDownLatch(1);
+        Logger.registerListener(watchdogListener);
 
-        CompletableFuture<Boolean> replay = CompletableFuture.supplyAsync(() ->
+        Future<Boolean> replay = replayExecutor.submit(() ->
                 SearchRecoveryBootstrap.runReplayWithWatchdog(
                         token,
                         20L,
@@ -50,8 +68,9 @@ class SearchRecoveryBootstrapTest {
                         () -> true));
 
         assertThat(replayStarted.await(2, TimeUnit.SECONDS)).isTrue();
-        TimeUnit.MILLISECONDS.sleep(80L);
-        assertThat(replay).isNotDone();
+        assertThat(watchdogElapsed.await(2, TimeUnit.SECONDS))
+                .as("The watchdog must actually fire while replay is held").isTrue();
+        assertThat(replay.isDone()).isFalse();
         assertThat(RuntimeConfig.isSearchRecoveryReplay()).isTrue();
 
         releaseReplay.countDown();

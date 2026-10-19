@@ -4,9 +4,12 @@ import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestS
 import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestSupport.fileOnlyTrafficState;
 import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestSupport.preparedTrafficDoc;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -14,6 +17,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -34,167 +38,238 @@ class StopDuringSnapshotExportTest {
     private static final long PREPARE_DELAY_NS = 2_000_000L;
     private static final long STOP_JOIN_TIMEOUT_MS = 30_000L;
 
-    @Test
-    void run_stopsWithinTimeout_whenExportRunningClearedMidSnapshot() throws Exception {
+    private final List<Thread> ownedWorkers = new ArrayList<>();
+    private final ConcurrentLinkedQueue<Throwable> workerFailures = new ConcurrentLinkedQueue<>();
+    private final CountDownLatch releasePrepare = new CountDownLatch(1);
+
+    @AfterEach
+    void tearDown() throws InterruptedException {
+        stopTestWorkers();
+    }
+
+    /** Release and retire raw test threads before resetting the shared exporter owners. */
+    private void stopTestWorkers() throws InterruptedException {
+        RuntimeConfig.setExportRunning(false);
+        releasePrepare.countDown();
+        for (Thread worker : ownedWorkers) {
+            worker.interrupt();
+        }
         try {
-            Path root = TestPathSupport.createDirectory("stop-during-snapshot-cooperative");
-            RuntimeConfig.updateState(fileOnlyTrafficState(root));
-            RuntimeConfig.setExportRunning(true);
-
-            String indexName = IndexNaming.indexNameForShortName("traffic");
-            List<Integer> items = IntStream.range(0, ITEM_COUNT).boxed().toList();
-            AtomicInteger preparedCount = new AtomicInteger();
-            CountDownLatch preparationStarted = new CountDownLatch(1);
-            AtomicReference<SnapshotExportEngine.Result> resultRef = new AtomicReference<>();
-
-            Thread snapshotThread = new Thread(
-                    () -> resultRef.set(runSyntheticSnapshot(indexName, items, preparedCount, preparationStarted)),
-                    "test-snapshot-cooperative-stop");
-            snapshotThread.start();
-
-            assertThat(preparationStarted.await(5, TimeUnit.SECONDS)).isTrue();
-            LockSupport.parkNanos(150_000_000L);
-            RuntimeConfig.setExportRunning(false);
-
-            snapshotThread.join(STOP_JOIN_TIMEOUT_MS);
-            assertThat(snapshotThread.isAlive())
-                    .as("snapshot assembly thread must exit after export running is cleared")
-                    .isFalse();
-            assertThat(preparedCount.get()).isPositive().isLessThan(ITEM_COUNT);
-            assertThat(resultRef.get()).isNotNull();
-            assertThat(resultRef.get().attempted()).isLessThan(ITEM_COUNT);
-            assertThat(awaitFlushPoolsIdle(10_000L))
-                    .as("snapshot flush pools must return to idle after cooperative stop")
-                    .isTrue();
-            assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
-            assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            for (Thread worker : ownedWorkers) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0L) {
+                    break;
+                }
+                TimeUnit.NANOSECONDS.timedJoin(worker, remaining);
+            }
+            assertThat(ownedWorkers).as("All raw fixture workers must exit before global reset")
+                    .allMatch(worker -> !worker.isAlive());
+            Throwable firstFailure = workerFailures.poll();
+            if (firstFailure != null) {
+                AssertionError reported = new AssertionError("Raw fixture worker failed", firstFailure);
+                Throwable additional;
+                while ((additional = workerFailures.poll()) != null) {
+                    reported.addSuppressed(additional);
+                }
+                throw reported;
+            }
         } finally {
             ExportReporterLifecycle.resetForTests();
         }
+    }
+
+    private Thread newWorker(Runnable work, String name) {
+        Thread worker = new Thread(() -> {
+            try {
+                work.run();
+            } catch (RuntimeException | Error failure) {
+                // Raw-thread exceptions must fail the owning JUnit test, not only print to stderr.
+                workerFailures.add(failure);
+            }
+        }, name);
+        ownedWorkers.add(worker);
+        return worker;
+    }
+
+    @Test
+    void cleanup_releasesAndJoinsRawWorker_whenScenarioAssertionFails() throws Exception {
+        CountDownLatch started = new CountDownLatch(1);
+        AssertionError scenarioFailure = new AssertionError("synthetic scenario failure");
+        assertThatThrownBy(() -> {
+            try {
+                Thread worker = newWorker(() -> {
+                    started.countDown();
+                    try {
+                        releasePrepare.await();
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                    }
+                }, "test-snapshot-failed-scenario");
+                worker.start();
+                assertThat(started.await(2, TimeUnit.SECONDS)).isTrue();
+                throw scenarioFailure;
+            } finally {
+                stopTestWorkers();
+            }
+        }).isSameAs(scenarioFailure);
+        assertThat(ownedWorkers).allMatch(worker -> !worker.isAlive());
+    }
+
+    @Test
+    void cleanup_reportsRawWorkerFailureToTheOwningTest() throws Exception {
+        AssertionError workerFailure = new AssertionError("synthetic worker failure");
+        Thread worker = newWorker(() -> { throw workerFailure; }, "test-snapshot-failed-worker");
+        worker.start();
+        worker.join(2_000L);
+        assertThat(worker.isAlive()).isFalse();
+        assertThatThrownBy(this::stopTestWorkers).isInstanceOf(AssertionError.class).hasCause(workerFailure);
+    }
+
+    @Test
+    void run_stopsWithinTimeout_whenExportRunningClearedMidSnapshot() throws Exception {
+        Path root = TestPathSupport.createDirectory("stop-during-snapshot-cooperative");
+        RuntimeConfig.updateState(fileOnlyTrafficState(root));
+        RuntimeConfig.setExportRunning(true);
+
+        String indexName = IndexNaming.indexNameForShortName("traffic");
+        List<Integer> items = IntStream.range(0, ITEM_COUNT).boxed().toList();
+        AtomicInteger preparedCount = new AtomicInteger();
+        CountDownLatch preparationStarted = new CountDownLatch(1);
+        AtomicReference<SnapshotExportEngine.Result> resultRef = new AtomicReference<>();
+
+        Thread snapshotThread = newWorker(
+                () -> resultRef.set(runSyntheticSnapshot(indexName, items, preparedCount, preparationStarted)),
+                "test-snapshot-cooperative-stop");
+        snapshotThread.start();
+
+        assertThat(preparationStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        LockSupport.parkNanos(150_000_000L);
+        RuntimeConfig.setExportRunning(false);
+
+        snapshotThread.join(STOP_JOIN_TIMEOUT_MS);
+        assertThat(snapshotThread.isAlive())
+                .as("snapshot assembly thread must exit after export running is cleared")
+                .isFalse();
+        assertThat(preparedCount.get()).isPositive().isLessThan(ITEM_COUNT);
+        assertThat(resultRef.get()).isNotNull();
+        assertThat(resultRef.get().attempted()).isLessThan(ITEM_COUNT);
+        assertThat(awaitFlushPoolsIdle(10_000L))
+                .as("snapshot flush pools must return to idle after cooperative stop")
+                .isTrue();
+        assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
+        assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
     }
 
     @Test
     void lifecycle_stopAndClearPendingExportWork_completesWhileSnapshotRunning() throws Exception {
-        try {
-            Path root = TestPathSupport.createDirectory("stop-during-snapshot-lifecycle");
-            RuntimeConfig.updateState(fileOnlyTrafficState(root));
-            RuntimeConfig.setExportRunning(true);
+        Path root = TestPathSupport.createDirectory("stop-during-snapshot-lifecycle");
+        RuntimeConfig.updateState(fileOnlyTrafficState(root));
+        RuntimeConfig.setExportRunning(true);
 
-            String indexName = IndexNaming.indexNameForShortName("traffic");
-            List<Integer> items = IntStream.range(0, ITEM_COUNT).boxed().toList();
-            AtomicInteger preparedCount = new AtomicInteger();
-            CountDownLatch preparationStarted = new CountDownLatch(1);
+        String indexName = IndexNaming.indexNameForShortName("traffic");
+        List<Integer> items = IntStream.range(0, ITEM_COUNT).boxed().toList();
+        AtomicInteger preparedCount = new AtomicInteger();
+        CountDownLatch preparationStarted = new CountDownLatch(1);
 
-            Thread snapshotThread = new Thread(
-                    () -> runSyntheticSnapshot(indexName, items, preparedCount, preparationStarted),
-                    "test-snapshot-lifecycle-stop");
-            snapshotThread.start();
+        Thread snapshotThread = newWorker(
+                () -> runSyntheticSnapshot(indexName, items, preparedCount, preparationStarted),
+                "test-snapshot-lifecycle-stop");
+        snapshotThread.start();
 
-            assertThat(preparationStarted.await(5, TimeUnit.SECONDS)).isTrue();
-            LockSupport.parkNanos(100_000_000L);
+        assertThat(preparationStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        LockSupport.parkNanos(100_000_000L);
 
-            Thread stopThread = new Thread(ExportReporterLifecycle::stopAndClearPendingExportWork, "test-stop-worker");
-            stopThread.start();
-            stopThread.join(STOP_JOIN_TIMEOUT_MS);
+        Thread stopThread = newWorker(ExportReporterLifecycle::stopAndClearPendingExportWork, "test-stop-worker");
+        stopThread.start();
+        stopThread.join(STOP_JOIN_TIMEOUT_MS);
 
-            snapshotThread.join(STOP_JOIN_TIMEOUT_MS);
-            assertThat(stopThread.isAlive()).isFalse();
-            assertThat(snapshotThread.isAlive()).isFalse();
-            assertThat(RuntimeConfig.isExportRunning()).isFalse();
-            assertThat(TrafficExportQueue.getCurrentSize()).isNotNegative();
-            assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
-            assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
-            assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
-        } finally {
-            ExportReporterLifecycle.resetForTests();
-        }
+        snapshotThread.join(STOP_JOIN_TIMEOUT_MS);
+        assertThat(stopThread.isAlive()).isFalse();
+        assertThat(snapshotThread.isAlive()).isFalse();
+        assertThat(RuntimeConfig.isExportRunning()).isFalse();
+        assertThat(TrafficExportQueue.getCurrentSize()).isNotNegative();
+        assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
+        assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
+        assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
     }
 
     @Test
     void lifecycle_stopAndClearSessionState_completesWhileSnapshotRunning() throws Exception {
-        try {
-            Path root = TestPathSupport.createDirectory("stop-during-snapshot-unload");
-            RuntimeConfig.updateState(fileOnlyTrafficState(root));
-            RuntimeConfig.setExportRunning(true);
+        Path root = TestPathSupport.createDirectory("stop-during-snapshot-unload");
+        RuntimeConfig.updateState(fileOnlyTrafficState(root));
+        RuntimeConfig.setExportRunning(true);
 
-            String indexName = IndexNaming.indexNameForShortName("traffic");
-            List<Integer> items = IntStream.range(0, ITEM_COUNT).boxed().toList();
-            CountDownLatch preparationStarted = new CountDownLatch(1);
+        String indexName = IndexNaming.indexNameForShortName("traffic");
+        List<Integer> items = IntStream.range(0, ITEM_COUNT).boxed().toList();
+        CountDownLatch preparationStarted = new CountDownLatch(1);
 
-            Thread snapshotThread = new Thread(
-                    () -> runSyntheticSnapshot(indexName, items, new AtomicInteger(), preparationStarted),
-                    "test-snapshot-unload-stop");
-            snapshotThread.start();
+        Thread snapshotThread = newWorker(
+                () -> runSyntheticSnapshot(indexName, items, new AtomicInteger(), preparationStarted),
+                "test-snapshot-unload-stop");
+        snapshotThread.start();
 
-            assertThat(preparationStarted.await(5, TimeUnit.SECONDS)).isTrue();
-            LockSupport.parkNanos(100_000_000L);
+        assertThat(preparationStarted.await(5, TimeUnit.SECONDS)).isTrue();
+        LockSupport.parkNanos(100_000_000L);
 
-            Thread unloadThread = new Thread(ExportReporterLifecycle::stopAndClearSessionState, "test-unload-worker");
-            unloadThread.start();
-            unloadThread.join(STOP_JOIN_TIMEOUT_MS);
+        Thread unloadThread = newWorker(ExportReporterLifecycle::stopAndClearSessionState, "test-unload-worker");
+        unloadThread.start();
+        unloadThread.join(STOP_JOIN_TIMEOUT_MS);
 
-            snapshotThread.join(STOP_JOIN_TIMEOUT_MS);
-            assertThat(unloadThread.isAlive()).isFalse();
-            assertThat(snapshotThread.isAlive()).isFalse();
-            assertThat(RuntimeConfig.isExportRunning()).isFalse();
-            assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
-        } finally {
-            ExportReporterLifecycle.resetForTests();
-        }
+        snapshotThread.join(STOP_JOIN_TIMEOUT_MS);
+        assertThat(unloadThread.isAlive()).isFalse();
+        assertThat(snapshotThread.isAlive()).isFalse();
+        assertThat(RuntimeConfig.isExportRunning()).isFalse();
+        assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
     }
 
     @Test
     void staleRunDoesNotDeliverLateObserverOutcomeIntoNextStart() throws Exception {
-        try {
-            Path root = TestPathSupport.createDirectory("snapshot-next-run-isolation");
-            RuntimeConfig.updateState(fileOnlyTrafficState(root));
-            RuntimeConfig.setExportRunning(true);
-            RuntimeConfig.ExportRunToken oldToken = RuntimeConfig.currentExportRunToken();
-            String indexName = IndexNaming.indexNameForShortName("traffic");
-            CountDownLatch prepareStarted = new CountDownLatch(1);
-            CountDownLatch releasePrepare = new CountDownLatch(1);
-            AtomicInteger observerCalls = new AtomicInteger();
+        Path root = TestPathSupport.createDirectory("snapshot-next-run-isolation");
+        RuntimeConfig.updateState(fileOnlyTrafficState(root));
+        RuntimeConfig.setExportRunning(true);
+        RuntimeConfig.ExportRunToken oldToken = RuntimeConfig.currentExportRunToken();
+        String indexName = IndexNaming.indexNameForShortName("traffic");
+        CountDownLatch prepareStarted = new CountDownLatch(1);
+        AtomicInteger observerCalls = new AtomicInteger();
 
-            Thread snapshotThread = new Thread(
-                    () -> SnapshotExportEngine.run(
-                            oldToken,
-                            List.of(1),
-                            1,
-                            5_000_000L,
-                            1,
-                            null,
-                            null,
-                            "",
-                            indexName,
-                            "traffic",
-                            item -> {
-                                prepareStarted.countDown();
-                                try {
-                                    releasePrepare.await();
-                                } catch (InterruptedException e) {
-                                    Thread.currentThread().interrupt();
-                                }
-                                return preparedTrafficDoc(indexName, item, 512L);
-                            },
-                            (chunk, outcome, nextTarget) -> observerCalls.incrementAndGet()),
-                    "test-snapshot-next-run-isolation");
-            snapshotThread.start();
+        Thread snapshotThread = newWorker(
+                () -> SnapshotExportEngine.run(
+                        oldToken,
+                        List.of(1),
+                        1,
+                        5_000_000L,
+                        1,
+                        null,
+                        null,
+                        "",
+                        indexName,
+                        "traffic",
+                        item -> {
+                            prepareStarted.countDown();
+                            try {
+                                releasePrepare.await();
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                            return preparedTrafficDoc(indexName, item, 512L);
+                        },
+                        (chunk, outcome, nextTarget) -> observerCalls.incrementAndGet()),
+                "test-snapshot-next-run-isolation");
+        snapshotThread.start();
 
-            assertThat(prepareStarted.await(2, TimeUnit.SECONDS)).isTrue();
-            RuntimeConfig.setExportRunning(false);
-            SnapshotExportEngine.cancelRun(oldToken);
-            RuntimeConfig.setExportRunning(true);
-            RuntimeConfig.ExportRunToken newToken = RuntimeConfig.currentExportRunToken();
-            releasePrepare.countDown();
+        assertThat(prepareStarted.await(2, TimeUnit.SECONDS)).isTrue();
+        RuntimeConfig.setExportRunning(false);
+        SnapshotExportEngine.cancelRun(oldToken);
+        RuntimeConfig.setExportRunning(true);
+        RuntimeConfig.ExportRunToken newToken = RuntimeConfig.currentExportRunToken();
+        releasePrepare.countDown();
 
-            snapshotThread.join(5_000L);
-            assertThat(snapshotThread.isAlive()).isFalse();
-            assertThat(observerCalls).hasValue(0);
-            assertThat(RuntimeConfig.isExportRunActive(oldToken)).isFalse();
-            assertThat(RuntimeConfig.isExportRunActive(newToken)).isTrue();
-        } finally {
-            ExportReporterLifecycle.resetForTests();
-        }
+        snapshotThread.join(5_000L);
+        assertThat(snapshotThread.isAlive()).isFalse();
+        assertThat(observerCalls).hasValue(0);
+        assertThat(RuntimeConfig.isExportRunActive(oldToken)).isFalse();
+        assertThat(RuntimeConfig.isExportRunActive(newToken)).isTrue();
     }
 
     private static SnapshotExportEngine.Result runSyntheticSnapshot(

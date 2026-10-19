@@ -36,11 +36,15 @@ class WorkersTest {
     @Test
     void awaitExecutorShutdown_normalShutdown_terminatesExecutor() throws Exception {
         ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Workers.awaitExecutorShutdown(executor, 1_000L);
 
-        Workers.awaitExecutorShutdown(executor, 1_000L);
-
-        assertThat(executor.isShutdown()).isTrue();
-        assertThat(executor.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(executor.isShutdown()).isTrue();
+            assertThat(executor.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+        }
     }
 
     @Test
@@ -61,13 +65,19 @@ class WorkersTest {
             }
         }, "workers-test-worker");
         worker.setDaemon(true);
-        worker.start();
-        assertThat(running.await(2, TimeUnit.SECONDS)).isTrue();
+        try {
+            worker.start();
+            assertThat(running.await(2, TimeUnit.SECONDS)).isTrue();
 
-        Workers.awaitThreadJoin(worker, 2_000L);
+            Workers.awaitThreadJoin(worker, 2_000L);
 
-        assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
-        assertThat(worker.isAlive()).isFalse();
+            assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(worker.isAlive()).isFalse();
+        } finally {
+            worker.interrupt();
+            worker.join(2_000L);
+            assertThat(worker.isAlive()).isFalse();
+        }
     }
 
     @Test
@@ -83,16 +93,22 @@ class WorkersTest {
             }
         }, "workers-test-worker-nowait");
         worker.setDaemon(true);
-        worker.start();
-        assertThat(running.await(2, TimeUnit.SECONDS)).isTrue();
+        try {
+            worker.start();
+            assertThat(running.await(2, TimeUnit.SECONDS)).isTrue();
 
-        // timeoutMs=0 requests interrupt without joining; the worker processes the interrupt
-        // asynchronously, so we verify via a latch rather than the thread's interrupt flag
-        // (which the worker clears when it catches InterruptedException).
-        Workers.awaitThreadJoin(worker, 0L);
+            // timeoutMs=0 requests interrupt without joining; the worker processes the interrupt
+            // asynchronously, so we verify via a latch rather than the thread's interrupt flag
+            // (which the worker clears when it catches InterruptedException).
+            Workers.awaitThreadJoin(worker, 0L);
 
-        assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
-        worker.join(2_000L);
-        assertThat(worker.isAlive()).isFalse();
+            assertThat(interrupted.await(2, TimeUnit.SECONDS)).isTrue();
+            worker.join(2_000L);
+            assertThat(worker.isAlive()).isFalse();
+        } finally {
+            worker.interrupt();
+            worker.join(2_000L);
+            assertThat(worker.isAlive()).isFalse();
+        }
     }
 }
