@@ -2,10 +2,19 @@ package ai.anomalousvectors.tools.burp.sinks;
 
 import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestSupport.preparedTrafficDoc;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
@@ -15,6 +24,13 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 /** Synthetic load tests for {@link TrafficExportQueue} depth and byte accounting. */
 class TrafficExportQueueScaleTest {
+
+    @BeforeEach
+    @AfterEach
+    void resetMetricsAndAdmission() {
+        ExportStats.resetForTests();
+        ExportAdmissionController.resetForTests();
+    }
 
     @Test
     void enqueue_manyPreparedEntries_tracksDepthAndBytes() throws Exception {
@@ -58,16 +74,10 @@ class TrafficExportQueueScaleTest {
                 PreparedExportDocument first = preparedTrafficDoc(indexName, 1, 4_096L);
                 PreparedExportDocument second = preparedTrafficDoc(indexName, 2, 4_096L);
                 ExportAdmissionController.setMemBudgetOverrideForTests(5_000L);
-                CountDownLatch start = new CountDownLatch(1);
                 AtomicInteger accepted = new AtomicInteger();
-                Thread firstProducer = new Thread(() -> offerAfterLatch(first, start, accepted));
-                Thread secondProducer = new Thread(() -> offerAfterLatch(second, start, accepted));
-
-                firstProducer.start();
-                secondProducer.start();
-                start.countDown();
-                firstProducer.join();
-                secondProducer.join();
+                runProducers(
+                        () -> offer(first, accepted),
+                        () -> offer(second, accepted));
 
                 assertThat(accepted.get()).isEqualTo(1);
                 assertThat(TrafficExportQueue.getCurrentBytesEstimate()).isEqualTo(4_096L);
@@ -81,17 +91,65 @@ class TrafficExportQueueScaleTest {
         }
     }
 
-    private static void offerAfterLatch(
-            PreparedExportDocument document,
-            CountDownLatch start,
-            AtomicInteger accepted) {
+    @Test
+    void producerFailure_reachesJUnit_andRetiresTheBlockedPeer() {
+        CountDownLatch peerStarted = new CountDownLatch(1);
+        CountDownLatch releasePeer = new CountDownLatch(1);
+        AtomicBoolean peerInterrupted = new AtomicBoolean();
+        IllegalStateException failure = new IllegalStateException("synthetic producer failure");
         try {
-            start.await();
-            if (TrafficExportQueue.offerPreparedForTests(document)) {
-                accepted.incrementAndGet();
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            assertThatThrownBy(() -> runProducers(
+                    () -> {
+                        assertThat(peerStarted.await(2, TimeUnit.SECONDS)).isTrue();
+                        throw failure;
+                    },
+                    () -> {
+                        peerStarted.countDown();
+                        try {
+                            releasePeer.await();
+                        } catch (InterruptedException interrupted) {
+                            peerInterrupted.set(true);
+                            Thread.currentThread().interrupt();
+                        }
+                    }))
+                    .isInstanceOf(ExecutionException.class).hasCause(failure);
+            assertThat(peerInterrupted).isTrue();
+        } finally {
+            releasePeer.countDown();
+        }
+    }
+
+    /** Futures expose worker failures; termination precedes queue/global fixture cleanup. */
+    private static void runProducers(
+            TrafficExportQueueTestSupport.ThrowingRunnable firstAction,
+            TrafficExportQueueTestSupport.ThrowingRunnable secondAction) throws Exception {
+        ExecutorService producers = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<?> first = producers.submit(() -> {
+                start.await();
+                firstAction.run();
+                return null;
+            });
+            Future<?> second = producers.submit(() -> {
+                start.await();
+                secondAction.run();
+                return null;
+            });
+            start.countDown();
+            first.get(2, TimeUnit.SECONDS);
+            second.get(2, TimeUnit.SECONDS);
+        } finally {
+            start.countDown();
+            producers.shutdownNow();
+            assertThat(producers.awaitTermination(2, TimeUnit.SECONDS))
+                    .as("Both producer owners must retire before shared state is reset").isTrue();
+        }
+    }
+
+    private static void offer(PreparedExportDocument document, AtomicInteger accepted) {
+        if (TrafficExportQueue.offerPreparedForTests(document)) {
+            accepted.incrementAndGet();
         }
     }
 }

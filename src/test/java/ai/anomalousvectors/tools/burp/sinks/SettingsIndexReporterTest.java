@@ -31,10 +31,11 @@ class SettingsIndexReporterTest {
 
     private void resetState() {
         SettingsIndexReporter.stop();
-        RuntimeConfig.updateState(previousState);
-        MontoyaApiProvider.set(previousApi);
         RuntimeConfig.setExportRunning(false);
         RuntimeConfig.setExportStarting(false);
+        // Restore the edition dependency before normalizing the saved selections.
+        MontoyaApiProvider.set(previousApi);
+        RuntimeConfig.updateState(previousState);
     }
 
     @Test

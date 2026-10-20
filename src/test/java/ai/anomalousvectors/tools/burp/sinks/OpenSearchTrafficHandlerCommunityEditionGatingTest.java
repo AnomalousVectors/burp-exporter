@@ -30,8 +30,9 @@ class TrafficHttpHandlerCommunityEditionGatingTest {
     private final MontoyaApi previousApi = MontoyaApiProvider.get();
 
     private void reset() {
-        RuntimeConfig.updateState(previousState);
+        // Saved selections must be normalized against their original edition, not this test's mock.
         MontoyaApiProvider.set(previousApi);
+        RuntimeConfig.updateState(previousState);
     }
 
     @Test

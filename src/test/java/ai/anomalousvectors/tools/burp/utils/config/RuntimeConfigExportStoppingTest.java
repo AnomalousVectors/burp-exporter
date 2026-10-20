@@ -6,12 +6,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RuntimeConfigExportStoppingTest {
 
+    /** Resets run globals before each scenario and after its test-owned workers have retired. */
+    @BeforeEach
     @AfterEach
     public void reset() {
         RuntimeConfig.resetExportRunForTests();
@@ -95,8 +98,8 @@ class RuntimeConfigExportStoppingTest {
                 Thread.currentThread().interrupt();
             }
         }, "test-export-stop-worker");
-        worker.start();
         try {
+            worker.start();
             RuntimeConfig.beginExportStop();
             RuntimeConfig.beginExportStopWorker(worker);
             assertThat(RuntimeConfig.requestExportStopForceAbort()).isTrue();
@@ -105,11 +108,13 @@ class RuntimeConfigExportStoppingTest {
             worker.join(2_000L);
             assertThat(worker.isAlive()).isFalse();
         } finally {
-            RuntimeConfig.endExportStopWorker(worker);
-            RuntimeConfig.clearExportStopForceAbort();
-            if (worker.isAlive()) {
-                worker.interrupt();
+            worker.interrupt();
+            try {
                 worker.join(1_000L);
+                assertThat(worker.isAlive()).as("The registered fixture worker must retire").isFalse();
+            } finally {
+                RuntimeConfig.endExportStopWorker(worker);
+                RuntimeConfig.clearExportStopForceAbort();
             }
         }
     }
@@ -125,20 +130,20 @@ class RuntimeConfigExportStoppingTest {
                 Thread.interrupted();
             }
         }, "test-stubborn-export-stop-worker");
-        worker.start();
+        Thread replacement = new Thread(() -> {
+            while (!releaseReplacement.get()) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5L));
+                Thread.interrupted();
+            }
+        }, "test-replacement-export-stop-worker");
         try {
+            worker.start();
             RuntimeConfig.beginExportStop();
             RuntimeConfig.beginExportStopWorker(worker);
             RuntimeConfig.requestExportStopForceAbort();
 
             assertThat(RuntimeConfig.awaitExportStopWorker(25L)).isFalse();
 
-            Thread replacement = new Thread(() -> {
-                while (!releaseReplacement.get()) {
-                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5L));
-                    Thread.interrupted();
-                }
-            }, "test-replacement-export-stop-worker");
             replacement.start();
             RuntimeConfig.beginExportStopWorker(replacement);
             RuntimeConfig.endExportStopWorker(worker);
@@ -146,13 +151,26 @@ class RuntimeConfigExportStoppingTest {
             releaseReplacement.set(true);
             LockSupport.unpark(replacement);
             replacement.join(1_000L);
+            assertThat(replacement.isAlive()).isFalse();
             RuntimeConfig.endExportStopWorker(replacement);
         } finally {
+            // Retain both exact owners: a failed stale-owner assertion must not strand replacement.
             release.set(true);
             releaseReplacement.set(true);
             LockSupport.unpark(worker);
-            worker.join(1_000L);
-            RuntimeConfig.endExportStopWorker(worker);
+            LockSupport.unpark(replacement);
+            worker.interrupt();
+            replacement.interrupt();
+            try {
+                worker.join(1_000L);
+                replacement.join(1_000L);
+                assertThat(worker.isAlive()).isFalse();
+                assertThat(replacement.isAlive()).isFalse();
+            } finally {
+                RuntimeConfig.endExportStopWorker(worker);
+                RuntimeConfig.endExportStopWorker(replacement);
+                RuntimeConfig.clearExportStopForceAbort();
+            }
         }
     }
 }

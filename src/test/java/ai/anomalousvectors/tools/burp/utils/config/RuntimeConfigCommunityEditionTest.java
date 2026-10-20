@@ -47,10 +47,7 @@ class RuntimeConfigCommunityEditionTest {
             assertThat(RuntimeConfig.isTrafficToolTypeEnabled("burp_ai")).isFalse();
             assertThat(RuntimeConfig.isTrafficToolTypeEnabled("proxy")).isTrue();
         } finally {
-            RuntimeConfig.updateState(previousState);
-            RuntimeConfig.setExportRunning(false);
-            RuntimeConfig.setExportStarting(false);
-            MontoyaApiProvider.set(previousApi);
+            restoreContext(previousApi, previousState);
         }
     }
 
@@ -68,10 +65,7 @@ class RuntimeConfigCommunityEditionTest {
             assertThat(RuntimeConfig.isTrafficToolTypeEnabled("scanner")).isFalse();
             assertThat(RuntimeConfig.isTrafficToolTypeEnabled("proxy")).isTrue();
         } finally {
-            RuntimeConfig.updateState(previousState);
-            RuntimeConfig.setExportRunning(false);
-            RuntimeConfig.setExportStarting(false);
-            MontoyaApiProvider.set(previousApi);
+            restoreContext(previousApi, previousState);
         }
     }
 
@@ -109,11 +103,47 @@ class RuntimeConfigCommunityEditionTest {
             Logger.unregisterListener(listener);
         } finally {
             Logger.resetState();
-            RuntimeConfig.updateState(previousState);
-            RuntimeConfig.setExportRunning(false);
-            RuntimeConfig.setExportStarting(false);
-            MontoyaApiProvider.set(previousApi);
+            restoreContext(previousApi, previousState);
         }
+    }
+
+    @Test
+    void restoreContext_preservesProfessionalSelections_afterCommunityNormalization() {
+        MontoyaApi professionalApi = mockEditionApi(BurpSuiteEdition.PROFESSIONAL);
+        try {
+            MontoyaApiProvider.set(professionalApi);
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_FINDINGS, ConfigKeys.SRC_TRAFFIC),
+                    ConfigKeys.SCOPE_ALL,
+                    List.of(),
+                    new ConfigState.Sinks(false, "", false, false, false, "", "", "", false),
+                    ConfigState.DEFAULT_SETTINGS_SUB,
+                    List.of("proxy", "scanner", "burp_ai"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                    null));
+            ConfigState.State professionalState = RuntimeConfig.getState();
+            MontoyaApiProvider.set(mockEditionApi(BurpSuiteEdition.COMMUNITY_EDITION));
+            RuntimeConfig.updateState(professionalState);
+            assertThat(RuntimeConfig.getState().dataSources()).doesNotContain(ConfigKeys.SRC_FINDINGS);
+
+            restoreContext(professionalApi, professionalState);
+
+            assertThat(MontoyaApiProvider.get()).isSameAs(professionalApi);
+            assertThat(RuntimeConfig.getState().dataSources())
+                    .containsExactly(ConfigKeys.SRC_FINDINGS, ConfigKeys.SRC_TRAFFIC);
+            assertThat(RuntimeConfig.getState().trafficToolTypes())
+                    .containsExactly("proxy", "scanner", "burp_ai");
+        } finally {
+            restoreContext(previousApi, previousState);
+        }
+    }
+
+    /** Restore the edition dependency before saved state is normalized against it. */
+    private static void restoreContext(MontoyaApi api, ConfigState.State state) {
+        RuntimeConfig.setExportRunning(false);
+        RuntimeConfig.setExportStarting(false);
+        MontoyaApiProvider.set(api);
+        RuntimeConfig.updateState(state);
     }
 
     private static MontoyaApi mockEditionApi(BurpSuiteEdition edition) {
