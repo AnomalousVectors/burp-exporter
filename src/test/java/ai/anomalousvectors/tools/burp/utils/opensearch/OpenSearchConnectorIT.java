@@ -3,16 +3,18 @@ package ai.anomalousvectors.tools.burp.utils.opensearch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
-import java.time.Instant;
-
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.Test;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.indices.CreateIndexRequest;
-import org.opensearch.client.opensearch.indices.DeleteIndexRequest;
 
+import ai.anomalousvectors.tools.burp.sinks.ExportReporterLifecycle;
 import ai.anomalousvectors.tools.burp.testutils.OpenSearchReachable;
+import ai.anomalousvectors.tools.burp.testutils.OpenSearchTestIndex;
 import ai.anomalousvectors.tools.burp.testutils.OpenSearchTestConfig;
 
 /**
@@ -24,16 +26,24 @@ import ai.anomalousvectors.tools.burp.testutils.OpenSearchTestConfig;
  * call must yield a fresh, working client whose connection pool is not "shut down".</p>
  */
 @Tag("integration")
+@ResourceLock("traffic-opensearch-index")
 class OpenSearchConnectorIT {
+
+    @BeforeEach
+    @AfterEach
+    void resetClientOwners() {
+        // Retire pending async closes before another scenario acquires a shared transport.
+        ExportReporterLifecycle.resetForTests();
+        OpenSearchConnector.closeAll();
+    }
 
     @Test
     void closeAll_thenGetClient_rebuildsWorkingTransport() throws Exception {
         Assumptions.assumeTrue(OpenSearchReachable.isReachable(), "OpenSearch dev cluster not reachable");
 
         OpenSearchTestConfig config = OpenSearchTestConfig.get();
-        String indexName = "af-conn-rebuild-" + Instant.now().toEpochMilli();
-
-        try {
+        try (OpenSearchTestIndex testIndex = OpenSearchTestIndex.open("traffic")) {
+            String indexName = testIndex.name();
             // Prime the cache with a working transport, then exercise it once so the pool is warm.
             OpenSearchClient before = OpenSearchConnector.getClient(
                     config.baseUrl(), config.username(), config.password());
@@ -50,14 +60,6 @@ class OpenSearchConnectorIT {
 
             boolean exists = after.indices().exists(b -> b.index(indexName)).value();
             assertThat(exists).isTrue();
-        } finally {
-            try {
-                OpenSearchClient cleanup = OpenSearchConnector.getClient(
-                        config.baseUrl(), config.username(), config.password());
-                cleanup.indices().delete(new DeleteIndexRequest.Builder().index(indexName).build());
-            } catch (RuntimeException ignored) {
-                // Best-effort cleanup for integration infrastructure.
-            }
         }
     }
 
