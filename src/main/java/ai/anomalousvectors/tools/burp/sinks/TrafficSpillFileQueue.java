@@ -3,6 +3,7 @@ package ai.anomalousvectors.tools.burp.sinks;
 import java.io.IOException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -65,13 +66,16 @@ final class TrafficSpillFileQueue {
     private static final long DEFAULT_MAX_AGE_MS = TimeUnit.DAYS.toMillis(3);
     private static final TypeReference<Map<String, Object>> DOC_TYPE = new TypeReference<>() { };
 
+    // Release the committed reservation, never a length changed by another filesystem actor.
+    private record SpillFile(Path path, long allocatedBytes) { }
+
     private final Path directory;
     private final String projectId;
     private final long maxFiles;
     private final long maxBytes;
     private final long maxAgeMs;
     private final ReentrantLock lock = new ReentrantLock();
-    private final Deque<Path> files = new ArrayDeque<>();
+    private final Deque<SpillFile> files = new ArrayDeque<>();
     private long totalBytes = 0;
     private long nextSequence = 1;
     private long startupDiscardedCount = 0;
@@ -202,7 +206,7 @@ final class TrafficSpillFileQueue {
                     throw e;
                 }
             }
-            files.addLast(target);
+            files.addLast(new SpillFile(target, payload.length));
             totalBytes += payload.length;
             return OfferResult.QUEUED;
         } catch (DiskSpaceGuard.LowDiskSpaceException e) {
@@ -272,17 +276,10 @@ final class TrafficSpillFileQueue {
         lock.lock();
         try {
             while (!files.isEmpty()) {
-                Path file = files.removeFirst();
-                byte[] payload;
-                try {
-                    payload = Files.readAllBytes(file);
-                    Files.deleteIfExists(file);
-                    releaseQuota(payload.length);
-                } catch (IOException e) {
-                    Logger.logError("[TrafficSpill] Read/delete failed: " + e.getMessage());
+                byte[] payload = readAndRemoveSpill(files.removeFirst());
+                if (payload == null) {
                     continue;
                 }
-                totalBytes = Math.max(0, totalBytes - payload.length);
                 try {
                     return extractDocument(payload);
                 } catch (IOException e) {
@@ -299,17 +296,10 @@ final class TrafficSpillFileQueue {
         lock.lock();
         try {
             while (!files.isEmpty()) {
-                Path file = files.removeFirst();
-                byte[] payload;
-                try {
-                    payload = Files.readAllBytes(file);
-                    Files.deleteIfExists(file);
-                    releaseQuota(payload.length);
-                } catch (IOException e) {
-                    Logger.logError("[TrafficSpill] Read/delete failed: " + e.getMessage());
+                byte[] payload = readAndRemoveSpill(files.removeFirst());
+                if (payload == null) {
                     continue;
                 }
-                totalBytes = Math.max(0, totalBytes - payload.length);
                 try {
                     return extractEntry(payload);
                 } catch (IOException e) {
@@ -319,6 +309,22 @@ final class TrafficSpillFileQueue {
             return null;
         } finally {
             lock.unlock();
+        }
+    }
+
+    private byte[] readAndRemoveSpill(SpillFile file) {
+        try {
+            byte[] payload = Files.readAllBytes(file.path());
+            Files.deleteIfExists(file.path());
+            releaseAllocation(file);
+            return payload;
+        } catch (IOException e) {
+            // A failed read is not proof of deletion, including a dangling symbolic link.
+            if (Files.notExists(file.path(), LinkOption.NOFOLLOW_LINKS)) {
+                releaseAllocation(file);
+            }
+            Logger.logError("[TrafficSpill] Read/delete failed: " + e.getMessage());
+            return null;
         }
     }
 
@@ -332,7 +338,7 @@ final class TrafficSpillFileQueue {
         }
     }
 
-    /** Returns the current number of bytes occupied by spilled documents. */
+    /** Returns accounted spill bytes, not a fresh measurement of filesystem lengths. */
     long bytes() {
         lock.lock();
         try {
@@ -346,11 +352,11 @@ final class TrafficSpillFileQueue {
     long oldestAgeMs() {
         lock.lock();
         try {
-            Path oldest = files.peekFirst();
+            SpillFile oldest = files.peekFirst();
             if (oldest == null) {
                 return 0;
             }
-            long lastModified = Files.getLastModifiedTime(oldest).toMillis();
+            long lastModified = Files.getLastModifiedTime(oldest.path()).toMillis();
             return Math.max(0, System.currentTimeMillis() - lastModified);
         } catch (IOException ignored) {
             return 0;
@@ -392,21 +398,25 @@ final class TrafficSpillFileQueue {
         try {
             long filesDeleted = 0L;
             long bytesDeleted = 0L;
+            long allocationReleased = 0L;
             long failures = 0L;
-            for (Path path : files) {
+            for (SpillFile file : files) {
+                Path path = file.path();
                 try {
                     long bytes = Files.exists(path) ? Files.size(path) : 0L;
                     if (Files.deleteIfExists(path)) {
                         filesDeleted++;
                         bytesDeleted += bytes;
                     }
+                    allocationReleased += file.allocatedBytes();
                 } catch (IOException e) {
                     failures++;
                 }
             }
             files.clear();
             totalBytes = 0;
-            releaseQuota(bytesDeleted);
+            // Actual deleted lengths describe cleanup; original allocations own the quota.
+            releaseQuota(allocationReleased);
             return new DiscardResult(filesDeleted, bytesDeleted, failures);
         } finally {
             lock.unlock();
@@ -426,15 +436,13 @@ final class TrafficSpillFileQueue {
         lock.lock();
         try {
             int removed = 0;
-            Iterator<Path> iterator = files.iterator();
+            Iterator<SpillFile> iterator = files.iterator();
             while (iterator.hasNext()) {
-                Path file = iterator.next();
-                long fileBytes = sizeOf(file);
-                TrafficQueueEntry entry = readEntryForPurge(file);
+                SpillFile file = iterator.next();
+                TrafficQueueEntry entry = readEntryForPurge(file.path());
                 if (entry == null || predicate.test(entry)) {
                     deleteSpillFile(file);
                     iterator.remove();
-                    totalBytes = Math.max(0, totalBytes - fileBytes);
                     removed++;
                 }
             }
@@ -655,13 +663,13 @@ final class TrafficSpillFileQueue {
             return;
         }
         long prunedCount = 0;
-        Deque<Path> survivors = new ArrayDeque<>(files.size());
-        for (Path path : files) {
-            if (isExpired(path, cutoffMs)) {
-                deleteSpillFile(path);
+        Deque<SpillFile> survivors = new ArrayDeque<>(files.size());
+        for (SpillFile file : files) {
+            if (isExpired(file.path(), cutoffMs)) {
+                deleteSpillFile(file);
                 prunedCount++;
             } else {
-                survivors.addLast(path);
+                survivors.addLast(file);
             }
         }
         files.clear();
@@ -680,16 +688,19 @@ final class TrafficSpillFileQueue {
         }
     }
 
-    private void deleteSpillFile(Path path) {
+    private void deleteSpillFile(SpillFile file) {
         try {
-            long fileBytes = Files.exists(path) ? Files.size(path) : 0;
-            if (Files.deleteIfExists(path)) {
-                totalBytes = Math.max(0, totalBytes - fileBytes);
-                releaseQuota(fileBytes);
-            }
+            Files.deleteIfExists(file.path());
+            releaseAllocation(file);
         } catch (IOException ignored) {
             // Keep best-effort retention cleanup non-fatal.
         }
+    }
+
+    /** Caller holds the queue lock and has deleted the file or confirmed its absence. */
+    private void releaseAllocation(SpillFile file) {
+        totalBytes = Math.max(0, totalBytes - file.allocatedBytes());
+        releaseQuota(file.allocatedBytes());
     }
 
     private void cleanupTempFilesLocked() {
