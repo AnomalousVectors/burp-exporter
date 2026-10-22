@@ -6,6 +6,12 @@ import javax.swing.SwingUtilities;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -340,6 +346,146 @@ class LoggerTest {
             assertThat(callbackThread).hasValue(origin);
         } finally {
             Logger.resetState();
+        }
+    }
+
+    @Test
+    void reentrantDirectListener_preservesBothUiEventsInPublicationOrder() throws Exception {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        try {
+            Logger.resetState();
+            Logger.registerListener((level, message) -> {
+                if (message.equals("outer-event")) {
+                    Logger.emitToListeners("INFO", "nested-event");
+                }
+            });
+            Logger.ReplayableLogListener ui = (level, message) -> seen.add(message);
+            Logger.registerListener(ui);
+
+            SwingUtilities.invokeAndWait(() -> Logger.emitToListeners("INFO", "outer-event"));
+
+            drainEdtUntil(() -> seen.contains("nested-event"));
+            assertThat(seen).containsExactly("outer-event", "nested-event");
+        } finally {
+            Logger.resetState();
+            SwingUtilities.invokeAndWait(() -> {});
+        }
+    }
+
+    @Test
+    void heldDirectListener_cannotMakeConcurrentUiDeliveryDropTheEarlierEvent() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService emitter = Executors.newFixedThreadPool(2);
+        List<String> seen = new CopyOnWriteArrayList<>();
+        try {
+            Logger.resetState();
+            Logger.registerListener((level, message) -> {
+                if (message.equals("held-event")) {
+                    entered.countDown();
+                    awaitRelease(release);
+                }
+            });
+            Logger.ReplayableLogListener ui = (level, message) -> seen.add(message);
+            Logger.registerListener(ui);
+            Future<?> first = emitter.submit(() -> Logger.emitToListeners("INFO", "held-event"));
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+
+            // The EDT must remain free to consume the newer event while the direct sink is held.
+            Future<?> second = emitter.submit(() -> Logger.emitToListeners("INFO", "concurrent-event"));
+            second.get(2, TimeUnit.SECONDS);
+            drainEdtUntil(() -> seen.contains("concurrent-event"));
+            release.countDown();
+            first.get(2, TimeUnit.SECONDS);
+            SwingUtilities.invokeAndWait(() -> {});
+
+            assertThat(seen).containsExactly("held-event", "concurrent-event");
+        } finally {
+            release.countDown();
+            emitter.shutdownNow();
+            try {
+                assertThat(emitter.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                Logger.resetState();
+                SwingUtilities.invokeAndWait(() -> {});
+            }
+        }
+    }
+
+    @Test
+    void resetDuringHeldDirectListener_cannotRepublishAnOldEventToTheNewUiGeneration()
+            throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService emitter = Executors.newSingleThreadExecutor();
+        List<String> current = new CopyOnWriteArrayList<>();
+        try {
+            Logger.resetState();
+            Logger.registerListener((level, message) -> {
+                entered.countDown();
+                awaitRelease(release);
+            });
+            Logger.ReplayableLogListener prior = (level, message) -> {};
+            Logger.registerListener(prior);
+            Future<?> first = emitter.submit(() -> Logger.emitToListeners("INFO", "prior-run-event"));
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+
+            SwingUtilities.invokeAndWait(() -> {
+                Logger.resetState();
+                Logger.ReplayableLogListener replacement = (level, message) -> current.add(message);
+                Logger.registerListener(replacement);
+            });
+            release.countDown();
+            first.get(2, TimeUnit.SECONDS);
+            SwingUtilities.invokeAndWait(() -> Logger.emitToListeners("INFO", "current-run-event"));
+            drainEdtUntil(() -> !current.isEmpty());
+
+            assertThat(current).containsExactly("current-run-event");
+        } finally {
+            release.countDown();
+            emitter.shutdownNow();
+            try {
+                assertThat(emitter.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                Logger.resetState();
+                SwingUtilities.invokeAndWait(() -> {});
+            }
+        }
+    }
+
+    /** Holds a synthetic direct sink until released; executor teardown interrupts failed scenarios. */
+    private static void awaitRelease(CountDownLatch release) {
+        try {
+            release.await();
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Synthetic direct sink interrupted", interrupted);
+        }
+    }
+
+    @Test
+    void registeringUiDuringQueuedBroadcast_receivesEarlierReplayBeforeLiveEvents() throws Exception {
+        List<String> prior = new CopyOnWriteArrayList<>();
+        List<String> joined = new CopyOnWriteArrayList<>();
+        try {
+            Logger.resetState();
+            SwingUtilities.invokeAndWait(() -> {
+                Logger.emitToListeners("INFO", "buffered-event");
+                Logger.ReplayableLogListener first = (level, message) -> prior.add(message);
+                Logger.registerListener(first);
+                Logger.emitToListeners("INFO", "queued-live-event");
+                Logger.ReplayableLogListener second = (level, message) -> joined.add(message);
+                Logger.registerListener(second);
+                Logger.emitToListeners("INFO", "after-registration-event");
+            });
+
+            drainEdtUntil(() -> joined.contains("after-registration-event"));
+            assertThat(prior).containsExactly(
+                    "buffered-event", "queued-live-event", "after-registration-event");
+            assertThat(joined).containsExactlyElementsOf(prior);
+        } finally {
+            Logger.resetState();
+            SwingUtilities.invokeAndWait(() -> {});
         }
     }
 

@@ -272,12 +272,13 @@ public final class ConfigController implements AutoCloseable {
         String completedStatus = status;
         postIfCurrentConnection(generation, () -> {
             ui.onDatabaseStatus(completedStatus);
+            // Keep the Config presentation multiline, but emit one searchable result log entry.
+            String logMessage = "[" + destination.displayName() + "] Test connection result: "
+                    + completedStatus.replaceAll("\\R", "; ");
             if (completedStatus.startsWith("Connection: Success")) {
-                Logger.logInfoPanelOnly("[" + destination.displayName()
-                        + "] Test connection result\n" + completedStatus);
+                Logger.logInfoPanelOnly(logMessage);
             } else {
-                Logger.logWarnPanelOnly("[" + destination.displayName()
-                        + "] Test connection result\n" + completedStatus);
+                Logger.logWarnPanelOnly(logMessage);
             }
         });
     }

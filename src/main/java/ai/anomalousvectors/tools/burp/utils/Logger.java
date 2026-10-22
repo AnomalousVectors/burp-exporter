@@ -85,7 +85,7 @@ public final class Logger {
     private static final List<LogListener> LISTENERS = new CopyOnWriteArrayList<>();
     private static final AtomicReference<Logging> BURP_LOGGER = new AtomicReference<>();
 
-    /** Bounded replay buffer for new listeners. Guarded by REPLAY_BUFFER_LOCK. */
+    /** Serializes sequence assignment, replay registration, UI publication, and reset. */
     private static final Object REPLAY_BUFFER_LOCK = new Object();
     private static final List<ReplayEvent> REPLAY_BUFFER = new ArrayList<>(REPLAY_BUFFER_SIZE);
     private static final AtomicLong REPLAY_SEQ = new AtomicLong(0);
@@ -121,10 +121,12 @@ public final class Logger {
      */
     public static void registerListener(LogListener listener) {
         if (listener == null) return;
-        if (LISTENERS.contains(listener)) return;
-        LISTENERS.add(listener);
-        if (listener instanceof ReplayableLogListener replayable) {
-            enqueueReplay(replayable);
+        synchronized (REPLAY_BUFFER_LOCK) {
+            if (LISTENERS.contains(listener)) return;
+            LISTENERS.add(listener);
+            if (listener instanceof ReplayableLogListener replayable) {
+                enqueueReplay(replayable);
+            }
         }
     }
 
@@ -141,7 +143,11 @@ public final class Logger {
      *
      * @param listener listener to remove (nullable ignored)
      */
-    public static void unregisterListener(LogListener listener) { LISTENERS.remove(listener); }
+    public static void unregisterListener(LogListener listener) {
+        synchronized (REPLAY_BUFFER_LOCK) {
+            LISTENERS.remove(listener);
+        }
+    }
 
     /**
      * Skips Swing deliveries already pending for one replayable listener.
@@ -165,18 +171,18 @@ public final class Logger {
      * survive a reload or leak state across tests.</p>
      */
     public static void resetState() {
-        LISTENERS.clear();
-        BURP_LOGGER.set(null);
-        LAST_SEEN.clear();
-        synchronized (UI_DELIVERY_LOCK) {
-            UI_DELIVERY_QUEUE.clear();
-            uiDeliveryGeneration++;
-            uiDrainScheduled = false;
-        }
         synchronized (REPLAY_BUFFER_LOCK) {
+            LISTENERS.clear();
+            BURP_LOGGER.set(null);
+            LAST_SEEN.clear();
+            synchronized (UI_DELIVERY_LOCK) {
+                UI_DELIVERY_QUEUE.clear();
+                uiDeliveryGeneration++;
+                uiDrainScheduled = false;
+            }
             REPLAY_BUFFER.clear();
+            REPLAY_SEQ.set(0);
         }
-        REPLAY_SEQ.set(0);
     }
 
     // -------- Public API (mirrored to UI listener bus) --------
@@ -396,33 +402,39 @@ public final class Logger {
 
     /** Dispatches a message to direct listeners and queues bounded Swing delivery. */
     private static void notifyListeners(String level, String m) {
-        long seq = appendToReplayBuffer(level, m);
-        if (LISTENERS.isEmpty()) {
-            return;
+        ReplayEvent event;
+        List<LogListener> listeners;
+        synchronized (REPLAY_BUFFER_LOCK) {
+            event = appendToReplayBuffer(level, m);
+            listeners = List.copyOf(LISTENERS);
+            List<ReplayableLogListener> uiListeners = new ArrayList<>();
+            for (LogListener listener : listeners) {
+                if (listener instanceof ReplayableLogListener replayable) {
+                    uiListeners.add(replayable);
+                }
+            }
+            // Publish before callbacks can block or emit recursively. No listener runs under this
+            // lock; direct sinks stay synchronous on their caller and independent of EDT progress.
+            if (!uiListeners.isEmpty()) {
+                enqueueUiDelivery(new UiDelivery(event, List.copyOf(uiListeners)));
+            }
         }
-        ReplayEvent event = new ReplayEvent(seq, level, m);
-        boolean hasUiListener = false;
-        for (LogListener listener : LISTENERS) {
-            if (listener instanceof ReplayableLogListener) {
-                hasUiListener = true;
-            } else {
+        for (LogListener listener : listeners) {
+            if (!(listener instanceof ReplayableLogListener)) {
                 notifyDirectListener(listener, event);
             }
         }
-        if (hasUiListener) {
-            enqueueUiDelivery(new UiDelivery(event, null));
-        }
     }
 
-    private static long appendToReplayBuffer(String level, String m) {
-        long seq = REPLAY_SEQ.incrementAndGet();
+    private static ReplayEvent appendToReplayBuffer(String level, String m) {
         synchronized (REPLAY_BUFFER_LOCK) {
-            REPLAY_BUFFER.add(new ReplayEvent(seq, level, m));
+            ReplayEvent event = new ReplayEvent(REPLAY_SEQ.incrementAndGet(), level, m);
+            REPLAY_BUFFER.add(event);
             while (REPLAY_BUFFER.size() > REPLAY_BUFFER_SIZE) {
                 REPLAY_BUFFER.remove(0);
             }
+            return event;
         }
-        return seq;
     }
 
     /** Queues buffered events for one newly registered Swing listener. */
@@ -434,7 +446,7 @@ public final class Logger {
         }
         for (ReplayEvent ev : snapshot) {
             if (ev.seq() > lastSeen) {
-                enqueueUiDelivery(new UiDelivery(ev, listener));
+                enqueueUiDelivery(new UiDelivery(ev, List.of(listener)));
             }
         }
     }
@@ -496,14 +508,10 @@ public final class Logger {
     }
 
     private static void deliverUi(UiDelivery delivery) {
-        if (delivery.target() != null) {
-            deliverUiTo(delivery.target(), delivery.event());
-            return;
-        }
-        for (LogListener listener : LISTENERS) {
-            if (listener instanceof ReplayableLogListener replayable) {
-                deliverUiTo(replayable, delivery.event());
-            }
+        // A newly registered listener gets its own ordered replay, not older queued broadcasts
+        // that could advance its cursor past that replay's earlier events.
+        for (ReplayableLogListener listener : delivery.targets()) {
+            deliverUiTo(listener, delivery.event());
         }
     }
 
@@ -521,7 +529,7 @@ public final class Logger {
 
     private record ReplayEvent(long seq, String level, String message) {}
 
-    private record UiDelivery(ReplayEvent event, ReplayableLogListener target) {}
+    private record UiDelivery(ReplayEvent event, List<ReplayableLogListener> targets) {}
 
     /**
      * Null-safe string conversion.
