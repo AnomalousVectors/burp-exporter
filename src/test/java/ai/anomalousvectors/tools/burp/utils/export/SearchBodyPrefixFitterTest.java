@@ -1,6 +1,7 @@
 package ai.anomalousvectors.tools.burp.utils.export;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.ArrayList;
 import java.util.Base64;
@@ -13,6 +14,9 @@ import java.util.Set;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
@@ -255,11 +259,12 @@ class SearchBodyPrefixFitterTest {
     }
 
     @Test
-    void fitToBudget_usesExplicitCeilingWithoutMutatingOriginal() {
+    void fitToBudget_usesExplicitCeilingWithoutMutatingOriginal() throws Exception {
         Map<String, Object> document = trafficDocWithBody(256 * 1024);
         PreparedExportDocument original =
                 ExportDocumentIdentity.prepare("tool-burp-traffic", "traffic", document);
         Map<String, Object> originalPreparedDocument = original.document();
+        byte[] originalBytes = original.bulkNdjsonBytes().clone();
         long target = 128 * 1024L;
 
         PreparedExportDocument fitted = SearchBodyPrefixFitter.fitToBudget(original, target);
@@ -268,6 +273,49 @@ class SearchBodyPrefixFitterTest {
         assertThat(fitted.resolvedBulkBytes()).isLessThanOrEqualTo(target);
         assertThat(original.document()).isSameAs(originalPreparedDocument);
         assertThat(((Map<?, ?>) original.document().get("meta")).get("search_truncated")).isNull();
+        assertThat(original.bulkNdjsonBytes()).isEqualTo(originalBytes);
+        assertThat(ExportLineCodec.bulkNdjsonBytes(original.operationId(), original.document()))
+                .isEqualTo(originalBytes);
+    }
+
+    @Test
+    void fitToBudget_preservesIdentityAndTrafficRoute_withoutSerializingRoute() {
+        String routeKey = "proxy_websocket_history";
+        PreparedExportDocument original = ExportDocumentIdentity.prepareWithTrafficRoute(
+                "tool-burp-traffic", "traffic", trafficDocWithBody(256 * 1024), routeKey);
+
+        PreparedExportDocument fitted = SearchBodyPrefixFitter.fitToBudget(original, 128 * 1024L);
+
+        assertThat(fitted).isNotSameAs(original);
+        assertThat(fitted.resolvedBulkBytes()).isLessThanOrEqualTo(128 * 1024L);
+        assertThat(fitted.operationId()).isEqualTo(original.operationId());
+        assertThat(fitted.indexName()).isEqualTo(original.indexName());
+        assertThat(fitted.indexKey()).isEqualTo(original.indexKey());
+        assertThat(fitted.trafficRouteKey()).isEqualTo(routeKey);
+        assertThat(new String(fitted.bulkNdjsonBytes(), java.nio.charset.StandardCharsets.UTF_8))
+                .doesNotContain(routeKey)
+                .startsWith("{\"index\":{\"_id\":\"" + original.operationId() + "\"}}\n");
+    }
+
+    @ParameterizedTest
+    @NullSource
+    @ValueSource(ints = 7)
+    void fitToBudget_rejectsNonStringNestedKeys_withoutMutatingOriginal(Integer invalidKey) {
+        Map<Object, Object> invalidMap = new LinkedHashMap<>();
+        invalidMap.put(invalidKey, "retained");
+        Map<String, Object> document = new LinkedHashMap<>();
+        document.put("requests_responses", List.of(Map.of("response", invalidMap)));
+        PreparedExportDocument original = new PreparedExportDocument(
+                "invalid-key-operation", "tool-burp-findings", "findings", document, 2L, null);
+
+        assertThatThrownBy(() -> SearchBodyPrefixFitter.fitToBudget(original, 1L))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Search document maps must use string keys");
+        assertThat(original.document()).isSameAs(document);
+        assertThat(document).containsOnlyKeys("requests_responses");
+        assertThat(invalidMap).hasSize(1);
+        assertThat(invalidMap.get(invalidKey)).isEqualTo("retained");
+        assertThat(original.bulkNdjsonBytes()).isNull();
     }
 
     @Test
