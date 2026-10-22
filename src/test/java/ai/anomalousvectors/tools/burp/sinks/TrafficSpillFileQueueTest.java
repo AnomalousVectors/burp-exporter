@@ -6,18 +6,40 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
+import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.export.ExportLineCodec;
+import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 class TrafficSpillFileQueueTest {
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "[]", "\"damaged\"", "true", "7", "", "{broken"})
+    void poll_skipsMalformedSpillAndDrainsNextDocument(String damagedContent) throws IOException {
+        assertMalformedSpillDoesNotBlockNext(damagedContent, false);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"null", "[]", "\"damaged\"", "true", "7", "", "{broken"})
+    void pollEntry_skipsMalformedSpillAndDrainsNextPreparedEntry(String damagedContent)
+            throws IOException {
+        assertMalformedSpillDoesNotBlockNext(damagedContent, true);
+    }
 
     @Test
     void offerAndPoll_preservesFifoOrder() throws IOException {
@@ -246,18 +268,74 @@ class TrafficSpillFileQueueTest {
         }
     }
 
+    private static void assertMalformedSpillDoesNotBlockNext(
+            String damagedContent, boolean preparedPoll) throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-malformed");
+        List<String> errors = new CopyOnWriteArrayList<>();
+        Logger.LogListener listener = (level, message) -> {
+            if ("ERROR".equals(level) && message.startsWith("[TrafficSpill] Parse failed:")) {
+                errors.add(message);
+            }
+        };
+        Logger.registerListener(listener);
+        try {
+            TrafficSpillFileQueue queue = new TrafficSpillFileQueue(dir, 10, 1024 * 1024);
+            TrafficQueueEntry damaged = TrafficQueueEntry.from(Map.of("id", 1));
+            Map<String, Object> validDocument = Map.of(
+                    "request", Map.of("url", Map.of("raw", "https://spill.example/retained")));
+            byte[] validBytes = ExportLineCodec.bulkNdjsonBytes("valid-spill-operation", validDocument);
+            TrafficQueueEntry valid = TrafficQueueEntry.fromPrepared(new PreparedExportDocument(
+                    "valid-spill-operation", "tool-burp-traffic", "traffic",
+                    validDocument, validBytes.length, validBytes,
+                    TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_HISTORY));
+            assertThat(queue.offerDetailed(damaged)).isEqualTo(TrafficSpillFileQueue.OfferResult.QUEUED);
+            assertThat(queue.offerDetailed(valid)).isEqualTo(TrafficSpillFileQueue.OfferResult.QUEUED);
+            Path firstFile = dir.resolve("test-project-00000000000000000001.json");
+            // Keep allocation unchanged to isolate malformed-content handling from file resizing.
+            byte[] replacement = new byte[Math.toIntExact(Files.size(firstFile))];
+            Arrays.fill(replacement, (byte) ' ');
+            byte[] damagedBytes = damagedContent.getBytes(StandardCharsets.UTF_8);
+            System.arraycopy(damagedBytes, 0, replacement, 0, damagedBytes.length);
+            Files.write(firstFile, replacement);
+
+            if (preparedPoll) {
+                TrafficQueueEntry recovered = queue.pollEntry();
+                assertThat(recovered).isNotNull();
+                assertThat(recovered.document()).isEqualTo(valid.document());
+                assertThat(recovered.prepared().operationId()).isEqualTo(valid.prepared().operationId());
+                assertThat(recovered.prepared().bulkNdjsonBytes()).isEqualTo(valid.prepared().bulkNdjsonBytes());
+                assertThat(recovered.prepared().trafficRouteKey())
+                        .isEqualTo(TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_HISTORY);
+                assertThat(queue.pollEntry()).isNull();
+            } else {
+                assertThat(queue.poll()).isEqualTo(valid.document());
+                assertThat(queue.poll()).isNull();
+            }
+            assertThat(errors).hasSize(1);
+            assertThat(queue.size()).isZero();
+            assertThat(queue.bytes()).isZero();
+            try (Stream<Path> files = Files.list(dir)) {
+                assertThat(files).isEmpty();
+            }
+        } finally {
+            Logger.unregisterListener(listener);
+            deleteRecursively(dir);
+        }
+    }
+
     private static void deleteRecursively(Path root) throws IOException {
         if (root == null || !Files.exists(root)) {
             return;
         }
-        Files.walk(root)
-                .sorted(Comparator.reverseOrder())
-                .forEach(path -> {
-                    try {
-                        Files.deleteIfExists(path);
-                    } catch (IOException ignored) {
-                        // Best-effort cleanup for temp test files.
-                    }
-                });
+        try (Stream<Path> paths = Files.walk(root)) {
+            paths.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException ignored) {
+                            // Best-effort cleanup for temp test files.
+                        }
+                    });
+        }
     }
 }

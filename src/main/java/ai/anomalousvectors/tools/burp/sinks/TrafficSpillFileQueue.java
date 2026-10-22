@@ -585,7 +585,7 @@ final class TrafficSpillFileQueue {
     }
 
     private TrafficQueueEntry extractEntry(byte[] payload) throws IOException {
-        JsonNode root = JSON.readTree(payload);
+        JsonNode root = readSpillObject(payload);
         JsonNode preparedNode = root.get("prepared");
         JsonNode docNode = root.get("document");
         if (preparedNode != null && preparedNode.isObject() && docNode != null && docNode.isObject()) {
@@ -629,7 +629,16 @@ final class TrafficSpillFileQueue {
     }
 
     private Map<String, Object> extractDocument(byte[] payload) throws IOException {
-        return extractDocument(JSON.readTree(payload));
+        return extractDocument(readSpillObject(payload));
+    }
+
+    private static JsonNode readSpillObject(byte[] payload) throws IOException {
+        JsonNode root = JSON.readTree(payload);
+        // Valid non-object JSON must use the same skip-and-continue path as broken JSON syntax.
+        if (root == null || !root.isObject()) {
+            throw new IOException("Traffic spill must contain a JSON object.");
+        }
+        return root;
     }
 
     private Map<String, Object> extractDocument(JsonNode root) {
