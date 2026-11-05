@@ -25,8 +25,7 @@ public final class ManagedStorageQuota {
 
     /** Independently capped temporary-storage shares within each Burp project. */
     public enum Category {
-        TRAFFIC_SPILL("traffic-spill"),
-        PROXY_CORRELATION("proxy-correlation");
+        TRAFFIC_SPILL("traffic-spill");
 
         private final String quotaName;
 

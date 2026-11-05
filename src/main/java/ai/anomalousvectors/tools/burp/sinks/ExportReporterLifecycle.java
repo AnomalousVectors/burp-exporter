@@ -45,7 +45,7 @@ public final class ExportReporterLifecycle {
     /**
      * Stops recurring background reporters and clears their in-memory session state.
      *
-     * <p>Safe to call from any thread. Callers close live Proxy correlation intake before invoking
+     * <p>Safe to call from any thread. Callers close live request intake before invoking
      * this method so no response-complete document is stranded during shutdown.</p>
      */
     public static void stopBackgroundReporters() {
@@ -86,7 +86,6 @@ public final class ExportReporterLifecycle {
         if (!token.isValid()) {
             token = RuntimeConfig.lastInvalidatedExportRunToken();
         }
-        ProxyLiveMetadataCorrelator.closeIntake();
         if (RuntimeConfig.isExportRunning()) {
             TrafficExportQueue.awaitPendingWorkDrained(RuntimeConfig.EXPORT_STOP_UX_WALL_CLOCK_MS);
         }
@@ -110,19 +109,17 @@ public final class ExportReporterLifecycle {
      * extension unload. It clears memory queues even if a disk artifact cannot be deleted; failed
      * artifacts remain ineligible for replay and a later load attempts deletion again.</p>
      *
-     * @param timeoutMs maximum wait for already admitted Proxy response callbacks
+     * @param timeoutMs maximum wait for retry-drain ownership to terminate
      * @return {@code true} when retry ownership stopped and run-owned files were deleted completely
      */
     public static boolean discardPendingRunState(long timeoutMs) {
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
-        boolean proxyDiscarded = ProxyLiveMetadataCorrelator.closeAndDiscardRun(
-                remainingMillis(deadline));
         boolean trafficDiscarded = TrafficExportQueue.clearPendingWork();
         IndexingRetryCoordinator retryCoordinator = IndexingRetryCoordinator.getInstance();
         boolean retryStopped = retryCoordinator.stopDrainThread(remainingMillis(deadline));
         retryCoordinator.clearPendingWork();
-        return proxyDiscarded && trafficDiscarded && retryStopped;
+        return trafficDiscarded && retryStopped;
     }
 
     /**
@@ -248,7 +245,6 @@ public final class ExportReporterLifecycle {
         // test is mid-call, surfacing as "Connection pool shut down" or "Socket closed".
         awaitStopReclaim(5_000L);
         stopAndClearSessionState();
-        ProxyLiveMetadataCorrelator.resetForTests();
         ControlStatusBridge.clear();
         ExportControlBridge.clear();
         DiskSpaceGuard.resetForTests();

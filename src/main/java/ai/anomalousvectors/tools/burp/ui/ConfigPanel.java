@@ -61,7 +61,6 @@ import ai.anomalousvectors.tools.burp.sinks.FileExportService;
 import ai.anomalousvectors.tools.burp.sinks.FindingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.OpenSearchSink;
 import ai.anomalousvectors.tools.burp.sinks.ParameterIntegritySessionLog;
-import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler;
@@ -853,7 +852,6 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 postStopProgress(callbacks, ExportShutdownStatus.waitingForBatchMessage());
                 ParameterIntegritySessionLog.flushStopDebugValidation();
                 StartupSnapshotCoordinator.cancelRun(stoppedRun);
-                ProxyLiveMetadataCorrelator.closeIntake();
                 ExportReporterLifecycle.stopBackgroundReporters();
                 if (!isStopForceAbortRequested() && !RuntimeConfig.isExportStopBudgetExpired()) {
                     boolean startupIdle = StartupSnapshotCoordinator.awaitIdle(
@@ -1328,7 +1326,6 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
             BodyEnumerationSkippedLog.flushStartupSummary();
             CompressedWireBodyParamsLog.flushStartupSummary();
         }
-        ProxyLiveMetadataCorrelator.openRun();
         RuntimeConfig.setExportStarting(false);
         String runningStatus = buildRunningStatusMessage(runtimeStartIssues, filesSelected, databaseSelected);
         SwingUtilities.invokeLater(() -> {

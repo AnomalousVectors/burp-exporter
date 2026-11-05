@@ -97,34 +97,6 @@ final class BurpTimingFields {
         return timingMap(timeRequestSent, timeEnd, timeToFirstByteMs, durationMs);
     }
 
-    /**
-     * Overlays available Proxy History timing onto timing already captured by live callbacks.
-     *
-     * <p>History values are authoritative when present. Missing or sentinel History values leave
-     * the corresponding live value unchanged.</p>
-     *
-     * @param liveTiming timing captured by the live HTTP callbacks
-     * @param item matching Proxy History row
-     * @return complete timing map with available History values preferred
-     */
-    static Map<String, Object> mergeProxyHistoryOverLive(
-            Map<?, ?> liveTiming,
-            ProxyHttpRequestResponse item) {
-        Map<String, Object> merged = timingMap(null, null, null, null);
-        if (liveTiming != null) {
-            for (Map.Entry<?, ?> entry : liveTiming.entrySet()) {
-                if (entry.getKey() instanceof String key && merged.containsKey(key)) {
-                    merged.put(key, entry.getValue());
-                }
-            }
-        }
-        fromProxyHistory(item).forEach((key, value) -> {
-            if (value != null) {
-                merged.put(key, value);
-            }
-        });
-        return merged;
-    }
 
     /**
      * Builds timing from wall-clock epoch millis on live HTTP handler callbacks (not Montoya

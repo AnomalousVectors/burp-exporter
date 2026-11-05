@@ -240,6 +240,9 @@ class ProxyHistoryIndexReporterTest {
         assertThat(requestDoc.get("method")).isEqualTo("POST");
         assertThat(requestDoc.containsKey("edited")).isFalse();
         assertThat(burp.get("reporting_tool")).isEqualTo("Proxy History");
+        assertThat(burp.get("message_id")).isEqualTo(42);
+        assertThat(proxy.get("history_id")).isEqualTo(42);
+        assertThat(proxy.get("listener_port")).isEqualTo(8080);
         assertThat(proxy.containsKey("is_edited")).isFalse();
         assertThat(proxy.get("history_is_edited")).isEqualTo(false);
         assertThat(proxy.get("request_change_stages")).isNull();

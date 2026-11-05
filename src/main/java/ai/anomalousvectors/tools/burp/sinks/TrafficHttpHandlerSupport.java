@@ -15,7 +15,6 @@ import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
-import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
 import burp.api.montoya.http.HttpService;
@@ -41,8 +40,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     private static final int ORPHAN_CHECK_INTERVAL_SECONDS = 30;
 
     private static final Object ORPHAN_LIFECYCLE_LOCK = new Object();
-    private static boolean orphanIntakeOpen = true;
     private static final ConcurrentHashMap<Integer, PendingOrphan> pendingOrphans = new ConcurrentHashMap<>();
+    // Run admission is independent of request-stage scope/tool eligibility: later processing can
+    // change the initiating sent request. These payload-free receipts also survive request-only
+    // timeout, so a late response remains exportable once. Stop discards all receipts.
+    private static final ConcurrentHashMap<Integer, PendingOrphan> requestAdmissions = new ConcurrentHashMap<>();
 
     /**
      * Scheduler that periodically flushes orphaned (response-less) requests as no-response documents.
@@ -79,12 +81,10 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      */
     public static void stop() {
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
-            orphanIntakeOpen = false;
+            pendingOrphans.clear();
+            requestAdmissions.clear();
         }
         ORPHAN_SCHEDULER.stop();
-        pendingOrphans.keySet().forEach(
-                messageId -> ProxyLiveMetadataCorrelator.abandonMessage(messageId.intValue()));
-        pendingOrphans.clear();
     }
 
     /**
@@ -147,22 +147,28 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         } catch (RuntimeException e) {
             Logger.logError("[Traffic] Request callback failed safely: error="
                     + e.getClass().getSimpleName()
-                    + "; Burp traffic continued and this exchange will not be exported.");
-            ProxyLiveMetadataCorrelator.abandonMessage(
-                    request.messageId(), request.annotations(), request);
+                    + "; Burp traffic continued; request-only capture is unavailable.");
             return RequestToBeSentAction.continueWith(request);
         }
     }
 
     private RequestToBeSentAction handleHttpRequestToBeSentSafely(HttpRequestToBeSent request) {
-        Annotations annotations = request.annotations();
         RuntimeConfig.ExportRunToken runToken = RuntimeConfig.currentExportRunToken();
         RuntimeConfig.TrafficExportGate trafficGate = RuntimeConfig.trafficExportGate();
-        if (!RuntimeConfig.isExportReady()
+        if (!RuntimeConfig.isExportReady() || RuntimeConfig.isExportStopping()
                 || !trafficGate.anyTrafficExportEnabled()) {
-            ProxyLiveMetadataCorrelator.abandonMessage(
-                    request.messageId(), annotations, request);
             return RequestToBeSentAction.continueWith(request);
+        }
+        long requestSentMs = System.currentTimeMillis();
+        ToolSource toolSource = request.toolSource();
+        ToolType toolType = toolSource == null ? null : toolSource.toolType();
+        PendingOrphan receipt = new PendingOrphan(null, requestSentMs, toolType,
+                RequestStageResolution.none(), runToken);
+        synchronized (ORPHAN_LIFECYCLE_LOCK) {
+            if (!RuntimeConfig.isExportRunActive(runToken) || RuntimeConfig.isExportStopping()
+                    || requestAdmissions.putIfAbsent(request.messageId(), receipt) != null) {
+                return RequestToBeSentAction.continueWith(request);
+            }
         }
         String scopeUrl = RequestResponseDocBuilder.buildBestEffortUrl(
                 request,
@@ -172,43 +178,20 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         if (!ScopeFilter.shouldExport(
                 RuntimeConfig.getState(), scopeUrl, request.isInScope())) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
-            ProxyLiveMetadataCorrelator.abandonMessage(
-                    request.messageId(), annotations, request);
             return RequestToBeSentAction.continueWith(request);
         }
-        ToolSource toolSource = request.toolSource();
-        ToolType toolType = toolSource == null ? null : toolSource.toolType();
-        if (!shouldExportTrafficByToolSource(toolType)) {
+        if (!(toolType == null ? shouldExportNullToolSourceTraffic() : shouldExportTrafficByToolSource(toolType))) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
-            ProxyLiveMetadataCorrelator.abandonMessage(
-                    request.messageId(), annotations, request);
             return RequestToBeSentAction.continueWith(request);
         }
         if (toolType == ToolType.EXTENSIONS) {
             HttpService svc = request.httpService();
             if (svc != null && isRequestToConfiguredOpenSearch(svc.host(), svc.port())) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SELF_OPENSEARCH, 1);
-                ProxyLiveMetadataCorrelator.abandonMessage(
-                        request.messageId(), annotations, request);
                 return RequestToBeSentAction.continueWith(request);
             }
         }
-        long requestSentMs = System.currentTimeMillis();
-        ToolSource reqToolSource = request.toolSource();
-        ToolType reqToolType = reqToolSource == null ? null : reqToolSource.toolType();
-        if (reqToolType == ToolType.PROXY || reqToolType == null) {
-            try {
-                ProxyLiveMetadataCorrelator.markHttpRequest(
-                        request.messageId(),
-                        annotations,
-                        request);
-            } catch (RuntimeException e) {
-                Logger.logError("[ProxyCorrelation] Request marker admission failed safely: "
-                        + "error=" + e.getClass().getSimpleName()
-                        + "; Burp traffic will continue and the exchange will "
-                        + "not be exported with incomplete History metadata.");
-            }
-        }
+        ToolType reqToolType = toolType;
         RequestStageResolution requestStageResolution =
                 resolveRequestStageResolution(
                         request,
@@ -224,66 +207,50 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     requestSentMs,
                     reqToolType,
                     requestStageResolution,
-                    annotations);
-            if (RuntimeConfig.isExportRunActive(runToken)) {
-                pendingOrphans.put(request.messageId(), pending);
-                synchronized (ORPHAN_LIFECYCLE_LOCK) {
-                    if (!orphanIntakeOpen && RuntimeConfig.isExportRunActive(runToken)) {
-                        orphanIntakeOpen = true;
-                    }
-                    if (orphanIntakeOpen && RuntimeConfig.isExportRunActive(runToken)) {
-                        ensureOrphanSchedulerStarted();
-                    } else {
-                        pendingOrphans.remove(request.messageId(), pending);
-                        ProxyLiveMetadataCorrelator.abandonMessage(
-                                request.messageId(), annotations, request);
-                    }
+                    runToken);
+            synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                if (RuntimeConfig.isExportRunActive(runToken)
+                        && requestAdmissions.get(request.messageId()) == receipt) {
+                    pendingOrphans.put(request.messageId(), pending);
+                    ensureOrphanSchedulerStarted();
                 }
-            } else {
-                ProxyLiveMetadataCorrelator.abandonMessage(
-                        request.messageId(), annotations, request);
             }
         }
-        return RequestToBeSentAction.continueWith(request, annotations);
+        return RequestToBeSentAction.continueWith(request);
     }
 
     /** {@inheritDoc} */
     @Override
     public ResponseReceivedAction handleHttpResponseReceived(HttpResponseReceived response) {
-        try (ProxyLiveMetadataCorrelator.ResponseLease responseLease =
-                ProxyLiveMetadataCorrelator.beginHttpResponse()) {
-            try {
-                return handleHttpResponseReceived(response, responseLease);
-            } catch (RuntimeException e) {
-                Logger.logError("[Traffic] Response callback failed safely: error="
-                        + e.getClass().getSimpleName()
-                        + "; Burp traffic continued and this document was not exported.");
-                ProxyLiveMetadataCorrelator.abandonMessage(
-                        response.messageId(), response.annotations());
-                return ResponseReceivedAction.continueWith(response);
-            }
+        try {
+            return handleHttpResponseReceivedSafely(response);
+        } catch (RuntimeException e) {
+            Logger.logError("[Traffic] Response callback failed safely: error="
+                    + e.getClass().getSimpleName()
+                    + "; Burp traffic continued and this document was not exported.");
+            return ResponseReceivedAction.continueWith(response);
         }
     }
 
-    private ResponseReceivedAction handleHttpResponseReceived(
-            HttpResponseReceived response,
-            ProxyLiveMetadataCorrelator.ResponseLease responseLease) {
-        PendingOrphan pending = pendingOrphans.remove(response.messageId());
-        if (!RuntimeConfig.isExportReady()) {
-            ProxyLiveMetadataCorrelator.abandonMessage(
-                    response.messageId(), response.annotations());
+    private ResponseReceivedAction handleHttpResponseReceivedSafely(HttpResponseReceived response) {
+        PendingOrphan pending;
+        synchronized (ORPHAN_LIFECYCLE_LOCK) {
+            PendingOrphan receipt = requestAdmissions.remove(response.messageId());
+            PendingOrphan skeleton = pendingOrphans.remove(response.messageId());
+            pending = receipt == null ? null
+                    : skeleton != null && skeleton.runToken.equals(receipt.runToken) ? skeleton : receipt;
+        }
+        // Pair only within the admitted run; late and duplicate responses cannot enter a new run.
+        if (pending == null || !RuntimeConfig.isExportRunActive(pending.runToken)
+                || !RuntimeConfig.isExportReady()) {
             return ResponseReceivedAction.continueWith(response);
         }
         if (!RuntimeConfig.trafficExportGate().anyTrafficExportEnabled()) {
-            ProxyLiveMetadataCorrelator.abandonMessage(
-                    response.messageId(), response.annotations());
             return ResponseReceivedAction.continueWith(response);
         }
 
         HttpRequest request = response.initiatingRequest();
         if (request == null) {
-            ProxyLiveMetadataCorrelator.abandonMessage(
-                    response.messageId(), response.annotations());
             return ResponseReceivedAction.continueWith(response);
         }
 
@@ -297,11 +264,10 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 RuntimeConfig.getState(), scopeUrl, burpInScope);
         if (!inScope) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
-            discardPendingCorrelation(response.messageId(), response.annotations());
             return ResponseReceivedAction.continueWith(response);
         }
 
-        ToolType requestFallbackType = pending == null ? null : pending.toolType;
+        ToolType requestFallbackType = pending.toolType;
         ToolSource responseSource = response.toolSource();
         ToolType responseType = responseSource == null ? null : responseSource.toolType();
         if (responseType == null) {
@@ -314,10 +280,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         } else if (shouldExportTrafficByToolSource(requestFallbackType)) {
             toolType = requestFallbackType;
         } else if (responseType == null && requestFallbackType == null && shouldExportNullToolSourceTraffic()) {
-            toolType = null; // allowed unknown source when proxy traffic export is enabled
+            toolType = null;
         } else {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
-            discardPendingCorrelation(response.messageId(), response.annotations());
             return ResponseReceivedAction.continueWith(response);
         }
 
@@ -325,80 +290,30 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             HttpService svc = request.httpService();
             if (svc != null && isRequestToConfiguredOpenSearch(svc.host(), svc.port())) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SELF_OPENSEARCH, 1);
-                discardPendingCorrelation(response.messageId(), response.annotations());
                 return ResponseReceivedAction.continueWith(response);
             }
         }
 
         long responseReceivedMs = System.currentTimeMillis();
-        Long requestSentMs = pending == null ? null : pending.timestamp;
+        Long requestSentMs = pending.timestamp;
         RepeaterMetadataFields.Metadata repeaterMetadata =
                 resolveResponseStageRepeaterMetadata(
                         request,
                         response,
                         toolType,
-                        pending == null ? RequestStageResolution.none() : pending.requestStageResolution,
+                        pending.requestStageResolution,
                         RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
 
         Map<String, Object> document =
                 buildDocument(response, request, burpInScope, requestSentMs, responseReceivedMs, toolType, repeaterMetadata);
-        copyMissingAnnotationFieldsFromPendingRequest(document, pending);
-        offerOrDeferLiveProxyDocument(
-                document,
-                response.annotations(),
-                response.messageId(),
-                toolType,
-                requestSentMs,
-                responseLease,
-                request,
-                response);
+        if (response.annotations() == null) {
+            copyMissingAnnotationFieldsFromPendingRequest(document, pending);
+        }
+        TrafficExportQueue.offerForRun(document, pending.runToken);
 
         return ResponseReceivedAction.continueWith(response);
     }
 
-    /**
-     * Offers a live traffic document immediately, or defers Proxy docs until History can be claimed.
-     *
-     * <p>HttpHandler often runs before Burp has appended the matching Proxy History row.
-     * Correlation remains asynchronous; after its bounded window, a final exchange can continue
-     * with unavailable History-only fields.</p>
-     */
-    private static void offerOrDeferLiveProxyDocument(
-            Map<String, Object> document,
-            burp.api.montoya.core.Annotations annotations,
-            int messageId,
-            ToolType toolType,
-            Long requestSentMs,
-            ProxyLiveMetadataCorrelator.ResponseLease responseLease,
-            HttpRequest request,
-            burp.api.montoya.http.message.responses.HttpResponse response) {
-        boolean proxyLive = toolType == ToolType.PROXY || toolType == null;
-        if (proxyLive) {
-            try {
-                ProxyLiveMetadataCorrelator.deferUntilHistoryBound(
-                        document,
-                        annotations,
-                        messageId,
-                        requestSentMs,
-                        responseLease,
-                        request,
-                        response);
-            } catch (RuntimeException e) {
-                Logger.logError("[ProxyCorrelation] Response admission failed safely: "
-                        + "error=" + e.getClass().getSimpleName()
-                        + "; Burp traffic continued and this document was not exported.");
-                ProxyLiveMetadataCorrelator.abandonMessage(messageId, annotations);
-            }
-            return;
-        }
-        ProxyLiveMetadataCorrelator.abandonMessage(messageId);
-        TrafficExportQueue.offer(document);
-    }
-
-    private static void discardPendingCorrelation(int messageId, Annotations annotations) {
-        pendingOrphans.remove(messageId);
-        ProxyLiveMetadataCorrelator.abandonMessage(messageId, annotations);
-    }
 
     /**
      * Resolves tool type for response handling with fallback to request-side metadata.
@@ -816,10 +731,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     /**
      * Writes {@code burp.proxy} and {@code burp.timing} for live HTTP documents.
      *
-     * <p>Proxy live documents receive temporary null History metadata while they wait outside the
-     * export queue. {@link ProxyLiveMetadataCorrelator} replaces these values from the exact
-     * token-bound History row before queue admission. Other tools retain handler wall-clock
-     * timing.</p>
+     * <p>Live HTTP has no History association; History-only fields remain unavailable.
+     * This general HTTP path retains handler wall-clock timing and unavailable History fields
+     * for all live HTTP tools, including Proxy.</p>
      *
      * @param burp burp sub-document to mutate
      * @param requestSentMs request-sent epoch millis, or {@code null}
@@ -847,6 +761,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      */
     static void clearPendingOrphansForTest() {
         pendingOrphans.clear();
+        requestAdmissions.clear();
     }
 
     /**
@@ -858,9 +773,10 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             Map<String, Object> documentSkeleton,
             ToolType toolType,
             RequestStageResolution requestStageResolution) {
-        pendingOrphans.put(
-                messageId,
-                new PendingOrphan(documentSkeleton, 0L, toolType, requestStageResolution));
+        PendingOrphan pending = new PendingOrphan(documentSkeleton, 0L, toolType, requestStageResolution);
+        pendingOrphans.put(messageId, pending);
+        requestAdmissions.put(messageId, new PendingOrphan(
+                null, 0L, toolType, RequestStageResolution.none(), pending.runToken));
     }
 
     /**
@@ -883,8 +799,6 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             return;
         }
         if (!RuntimeConfig.trafficExportGate().anyTrafficExportEnabled()) {
-            pendingOrphans.keySet().forEach(
-                    messageId -> ProxyLiveMetadataCorrelator.abandonMessage(messageId.intValue()));
             pendingOrphans.clear();
             return;
         }
@@ -896,9 +810,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             }
         }
         for (Integer messageId : toFlush) {
-            PendingOrphan po = pendingOrphans.remove(messageId);
-            ProxyLiveMetadataCorrelator.abandonMessage(messageId, po == null ? null : po.annotations);
-            if (po == null) {
+            PendingOrphan po;
+            synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                po = pendingOrphans.remove(messageId);
+            }
+            if (po == null || !RuntimeConfig.isExportRunActive(po.runToken)) {
                 continue;
             }
             if (!shouldStillExportPendingOrphan(po)) {
@@ -914,7 +830,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 doc.put("burp", burp);
             }
             doc.put("response", buildOrphanResponse());
-            TrafficExportQueue.offer(doc);
+            TrafficExportQueue.offerForRun(doc, po.runToken);
         }
     }
 
@@ -923,14 +839,15 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         final long timestamp;
         final ToolType toolType;
         final RequestStageResolution requestStageResolution;
-        final Annotations annotations;
+        final RuntimeConfig.ExportRunToken runToken;
 
         PendingOrphan(
                 Map<String, Object> documentSkeleton,
                 long timestamp,
                 ToolType toolType,
                 RequestStageResolution requestStageResolution) {
-            this(documentSkeleton, timestamp, toolType, requestStageResolution, null);
+            this(documentSkeleton, timestamp, toolType, requestStageResolution,
+                    RuntimeConfig.currentExportRunToken());
         }
 
         PendingOrphan(
@@ -938,11 +855,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 long timestamp,
                 ToolType toolType,
                 RequestStageResolution requestStageResolution,
-                Annotations annotations) {
+                RuntimeConfig.ExportRunToken runToken) {
             this.documentSkeleton = documentSkeleton;
             this.timestamp = timestamp;
             this.toolType = toolType;
-            this.annotations = annotations;
+            this.runToken = runToken;
             this.requestStageResolution = requestStageResolution == null
                     ? RequestStageResolution.none()
                     : requestStageResolution;

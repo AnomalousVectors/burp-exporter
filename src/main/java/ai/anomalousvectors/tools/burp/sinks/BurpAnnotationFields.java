@@ -7,6 +7,9 @@ import burp.api.montoya.core.HighlightColor;
 
 /**
  * Writes {@code burp.notes} and {@code burp.highlight} when present on Montoya annotations.
+ *
+ * <p>Only the export map is changed. Traffic annotations are strictly read-only; exposed Notes
+ * text is copied verbatim, never used as correlation storage or rewritten to remove old markers.</p>
  */
 final class BurpAnnotationFields {
 
@@ -23,8 +26,8 @@ final class BurpAnnotationFields {
             return;
         }
         if (annotations.hasNotes()) {
-            String notes = ProxyCorrelationToken.redact(annotations.notes());
-            if (!notes.isEmpty()) {
+            String notes = annotations.notes();
+            if (notes != null && !notes.isEmpty()) {
                 burp.put("notes", notes);
             }
         }

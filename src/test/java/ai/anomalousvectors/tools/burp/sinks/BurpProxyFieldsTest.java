@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
@@ -40,16 +39,4 @@ class BurpProxyFieldsTest {
         assertThat(proxy.get("response_change_stages")).isNull();
     }
 
-    @Test
-    void withChangeStages_preservesHistoryFieldsAndCopiesStageLists() {
-        Map<String, Object> proxy = BurpProxyFields.withChangeStages(
-                Map.of("history_id", 9, "history_is_edited", false),
-                List.of("RECEIVED_TO_SENT"),
-                List.of("UPSTREAM_TO_RECEIVED"));
-
-        assertThat(proxy.get("history_id")).isEqualTo(9);
-        assertThat(proxy.get("history_is_edited")).isEqualTo(false);
-        assertThat(proxy.get("request_change_stages")).isEqualTo(List.of("RECEIVED_TO_SENT"));
-        assertThat(proxy.get("response_change_stages")).isEqualTo(List.of("UPSTREAM_TO_RECEIVED"));
-    }
 }

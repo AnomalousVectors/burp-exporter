@@ -47,6 +47,17 @@ final class ExportFieldTooltipsTraffic {
     }
 
     static String trafficTooltip(String fieldKey) {
+        String tooltip = trafficFieldTooltip(fieldKey);
+        if (tooltip != null && (fieldKey.startsWith("request.") || fieldKey.startsWith("response."))) {
+            String source = fieldKey.startsWith("request.")
+                    ? "Live HTTP payload: HttpResponseReceived.initiatingRequest(), the request sent to the target. Request-only timeouts use the observed HttpRequestToBeSent callback view. Proxy History uses ProxyHttpRequestResponse.finalRequest(), including changes before sending to the target."
+                    : "Live HTTP payload: HttpResponseReceived, the original server response before later Burp response edits or automatic modifications. Proxy History uses ProxyHttpRequestResponse.response(), the documented received server response (originalResponse()).";
+            return tooltip.replace("</html>", "<br><br>" + Tooltips.escapeHtml(source) + "</html>");
+        }
+        return tooltip;
+    }
+
+    private static String trafficFieldTooltip(String fieldKey) {
         return switch (fieldKey) {
             case "request.url.raw" -> Tooltips.textWithSource(
                     "Full request URL.",
@@ -83,25 +94,25 @@ final class ExportFieldTooltipsTraffic {
                     "RequestResponseDocBuilder.buildTrafficResponseDoc() uses only HttpResponse.httpVersion(); it does not copy request protocol data into response.protocol.http_version.");
             case "burp.reporting_tool" -> Tooltips.textWithSource(
                     "Burp tool display name.",
-                    "TrafficHttpHandler uses ToolType.toolName() from response.toolSource() with request fallback; ProxyHistoryIndexReporter writes \"Proxy History\"; RepeaterTabsIndexReporter writes \"Repeater Tabs\"; ProxyWebSocketIndexReporter writes \"Proxy WebSocket\"; live WebSocket handlers write their owning Burp tool.");
+                    "All live HTTP uses ToolType.toolName() from response.toolSource() with request fallback; ProxyHistoryIndexReporter writes \"Proxy History\"; RepeaterTabsIndexReporter writes \"Repeater Tabs\"; ProxyWebSocketIndexReporter writes \"Proxy WebSocket\"; live WebSocket handlers write their owning Burp tool.");
             case "burp.is_in_scope" -> Tooltips.textWithSource(
                     "Raw Burp Suite scope flag, not the extension's export-scope decision.",
-                    "TrafficHttpHandler uses request.isInScope(); ProxyHistoryIndexReporter uses MontoyaApi.scope().isInScope(url); ProxyWebSocketIndexReporter uses MontoyaApi.scope().isInScope(url) via safeBurpInScope().");
+                    "ProxyHistoryIndexReporter uses MontoyaApi.scope().isInScope(finalRequest URL); live HTTP uses the initiating sent request.isInScope(); ProxyWebSocketIndexReporter uses MontoyaApi.scope().isInScope(url) via safeBurpInScope().");
             case "burp.message_id" -> Tooltips.textWithSource(
                     "Source-specific Burp message identifier used for correlation.",
-                    "TrafficHttpHandler uses response.messageId() or request.messageId() for orphan docs; Proxy History reporters use their History row ids; live WebSocket handlers write null because their callback types expose no History message id.");
+                    "All live HTTP uses general HTTP response.messageId() or request.messageId() for request-only documents. This is not a UI History number or native Proxy callback ID. Proxy History reporters use History row ids; live WebSocket handlers write null.");
             case "burp.timing.end" -> Tooltips.textWithSource(
                     "Absolute end timestamp for this traffic event.",
-                    "Proxy History, Repeater Tabs, and token-bound live Proxy HTTP derive this from TimingData.timeRequestSent() plus timeBetweenRequestSentAndEndOfResponse(). Other live HTTP uses the response-handler timestamp. For WebSocket messages, this is the frame/message time.");
+                    "Proxy History and Repeater Tabs derive this from TimingData.timeRequestSent() plus timeBetweenRequestSentAndEndOfResponse(). All live HTTP uses the general response-handler timestamp. For WebSocket messages, this is the frame/message time.");
             case "burp.timing.req_sent_to_res_end" -> Tooltips.textWithSource(
                     "Total observed exchange duration in milliseconds: request sent to end of response.",
-                    "Proxy History, Repeater Tabs, and token-bound live Proxy HTTP use TimingData.timeBetweenRequestSentAndEndOfResponse(). Other live HTTP subtracts exporter-captured request/response timestamps; Proxy WebSocket writes 0 for individual frames.");
+                    "Proxy History and Repeater Tabs use TimingData.timeBetweenRequestSentAndEndOfResponse(). All live HTTP subtracts general HTTP callback timestamps; Proxy WebSocket writes 0 for individual frames.");
             case "burp.notes" -> Tooltips.textWithSource(
                     "User notes attached in Burp.",
-                    "HTTP docs read annotations.notes(); historic WebSocket docs read ProxyWebSocketMessage.annotations(); live WebSocket handlers read final callback annotations.");
+                    "HTTP docs read their source annotations.notes() verbatim. Live HTTP prefers response annotations, falling back to request annotations only when the response exposes no annotations object. Historic WebSocket docs read ProxyWebSocketMessage.annotations(); live WebSocket handlers read final callback annotations. Notes are never modified or used for correlation.");
             case "burp.highlight" -> Tooltips.textWithSource(
                     "Burp highlight color.",
-                    "HTTP docs read annotations.highlightColor().name(); historic WebSocket docs read ProxyWebSocketMessage.annotations(); live WebSocket handlers read final callback annotations.");
+                    "HTTP docs read their source annotations.highlightColor().name(); live HTTP falls back to request annotations only when response annotations are unavailable. Historic WebSocket docs read ProxyWebSocketMessage.annotations(); live WebSocket handlers read final callback annotations. Highlights are read-only.");
             case "request.path.with_query" -> Tooltips.textWithSource(
                     "Request path and query portion.",
                     "RequestResponseDocBuilder.buildTrafficRequestDoc() uses HttpRequest.path().");
@@ -122,7 +133,7 @@ final class ExportFieldTooltipsTraffic {
                     "RequestResponseDocBuilder.buildTrafficResponseDoc() uses HttpResponse.statusCode(); orphan docs use sentinel response.status.code=0.");
             case "response.status.description" -> Tooltips.textWithSource(
                     "Obtain the HTTP reason phrase contained in the response for HTTP 1 messages.",
-                    "RequestResponseDocBuilder.buildTrafficResponseDoc() uses HttpResponse.reasonPhrase(); orphan docs use description=\"Timeout\"; empty-history docs use \"No response\".");
+                    "RequestResponseDocBuilder.buildTrafficResponseDoc() uses HttpResponse.reasonPhrase(); request-only and empty-history docs use \"No response\".");
             case "response.status.code_class" -> Tooltips.textWithSource(
                     "HTTP status family derived from the status code (for example 2xx, 4xx).",
                     "RequestResponseDocBuilder.statusCodeClassName() maps HttpResponse.statusCode() to Burp StatusCodeClass.");
@@ -197,25 +208,25 @@ final class ExportFieldTooltipsTraffic {
                     "ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.time(); live WebSocket handlers use an exporter timestamp at final callback time.");
             case "burp.proxy.history_id" -> Tooltips.textWithSource(
                     "Proxy History row identifier.",
-                    "ProxyHistoryIndexReporter and live Proxy HTTP use ProxyHttpRequestResponse.id(). Live Proxy export waits for an exact private annotation-token match to its History row; live HttpHandler messageId remains a different id space. Null on Repeater, WebSocket, and live non-Proxy tools.");
+                    "ProxyHistoryIndexReporter uses ProxyHttpRequestResponse.id(), the UI row id. All live HTTP writes null: no History lookup, Notes marker, delayed enrichment, or guessed ID.");
             case "burp.proxy.history_is_edited" -> Tooltips.textWithSource(
                     "Burp's row-level edited signal for a Proxy History item.",
-                    "BurpProxyFields copies ProxyHttpRequestResponse.edited() without inferring which side or stage changed. Null when no History row was bound.");
+                    "BurpProxyFields copies ProxyHttpRequestResponse.edited() for explicit Proxy History export without inferring which side or stage changed. All live HTTP writes null.");
             case "burp.proxy.request_change_stages" -> Tooltips.textWithSource(
                     "Observable live Proxy request stages at which complete message bytes changed.",
-                    "ProxyLiveMetadataCorrelator writes RECEIVED_TO_SENT when Proxy request callback bytes differ. An empty array means the exposed stages matched; null means the comparison was unavailable.");
+                    "HTTP producers write null because their selected API pair does not expose a safe comparison of native Proxy modification stages. Null does not mean unchanged.");
             case "burp.proxy.response_change_stages" -> Tooltips.textWithSource(
                     "Observable live Proxy response stages at which complete message bytes changed.",
-                    "ProxyLiveMetadataCorrelator can write UPSTREAM_TO_RECEIVED and RECEIVED_TO_SENT. An empty array means all exposed stages matched; null means one or more comparisons were unavailable.");
+                    "HTTP producers write null because their selected API pair does not expose a safe comparison of native Proxy modification stages. The exported payload remains the original server response, not a client-bound edited variant.");
             case "burp.proxy.listener_port" -> Tooltips.textWithSource(
                     "Proxy listener port used for the message.",
-                    "ProxyHistoryIndexReporter and token-bound live Proxy HTTP use ProxyHttpRequestResponse.listenerPort(); ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.listenerPort(); live Proxy WebSocket callbacks write null because Montoya exposes only the target service there.");
+                    "ProxyHistoryIndexReporter uses ProxyHttpRequestResponse.listenerPort(); ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.listenerPort(). All live HTTP and live WebSocket callbacks write null because their selected API does not expose the listener port.");
             case "burp.timing.req_sent" -> Tooltips.textWithSource(
                     "Request-sent timestamp.",
-                    "Proxy History uses TimingData.timeRequestSent() when valid. Token-bound live Proxy HTTP preserves captured live timing when History timing is unavailable or sentinel; other live HTTP uses the request callback timestamp. Historic WebSocket frames use ProxyWebSocketMessage.time(); live WebSocket frames use the final callback time.");
+                    "Proxy History uses TimingData.timeRequestSent() when valid. All live HTTP uses the general request callback timestamp, not exact socket-write timing. Historic WebSocket frames use ProxyWebSocketMessage.time(); live WebSocket frames use the final callback time.");
             case "burp.timing.req_sent_to_res_start" -> Tooltips.textWithSource(
                     "Time to first response byte in milliseconds: request sent to start of response.",
-                    "ProxyHistoryIndexReporter, RepeaterTabsIndexReporter, and token-bound live Proxy HTTP use Burp TimingData.timeBetweenRequestSentAndStartOfResponse(); other live HTTP and WebSocket docs write null.");
+                    "ProxyHistoryIndexReporter and RepeaterTabsIndexReporter use Burp TimingData.timeBetweenRequestSentAndStartOfResponse(); all live HTTP and WebSocket docs write null.");
             default -> ExportFieldTooltipsRequestResponse.requestResponseNestedTooltip(fieldKey);
         };
     }

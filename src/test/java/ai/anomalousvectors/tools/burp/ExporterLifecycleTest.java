@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.sinks.ExportReporterLifecycle;
 import ai.anomalousvectors.tools.burp.sinks.FindingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter;
+import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
 import ai.anomalousvectors.tools.burp.sinks.SettingsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.SitemapIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter;
@@ -69,9 +70,8 @@ class ExporterLifecycleTest {
 
     @Test
     void initialize_registersUnloadHook_and_leavesRecurringReportersStopped_untilStart() {
+        ApiFixture fixture = new ApiFixture();
         try {
-            ApiFixture fixture = new ApiFixture();
-
             new Exporter().initialize(fixture.api);
 
             assertThat(fixture.unloadHandler.get()).isNotNull();
@@ -85,13 +85,17 @@ class ExporterLifecycleTest {
             verify(fixture.extension).setName(ProductInfo.EXTENSION_NAME);
             verify(fixture.extension).registerUnloadingHandler(any(ExtensionUnloadingHandler.class));
             verify(fixture.userInterface).registerSuiteTab(eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class));
-            verify(fixture.http).registerHttpHandler(any());
-            verify(fixture.proxy).registerRequestHandler(any());
-            verify(fixture.proxy).registerResponseHandler(any());
+            verify(fixture.http).registerHttpHandler(argThat(
+                    handler -> handler instanceof TrafficHttpHandler));
+            verify(fixture.proxy, never()).registerRequestHandler(any());
+            verify(fixture.proxy, never()).registerResponseHandler(any());
             verify(fixture.webSockets).registerWebSocketCreatedHandler(any());
             verify(fixture.logging).logToOutput(argThat(msg ->
                     msg.contains("initialized successfully") && !msg.startsWith("[")));
         } finally {
+            if (fixture.unloadHandler.get() != null) {
+                fixture.unloadHandler.get().extensionUnloaded();
+            }
             Tooltips.restoreSharedPopupFactory();
             ExportReporterLifecycle.resetForTests();
             Logger.resetState();
@@ -124,29 +128,6 @@ class ExporterLifecycleTest {
         }
     }
 
-    @Test
-    void initialize_proxyResponseRegistrationFailure_deregistersPartialProxyRegistration() {
-        try {
-            ApiFixture fixture = new ApiFixture();
-            when(fixture.proxy.registerResponseHandler(any()))
-                    .thenThrow(new IllegalStateException("response registration failed"));
-
-            new Exporter().initialize(fixture.api);
-
-            verify(fixture.httpRegistration).deregister();
-            verify(fixture.proxyRequestRegistration).deregister();
-            verify(fixture.logging, never()).logToOutput(
-                    argThat(message -> message.contains("initialized successfully")));
-            assertThatCode(() -> fixture.unloadHandler.get().extensionUnloaded())
-                    .doesNotThrowAnyException();
-            verify(fixture.httpRegistration, times(1)).deregister();
-            verify(fixture.proxyRequestRegistration, times(1)).deregister();
-        } finally {
-            Tooltips.restoreSharedPopupFactory();
-            ExportReporterLifecycle.resetForTests();
-            Logger.resetState();
-        }
-    }
 
     @Test
     void unloadingHandler_deregistersResources_and_stopsBackgroundWork() throws IOException {
@@ -178,8 +159,6 @@ class ExporterLifecycleTest {
             assertThat(storageInstance).doesNotExist();
 
             verify(fixture.httpRegistration).deregister();
-            verify(fixture.proxyRequestRegistration).deregister();
-            verify(fixture.proxyResponseRegistration).deregister();
             verify(fixture.proxyWebSocketRegistration).deregister();
             verify(fixture.suiteTabRegistration).deregister();
             verify(fixture.unloadRegistration, atLeastOnce()).deregister();
@@ -283,8 +262,6 @@ class ExporterLifecycleTest {
         final Registration unloadRegistration = mock(Registration.class);
         final Registration suiteTabRegistration = mock(Registration.class);
         final Registration httpRegistration = mock(Registration.class);
-        final Registration proxyRequestRegistration = mock(Registration.class);
-        final Registration proxyResponseRegistration = mock(Registration.class);
         final Registration proxyWebSocketRegistration = mock(Registration.class);
         final Registration webSocketRegistration = mock(Registration.class);
         final WebSockets webSockets = mock(WebSockets.class);
@@ -309,8 +286,6 @@ class ExporterLifecycleTest {
             when(userInterface.registerSuiteTab(eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class)))
                     .thenReturn(suiteTabRegistration);
             when(http.registerHttpHandler(any())).thenReturn(httpRegistration);
-            when(proxy.registerRequestHandler(any())).thenReturn(proxyRequestRegistration);
-            when(proxy.registerResponseHandler(any())).thenReturn(proxyResponseRegistration);
             when(proxy.registerWebSocketCreationHandler(any())).thenReturn(proxyWebSocketRegistration);
             when(webSockets.registerWebSocketCreatedHandler(any())).thenReturn(webSocketRegistration);
         }

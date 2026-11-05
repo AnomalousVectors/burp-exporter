@@ -56,7 +56,6 @@ class WorkerShutdownTest {
             Map.entry("sinks/ExportReporterLifecycle.java", 1),
             Map.entry("sinks/FindingsIndexReporter.java", 1),
             Map.entry("sinks/ProxyHistoryIndexReporter.java", 1),
-            Map.entry("sinks/ProxyLiveMetadataCorrelator.java", 1),
             Map.entry("sinks/RepeaterSwingTabWalker.java", 2),
             Map.entry("sinks/RepeaterTabsIndexReporter.java", 1),
             Map.entry("sinks/SettingsIndexReporter.java", 1),
@@ -78,7 +77,7 @@ class WorkerShutdownTest {
      * Lifecycle contracts represented by the factory census.
      *
      * <p>Periodic LazyScheduler owners (stats, settings, findings, sitemap, Proxy History,
-     * Proxy reconciliation, orphan export, and both parameter-integrity flushers) start lazily,
+     * orphan export, and both parameter-integrity flushers) start lazily,
      * stop through their owner or {@link ExportReporterLifecycle}, unload through that lifecycle,
      * restart lazily, wait at most {@link Workers#DEFAULT_SHUTDOWN_TIMEOUT_MS}, and interrupt their
      * scheduled executor. Their owner tests plus this class cover termination. Traffic queue and
@@ -165,6 +164,7 @@ class WorkerShutdownTest {
         assertThat(started.isShutdown()).isTrue();
         assertThat(started.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
     }
+
 
     @Test
     void trafficExportQueue_stopWorker_terminatesDrainWorker() throws Exception {

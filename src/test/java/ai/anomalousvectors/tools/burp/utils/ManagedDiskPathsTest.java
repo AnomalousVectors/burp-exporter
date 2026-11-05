@@ -92,14 +92,13 @@ class ManagedDiskPathsTest {
         ManagedDiskPaths.setManagedRootForTests(testRoot);
         ManagedDiskPaths.initialize();
         Path spill = ManagedDiskPaths.ensureManagedDirectory(ManagedDiskPaths.spillDirectory());
-        ManagedDiskPaths.ensureManagedDirectory(ManagedDiskPaths.proxyCorrelationDirectory());
         Path temporaryFile = FileUtil.writeTempFile("managed-close-", ".tmp", "sensitive");
         Path instance = spill.getParent().getParent().getParent();
 
         ManagedDiskPaths.CleanupResult cleanup = ManagedDiskPaths.closeInstance();
 
         assertThat(cleanup.complete()).isTrue();
-        assertThat(cleanup.entriesDeleted()).isEqualTo(8L);
+        assertThat(cleanup.entriesDeleted()).isEqualTo(7L);
         assertThat(cleanup.bytesDeleted()).isEqualTo(9L);
         assertThat(instance).doesNotExist();
         assertThat(temporaryFile).doesNotExist();

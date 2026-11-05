@@ -28,7 +28,6 @@ import ai.anomalousvectors.tools.burp.ui.primitives.ButtonStyles;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import ai.anomalousvectors.tools.burp.utils.ExportControlBridge;
 import ai.anomalousvectors.tools.burp.utils.Logger;
-import ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import net.miginfocom.swing.MigLayout;
@@ -285,7 +284,6 @@ public final class ConfigControlPanel {
             boolean wasRunning = RuntimeConfig.isExportRunning();
             if (wasRunning) {
                 RuntimeConfig.ExportRunToken stoppedRun = RuntimeConfig.currentExportRunToken();
-                ProxyLiveMetadataCorrelator.closeIntake();
                 RuntimeConfig.beginExportStop();
                 RuntimeConfig.setExportStopping(true);
                 StartupSnapshotCoordinator.cancelRun(stoppedRun);
@@ -416,8 +414,6 @@ public final class ConfigControlPanel {
     private static String startExportTooltip() {
         String spillPath = Tooltips.escapeHtml(
                 ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths.spillDirectory().toString());
-        String correlationPath = Tooltips.escapeHtml(
-                ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths.proxyCorrelationDirectory().toString());
         return Tooltips.htmlRaw(
                 "<b>Start</b>",
                 "Start exporting to the configured destination(s).",
@@ -425,9 +421,7 @@ public final class ConfigControlPanel {
                 "<b>During export</b>",
                 "Repeated push failures trigger a health check. Authentication failures (HTTP 401/403) or connectivity failures can disable the database destination for the current run.",
                 "If Files remains enabled, file export continues; otherwise export stops.",
-                "Live traffic overflow can spill under <code>" + spillPath + "</code> when the in-memory queue is full.",
-                "Live Proxy documents awaiting exact History fields persist under <code>"
-                        + correlationPath + "</code>.");
+                "Live traffic overflow can spill under <code>" + spillPath + "</code> when the in-memory queue is full.");
     }
 
     private static String stopExportTooltip() {

@@ -91,24 +91,6 @@ class BurpTimingFieldsTest {
         assertThat(timing.get("end")).isEqualTo(sent.plus(Duration.ofMillis(120)).toInstant().toString());
     }
 
-    @Test
-    void mergeProxyHistoryOverLive_preservesLiveTimingForEpochSentinel() {
-        ProxyHttpRequestResponse item = mock(ProxyHttpRequestResponse.class);
-        TimingData timingData = mock(TimingData.class);
-        Map<String, Object> live = BurpTimingFields.fromHandlerEpochMillis(
-                1_700_000_000_000L,
-                1_700_000_000_125L);
-
-        when(item.timingData()).thenReturn(timingData);
-        when(timingData.timeRequestSent())
-                .thenReturn(ZonedDateTime.ofInstant(Instant.EPOCH, java.time.ZoneOffset.UTC));
-        when(timingData.timeBetweenRequestSentAndStartOfResponse()).thenReturn(Duration.ZERO);
-        when(timingData.timeBetweenRequestSentAndEndOfResponse()).thenReturn(Duration.ZERO);
-
-        Map<String, Object> timing = BurpTimingFields.mergeProxyHistoryOverLive(live, item);
-
-        assertThat(timing).isEqualTo(live);
-    }
 
     @Test
     void from_usesMontoyaTimingDataWhenPresent() {

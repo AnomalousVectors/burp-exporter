@@ -4,7 +4,6 @@
  * <p>This package houses:</p>
  * <ul>
  *   <li><b>Traffic reporters</b> — {@link ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler},
- *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyLiveMetadataCorrelator},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler},
@@ -34,6 +33,12 @@
  *       success/failure accounting, and
  *       {@link ai.anomalousvectors.tools.burp.sinks.SnapshotSummary} one-shot run summaries.</li>
  * </ul>
+ *
+ * <p>General HTTP callbacks capture live traffic, including Proxy, from the initiating sent request
+ * and original server response. Callback message IDs are not UI History row IDs. Live export
+ * never reads History or writes Notes to enrich those IDs. Explicit Proxy History snapshots use
+ * each row's own ID, finalRequest(), and documented received server response. Notes and highlights are read-only
+ * metadata on every path.</p>
  *
  * <p>One-shot snapshot backlogs (Proxy History, Sitemap initial, Findings backlog, Proxy WebSocket
  * historic) run in cooperative slices through

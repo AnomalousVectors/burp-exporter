@@ -49,7 +49,7 @@ public final class ManagedDiskPaths {
     private static final String INSTANCES_SUBDIR = "instances";
     private static final String PROJECTS_SUBDIR = "projects";
     private static final String SPILL_SUBDIR = "spill";
-    private static final String PROXY_CORRELATION_SUBDIR = "proxy-correlation";
+    private static final String LEGACY_PROXY_CORRELATION_SUBDIR = "proxy-correlation";
     private static final String TEMPORARY_FILES_SUBDIR = "temporary-files";
     private static final String OWNER_LOCK_NAME = ".owner.lock";
     private static final String CLEANUP_LOCK_NAME = ".cleanup.lock";
@@ -140,10 +140,6 @@ public final class ManagedDiskPaths {
         return projectDirectory().resolve(SPILL_SUBDIR);
     }
 
-    /** Returns this instance's protected Proxy-correlation directory for the current Burp project. */
-    public static Path proxyCorrelationDirectory() {
-        return projectDirectory().resolve(PROXY_CORRELATION_SUBDIR);
-    }
 
     /** Returns this instance's protected general-purpose temporary-file directory. */
     public static Path temporaryFilesDirectory() {
@@ -416,7 +412,7 @@ public final class ManagedDiskPaths {
     private static CleanupResult cleanupLegacyLayout(Path root) {
         CleanupResult result = CleanupResult.empty();
         result = result.plus(deleteTreeBestEffort(root, root.resolve(SPILL_SUBDIR)));
-        result = result.plus(deleteTreeBestEffort(root, root.resolve(PROXY_CORRELATION_SUBDIR)));
+        result = result.plus(deleteTreeBestEffort(root, root.resolve(LEGACY_PROXY_CORRELATION_SUBDIR)));
         return result;
     }
 

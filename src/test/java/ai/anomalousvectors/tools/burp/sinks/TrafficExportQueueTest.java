@@ -164,6 +164,32 @@ class TrafficExportQueueTest {
         });
     }
 
+    @Test
+    void runFencedOffer_rechecksOwnershipAfterPreparationAndDiscard() throws Exception {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            Map<String, Object> doc = trafficDoc("Proxy");
+            var token = RuntimeConfig.currentExportRunToken();
+            TrafficQueueEntry prepared = TrafficQueueEntry.from(doc);
+            try (var entries = org.mockito.Mockito.mockStatic(TrafficQueueEntry.class)) {
+                entries.when(() -> TrafficQueueEntry.from(
+                        org.mockito.ArgumentMatchers.<Map<String, Object>>any(),
+                        org.mockito.ArgumentMatchers.any())).thenAnswer(call -> {
+                            RuntimeConfig.setExportRunning(false);
+                            TrafficExportQueue.clearPendingWork();
+                            RuntimeConfig.setExportRunning(true);
+                            return prepared;
+                        });
+                assertThat(TrafficExportQueue.offerForRun(doc, token)).isFalse();
+                entries.verify(() -> TrafficQueueEntry.from(
+                        org.mockito.ArgumentMatchers.<Map<String, Object>>any(),
+                        org.mockito.ArgumentMatchers.any()));
+                assertThat(TrafficExportQueue.getCurrentSize()).isZero();
+                assertThat(TrafficExportQueue.getCurrentSpillSize()).isZero();
+            }
+        });
+    }
+
     private static Map<String, Object> trafficDoc(String reporter) {
         return Map.of("burp", Map.of("reporting_tool", reporter));
     }

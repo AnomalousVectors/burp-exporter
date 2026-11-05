@@ -37,6 +37,8 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
  * 100 ms). Used by live HTTP and live non-proxy WebSocket export paths.</p>
  */
 public final class TrafficExportQueue {
+    /** Serializes run-fenced admission with Stop's discard, never document preparation. */
+    private static final Object RUN_ADMISSION = new Object();
 
     private static final int CAPACITY = ExportAdmissionController.MEM_DOC_SAFETY_RAIL;
     private static final long POLL_TIMEOUT_MS = 50;
@@ -272,6 +274,29 @@ public final class TrafficExportQueue {
             return false;
         }
         TrafficQueueEntry entry = TrafficQueueEntry.from(document, resolvedRoute);
+        return offerEntry(entry);
+    }
+
+    /**
+     * Prepares a live HTTP document, then admits it only while its captured run still owns export.
+     *
+     * <p>Preparation may outlive Stop. The final token check and enqueue share the discard lock,
+     * preventing a delayed old-run preparation from refilling a stopped or newer run's queue.</p>
+     */
+    static boolean offerForRun(Map<String, Object> document, RuntimeConfig.ExportRunToken token) {
+        if (!RuntimeConfig.isExportRunActive(token)) {
+            return false;
+        }
+        TrafficRouteBucket.Route route = TrafficRouteBucket.fromDocument(document);
+        TrafficQueueEntry entry = TrafficQueueEntry.from(document, route);
+        synchronized (RUN_ADMISSION) {
+            return RuntimeConfig.isExportRunActive(token)
+                    && isRouteCurrentlyEnabled(route)
+                    && offerEntry(entry);
+        }
+    }
+
+    private static boolean offerEntry(TrafficQueueEntry entry) {
         if (entry == null) {
             return false;
         }
@@ -324,13 +349,15 @@ public final class TrafficExportQueue {
      * @return {@code true} when all tracked spill files were deleted
      */
     public static boolean clearPendingWork() {
-        queue.clear();
-        TrafficSpillFileQueue.DiscardResult discarded = spillQueue.clear();
-        if (!discarded.complete()) {
-            Logger.logWarnPanelOnly("[TrafficExportQueue] Unable to discard all spill files: failures="
-                    + discarded.failures() + ". Abandoned files will not be replayed.");
+        synchronized (RUN_ADMISSION) {
+            queue.clear();
+            TrafficSpillFileQueue.DiscardResult discarded = spillQueue.clear();
+            if (!discarded.complete()) {
+                Logger.logWarnPanelOnly("[TrafficExportQueue] Unable to discard all spill files: failures="
+                        + discarded.failures() + ". Abandoned files will not be replayed.");
+            }
+            return discarded.complete();
         }
-        return discarded.complete();
     }
 
     /**

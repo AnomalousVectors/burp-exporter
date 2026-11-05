@@ -119,8 +119,8 @@ class ConfigPanelFieldTooltipsHeadlessTest {
                     .contains("<b>Description:</b>")
                     .contains("Raw Burp Suite scope flag, not the extension's export-scope decision.")
                     .contains("<b>Source")
-                    .contains("TrafficHttpHandler uses request.isInScope()")
-                    .contains("ProxyHistoryIndexReporter uses MontoyaApi.scope().isInScope(url)")
+                    .contains("live HTTP uses the initiating sent request.isInScope()")
+                    .contains("ProxyHistoryIndexReporter uses MontoyaApi.scope().isInScope(finalRequest URL)")
                     .contains("ProxyWebSocketIndexReporter uses MontoyaApi.scope().isInScope(url) via safeBurpInScope().");
             assertThat(trafficResponseStatusCode.getText()).isEqualTo("Code");
             assertThat(trafficResponseStatusCode.getToolTipText())
@@ -289,7 +289,7 @@ class ConfigPanelFieldTooltipsHeadlessTest {
                     .contains("selected final payload byte length");
             assertThat(requestSent.getToolTipText())
                     .contains("TimingData.timeRequestSent() when valid")
-                    .contains("preserves captured live timing")
+                    .contains("All live HTTP uses the general request callback timestamp")
                     .contains("live WebSocket frames use the final callback time")
                     .doesNotContain("item.time() fallback");
         });

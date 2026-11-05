@@ -29,13 +29,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  */
 public final class DiskSpaceGuard {
 
-    /** Per-project maximum for run-scoped spill and unresolved Proxy-correlation storage. */
-    public static final long MAX_MANAGED_BYTES = 1024L * 1024L * 1024L;
-    /** Per-project managed-disk share reserved for general live-traffic spill. */
-    public static final long TRAFFIC_SPILL_MAX_BYTES = MAX_MANAGED_BYTES * 3L / 4L;
-    /** Per-project managed-disk share reserved for unresolved live Proxy correlation. */
-    public static final long PROXY_CORRELATION_MAX_BYTES =
-            MAX_MANAGED_BYTES - TRAFFIC_SPILL_MAX_BYTES;
+    /** Per-project cap for run-scoped live-traffic spill across concurrent instances. */
+    public static final long TRAFFIC_SPILL_MAX_BYTES = 768L * 1024L * 1024L;
     /** Minimum free bytes that must remain on the destination volume after a write. */
     public static final long MIN_FREE_BYTES = 1024L * 1024L * 1024L;
     private static final long LOW_DISK_LOG_THROTTLE_MS = 30_000L;

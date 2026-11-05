@@ -1,7 +1,6 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 import burp.api.montoya.proxy.ProxyHttpRequestResponse;
@@ -47,15 +46,4 @@ final class BurpProxyFields {
         return proxy;
     }
 
-    static Map<String, Object> withChangeStages(
-            Map<String, Object> existing,
-            List<String> requestChangeStages,
-            List<String> responseChangeStages) {
-        Map<String, Object> proxy = existing == null
-                ? withoutProxyHistoryEditMetadata(null)
-                : new LinkedHashMap<>(existing);
-        proxy.put("request_change_stages", requestChangeStages);
-        proxy.put("response_change_stages", responseChangeStages);
-        return proxy;
-    }
 }
