@@ -1327,6 +1327,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
             CompressedWireBodyParamsLog.flushStartupSummary();
         }
         RuntimeConfig.setExportStarting(false);
+        ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.start();
         String runningStatus = buildRunningStatusMessage(runtimeStartIssues, filesSelected, databaseSelected);
         SwingUtilities.invokeLater(() -> {
             if (closedForUnload.get() || !RuntimeConfig.isExportRunActive(runToken)) {

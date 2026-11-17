@@ -49,6 +49,7 @@ class WorkerShutdownTest {
             Pattern.compile("new\\s+Timer\\s*\\("));
 
     private static final Map<String, Integer> EXPECTED_OWNER_FACTORIES = Map.ofEntries(
+            Map.entry("sinks/StreamingProxyRecovery.java", 1),
             Map.entry("sinks/BodyEnumerationSkippedLog.java", 1),
             Map.entry("sinks/CompressedWireBodyParamsLog.java", 1),
             Map.entry("sinks/ExporterIndexLogForwarder.java", 2),
@@ -105,7 +106,10 @@ class WorkerShutdownTest {
      * are deregistered on unload. Logger/runtime UI listeners register on load or panel attach and
      * unregister/clear on removal or unload. These non-factory owners are covered by
      * ExporterLifecycleTest, LogPanelLoggerLifecycleHeadlessTest, StatsPanel lifecycle tests, and
-     * connector cache/TLS tests.</p>
+     * connector cache/TLS tests. Streaming recovery owns one run-scoped, cost-paced scheduler;
+     * Start creates it, Stop allows a bounded final observation, and unload/failure fences all
+     * publication and interrupts the owner. StreamingProxyRecoveryTest covers source separation,
+     * deadlines and actual worker teardown. History is never scanned on a traffic callback.</p>
      */
 
     @Test

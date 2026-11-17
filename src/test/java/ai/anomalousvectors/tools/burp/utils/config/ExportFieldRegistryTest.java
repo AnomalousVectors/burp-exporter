@@ -68,7 +68,14 @@ class ExportFieldRegistryTest {
     void meta_leaf_paths_are_required_display_fields_for_every_index() {
         for (String index : ExportFieldRegistry.INDEX_ORDER_FOR_FIELDS_PANEL) {
             assertThat(ExportFieldRegistry.getRequiredDisplayFields(index))
-                    .containsExactlyElementsOf(ExportFieldRegistry.META_LEAF_PATHS);
+                    .containsAll(ExportFieldRegistry.META_LEAF_PATHS);
+            if ("traffic".equals(index)) {
+                assertThat(ExportFieldRegistry.getRequiredDisplayFields(index))
+                        .containsAll(ExportFieldRegistry.TRAFFIC_CAPTURE_LEAF_PATHS);
+            } else {
+                assertThat(ExportFieldRegistry.getRequiredDisplayFields(index))
+                        .containsExactlyElementsOf(ExportFieldRegistry.META_LEAF_PATHS);
+            }
         }
     }
 

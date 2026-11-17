@@ -50,8 +50,8 @@ final class ExportFieldTooltipsTraffic {
         String tooltip = trafficFieldTooltip(fieldKey);
         if (tooltip != null && (fieldKey.startsWith("request.") || fieldKey.startsWith("response."))) {
             String source = fieldKey.startsWith("request.")
-                    ? "Live HTTP payload: HttpResponseReceived.initiatingRequest(), the request sent to the target. Request-only timeouts use the observed HttpRequestToBeSent callback view. Proxy History uses ProxyHttpRequestResponse.finalRequest(), including changes before sending to the target."
-                    : "Live HTTP payload: HttpResponseReceived, the original server response before later Burp response edits or automatic modifications. Proxy History uses ProxyHttpRequestResponse.response(), the documented received server response (originalResponse()).";
+                    ? "Live HTTP observations use HttpResponseReceived.initiatingRequest(), the request sent to the target. Request-only timeouts use HttpRequestToBeSent. Explicit Proxy History and History-backed live stream snapshots use finalRequest(), including edits before sending. meta.capture.source distinguishes independent observations."
+                    : "Live HTTP observations use HttpResponseReceived, the original server response before client-bound edits. Explicit Proxy History and History-backed live stream snapshots use the original server response. Stream snapshots may still be partial; meta.capture records their source, revision and observation deadline.";
             return tooltip.replace("</html>", "<br><br>" + Tooltips.escapeHtml(source) + "</html>");
         }
         return tooltip;
@@ -94,19 +94,19 @@ final class ExportFieldTooltipsTraffic {
                     "RequestResponseDocBuilder.buildTrafficResponseDoc() uses only HttpResponse.httpVersion(); it does not copy request protocol data into response.protocol.http_version.");
             case "burp.reporting_tool" -> Tooltips.textWithSource(
                     "Burp tool display name.",
-                    "All live HTTP uses ToolType.toolName() from response.toolSource() with request fallback; ProxyHistoryIndexReporter writes \"Proxy History\"; RepeaterTabsIndexReporter writes \"Repeater Tabs\"; ProxyWebSocketIndexReporter writes \"Proxy WebSocket\"; live WebSocket handlers write their owning Burp tool.");
+                    "Live HTTP uses ToolType.toolName() with request fallback; live stream recovery writes \"Proxy\" with meta.capture.source=proxy_history_stream. Explicit Proxy History writes \"Proxy History\"; Repeater Tabs and WebSocket producers retain their own labels.");
             case "burp.is_in_scope" -> Tooltips.textWithSource(
                     "Raw Burp Suite scope flag, not the extension's export-scope decision.",
                     "ProxyHistoryIndexReporter uses MontoyaApi.scope().isInScope(finalRequest URL); live HTTP uses the initiating sent request.isInScope(); ProxyWebSocketIndexReporter uses MontoyaApi.scope().isInScope(url) via safeBurpInScope().");
             case "burp.message_id" -> Tooltips.textWithSource(
                     "Source-specific Burp message identifier used for correlation.",
-                    "All live HTTP uses general HTTP response.messageId() or request.messageId() for request-only documents. This is not a UI History number or native Proxy callback ID. Proxy History reporters use History row ids; live WebSocket handlers write null.");
+                    "Live HTTP observations use the general HTTP messageId(), not a UI History number or native Proxy ID. Explicit Proxy History and History-backed live stream snapshots use their exact History row ID. meta.capture.source distinguishes these namespaces. Live WebSocket handlers write null.");
             case "burp.timing.end" -> Tooltips.textWithSource(
                     "Absolute end timestamp for this traffic event.",
-                    "Proxy History and Repeater Tabs derive this from TimingData.timeRequestSent() plus timeBetweenRequestSentAndEndOfResponse(). All live HTTP uses the general response-handler timestamp. For WebSocket messages, this is the frame/message time.");
+                    "History-backed observations and Repeater Tabs derive this from valid TimingData. Live HTTP callback observations use the general response-handler timestamp. For WebSocket messages, this is the frame/message time.");
             case "burp.timing.req_sent_to_res_end" -> Tooltips.textWithSource(
                     "Total observed exchange duration in milliseconds: request sent to end of response.",
-                    "Proxy History and Repeater Tabs use TimingData.timeBetweenRequestSentAndEndOfResponse(). All live HTTP subtracts general HTTP callback timestamps; Proxy WebSocket writes 0 for individual frames.");
+                    "History-backed observations and Repeater Tabs use TimingData.timeBetweenRequestSentAndEndOfResponse(). Live HTTP callback observations subtract general HTTP callback timestamps; Proxy WebSocket writes 0 for individual frames.");
             case "burp.notes" -> Tooltips.textWithSource(
                     "User notes attached in Burp.",
                     "HTTP docs read their source annotations.notes() verbatim. Live HTTP prefers response annotations, falling back to request annotations only when the response exposes no annotations object. Historic WebSocket docs read ProxyWebSocketMessage.annotations(); live WebSocket handlers read final callback annotations. Notes are never modified or used for correlation.");
@@ -208,10 +208,10 @@ final class ExportFieldTooltipsTraffic {
                     "ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.time(); live WebSocket handlers use an exporter timestamp at final callback time.");
             case "burp.proxy.history_id" -> Tooltips.textWithSource(
                     "Proxy History row identifier.",
-                    "ProxyHistoryIndexReporter uses ProxyHttpRequestResponse.id(), the UI row id. All live HTTP writes null: no History lookup, Notes marker, delayed enrichment, or guessed ID.");
+                    "Explicit Proxy History and History-backed live stream snapshots use ProxyHttpRequestResponse.id(), the UI row id. Live HTTP callback observations write null: no History join, Notes marker or guessed ID.");
             case "burp.proxy.history_is_edited" -> Tooltips.textWithSource(
                     "Burp's row-level edited signal for a Proxy History item.",
-                    "BurpProxyFields copies ProxyHttpRequestResponse.edited() for explicit Proxy History export without inferring which side or stage changed. All live HTTP writes null.");
+                    "BurpProxyFields copies ProxyHttpRequestResponse.edited() for explicit Proxy History export and History-backed live stream recovery without inferring which side or stage changed. Live HTTP callback observations write null.");
             case "burp.proxy.request_change_stages" -> Tooltips.textWithSource(
                     "Observable live Proxy request stages at which complete message bytes changed.",
                     "HTTP producers write null because their selected API pair does not expose a safe comparison of native Proxy modification stages. Null does not mean unchanged.");
@@ -220,13 +220,13 @@ final class ExportFieldTooltipsTraffic {
                     "HTTP producers write null because their selected API pair does not expose a safe comparison of native Proxy modification stages. The exported payload remains the original server response, not a client-bound edited variant.");
             case "burp.proxy.listener_port" -> Tooltips.textWithSource(
                     "Proxy listener port used for the message.",
-                    "ProxyHistoryIndexReporter uses ProxyHttpRequestResponse.listenerPort(); ProxyWebSocketIndexReporter uses ProxyWebSocketMessage.listenerPort(). All live HTTP and live WebSocket callbacks write null because their selected API does not expose the listener port.");
+                    "Explicit Proxy History and History-backed live stream snapshots copy listenerPort() from their exact row. Ordinary live HTTP observations and live WebSocket callbacks remain unknown; no port is guessed or joined by request contents. Historic WebSockets use ProxyWebSocketMessage.listenerPort().");
             case "burp.timing.req_sent" -> Tooltips.textWithSource(
                     "Request-sent timestamp.",
-                    "Proxy History uses TimingData.timeRequestSent() when valid. All live HTTP uses the general request callback timestamp, not exact socket-write timing. Historic WebSocket frames use ProxyWebSocketMessage.time(); live WebSocket frames use the final callback time.");
+                    "Explicit Proxy History and History-backed live streams use TimingData.timeRequestSent() when valid. Live HTTP callback observations use the general request callback timestamp, not exact socket-write timing. Historic WebSocket frames use ProxyWebSocketMessage.time(); live WebSocket frames use the final callback time.");
             case "burp.timing.req_sent_to_res_start" -> Tooltips.textWithSource(
                     "Time to first response byte in milliseconds: request sent to start of response.",
-                    "ProxyHistoryIndexReporter and RepeaterTabsIndexReporter use Burp TimingData.timeBetweenRequestSentAndStartOfResponse(); all live HTTP and WebSocket docs write null.");
+                    "ProxyHistoryIndexReporter and RepeaterTabsIndexReporter use Burp TimingData.timeBetweenRequestSentAndStartOfResponse(); live HTTP callback observations and WebSocket docs write null.");
             default -> ExportFieldTooltipsRequestResponse.requestResponseNestedTooltip(fieldKey);
         };
     }

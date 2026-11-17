@@ -29,11 +29,19 @@ public final class ExportFieldRegistry {
             "meta.extension_version",
             "meta.indexed_at");
 
+    /** Identity and observation semantics required to interpret immutable traffic snapshots. */
+    public static final List<String> TRAFFIC_CAPTURE_LEAF_PATHS = List.of(
+            "meta.capture.id", "meta.capture.source", "meta.capture.revision",
+            "meta.capture.observed_at", "meta.capture.window_ends_at", "meta.capture.response_state",
+            "meta.capture.observation_state");
+
     static {
         for (String index : List.of("exporter", "traffic", "settings", "sitemap", "findings")) {
             TOGGLEABLE_BY_INDEX.put(index, MappingFieldCatalog.discoverToggleableLeaves(index));
             SYSTEM_BY_INDEX.put(index, List.of("meta"));
-            REQUIRED_DISPLAY_BY_INDEX.put(index, List.copyOf(META_LEAF_PATHS));
+            List<String> required = new ArrayList<>(META_LEAF_PATHS);
+            if ("traffic".equals(index)) required.addAll(TRAFFIC_CAPTURE_LEAF_PATHS);
+            REQUIRED_DISPLAY_BY_INDEX.put(index, List.copyOf(required));
         }
 
         for (String index : List.of("exporter", "traffic", "settings", "sitemap", "findings")) {
@@ -49,7 +57,7 @@ public final class ExportFieldRegistry {
      * Returns whether {@code path} is a required meta leaf (always exported, not user-toggleable).
      */
     public static boolean isMetaLeafPath(String path) {
-        return path != null && META_LEAF_PATHS.contains(path);
+        return path != null && (META_LEAF_PATHS.contains(path) || TRAFFIC_CAPTURE_LEAF_PATHS.contains(path));
     }
 
     /**

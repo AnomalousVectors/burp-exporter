@@ -411,6 +411,7 @@ public final class StatsPanel extends JPanel {
     private final JLabel peakCooldownWaitMsValue;
     private final JLabel peakFlushSlotWaitMsValue;
     private final JLabel pendingOrphansValue;
+    private final JLabel streamingRecoveryValue;
     private final JLabel bulkInFlightValue;
     private final JLabel softOutageValue;
     private final JLabel authorizationRecoveryValue;
@@ -529,7 +530,8 @@ public final class StatsPanel extends JPanel {
                         "Authorization Failures",
                         "Traffic Spill Status",
                         "Database Exported Size",
-                        "Files Exported Size"
+                        "Files Exported Size",
+                        "Streaming Recovery"
                 }),
                 new MetricSection("Process", new String[] {
                         "Heap Used / Max", "Heap Committed",
@@ -633,6 +635,7 @@ public final class StatsPanel extends JPanel {
         peakCooldownWaitMsValue = miscValues.get("Peak Cooldown Wait (ms)");
         peakFlushSlotWaitMsValue = miscValues.get("Peak Flush Slot Wait (ms)");
         pendingOrphansValue = miscValues.get("Pending Orphans");
+        streamingRecoveryValue = miscValues.get("Streaming Recovery");
         bulkInFlightValue = miscValues.get("Bulk In-Flight");
         bulkByteBudgetValue = miscValues.get("Bulk Byte Budget");
         snapshotFlushCapValue = miscValues.get("Snapshot Flush Cap");
@@ -830,6 +833,8 @@ public final class StatsPanel extends JPanel {
         snapshotBuildAheadValue.setText(StatsPanelFormatters.formatSnapshotBuildAhead());
         pendingOrphansValue.setText(formatWhole(
                 ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler.pendingOrphansSize()));
+        streamingRecoveryValue.setText(
+                ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         bulkInFlightValue.setText(formatWhole(ExportStats.getBulkInFlight()));
         boolean softOutage = IndexingRetryCoordinator.getInstance().isSoftCapacityOutage();
         softOutageValue.setText(StatsPanelFormatters.formatSoftOutage(softOutage));
@@ -1510,6 +1515,7 @@ public final class StatsPanel extends JPanel {
         setMiscRowVisible("Overview", 3, trafficRelevant);
         setMiscRowVisible("Overview", 4, openSearchVisible);
         setMiscRowVisible("Overview", 5, fileVisible);
+        setMiscRowVisible("Overview", 6, trafficRelevant);
         setMiscSectionVisible("Process", true);
         for (String section : MISC_DATABASE_SECTIONS) {
             setMiscSectionVisible(section, openSearchVisible);
@@ -1948,6 +1954,13 @@ public final class StatsPanel extends JPanel {
         tooltips.put("Pending Orphans", Tooltips.htmlRaw(
                 "Live HTTP request/response pairs held until a matching response arrives.",
                 "A non-zero value during heavy traffic is normal; sustained growth may indicate pairing pressure."));
+        tooltips.put("Streaming Recovery", Tooltips.htmlRaw(
+                "Independent History-backed observations for streaming live Proxy exports.",
+                "Tracking includes responses awaiting classification, up to 256 at once. Snapshots are",
+                "immutable observations; cutoff counts five-minute deadlines, not completed responses.",
+                "Capacity checks count rejected row observations, not unique exchanges. Removed counts",
+                "tracked rows no longer retained in History. Failures count worker/read errors.",
+                "Polling tapers with age and measured public API cost; Stop ends observation."));
         tooltips.put("Repeater Metadata Sources", Tooltips.htmlRaw(
                 "How Repeater tab metadata was resolved this session.",
                 "<b>id</b> request identity, <b>reqHash</b> / <b>exchHash</b> content hashes,",

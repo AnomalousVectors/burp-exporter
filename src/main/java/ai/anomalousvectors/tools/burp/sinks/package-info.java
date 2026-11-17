@@ -36,7 +36,10 @@
  *
  * <p>General HTTP callbacks capture live traffic, including Proxy, from the initiating sent request
  * and original server response. Callback message IDs are not UI History row IDs. Live export
- * never reads History or writes Notes to enrich those IDs. Explicit Proxy History snapshots use
+ * does not join callbacks to History or write Notes to enrich those IDs. A separate
+ * {@link ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery} worker observes retained
+ * streaming responses for up to five minutes and publishes immutable, independently identified
+ * snapshots from each exact History row. Explicit Proxy History snapshots use
  * each row's own ID, finalRequest(), and documented received server response. Notes and highlights are read-only
  * metadata on every path.</p>
  *

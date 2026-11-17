@@ -162,6 +162,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         long requestSentMs = System.currentTimeMillis();
         ToolSource toolSource = request.toolSource();
         ToolType toolType = toolSource == null ? null : toolSource.toolType();
+        if (toolType == ToolType.PROXY || toolType == null) {
+            StreamingProxyRecovery.requestObserved();
+        }
         PendingOrphan receipt = new PendingOrphan(null, requestSentMs, toolType,
                 RequestStageResolution.none(), runToken);
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
@@ -387,7 +390,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         document.put("response", RequestResponseDocBuilder.buildTrafficResponseDoc(response));
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
 
-        document.put("meta", ExportMetaFields.meta(SCHEMA_VERSION));
+        document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION));
         return document;
     }
 
@@ -460,7 +463,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         document.put("request", requestDoc);
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
 
-        document.put("meta", ExportMetaFields.meta(SCHEMA_VERSION));
+        document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION));
         return document;
     }
 

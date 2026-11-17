@@ -56,6 +56,7 @@ public final class ExportReporterLifecycle {
         ProxyWebSocketIndexReporter.stop();
         ProxyWebSocketLiveHandler.clearRunState();
         ProxyHistoryIndexReporter.stop();
+        StreamingProxyRecovery.stop();
         TrafficHttpHandlerSupport.stop();
         TrafficStartupBacklogSummary.clearRunState();
         UrlParameterTruncationLog.clearRunState();

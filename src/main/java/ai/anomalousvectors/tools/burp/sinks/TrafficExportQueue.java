@@ -328,6 +328,23 @@ public final class TrafficExportQueue {
         return false;
     }
 
+    /** Admits a bounded final streaming snapshot only for the exact run being stopped. */
+    static boolean offerStreamingObservationForRun(Map<String, Object> document,
+            RuntimeConfig.ExportRunToken token, java.util.function.BooleanSupplier ownerActive) {
+        TrafficRouteBucket.Route route = TrafficRouteBucket.fromToolType("PROXY");
+        TrafficQueueEntry entry = TrafficQueueEntry.from(document, route);
+        synchronized (RUN_ADMISSION) {
+            boolean stoppingOwner = token != null && token.isValid()
+                    && RuntimeConfig.isExportStopping()
+                    && token.equals(RuntimeConfig.lastInvalidatedExportRunToken())
+                    && !RuntimeConfig.currentExportRunToken().isValid()
+                    && !RuntimeConfig.isExportStopForceAbortRequested()
+                    && !RuntimeConfig.isExportStopBudgetExpired();
+            return ownerActive.getAsBoolean() && (RuntimeConfig.isExportRunActive(token) || stoppingOwner)
+                    && isRouteCurrentlyEnabled(route) && offerEntry(entry);
+        }
+    }
+
     static boolean offerPreparedForTests(PreparedExportDocument document) {
         TrafficQueueEntry entry = TrafficQueueEntry.fromPrepared(document);
         if (entry == null) {

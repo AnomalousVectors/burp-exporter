@@ -126,6 +126,7 @@ public final class StatsClipboardSnapshot {
     private static Map<String, String> buildOverviewSection(boolean fileVisible, boolean openSearchVisible) {
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Export Running", RuntimeConfig.isExportRunning() ? "Yes" : "No");
+        rows.put("Streaming Recovery", ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         if (openSearchVisible) {
             rows.put("Soft Outage", StatsPanelFormatters.formatSoftOutage(
                     IndexingRetryCoordinator.getInstance().isSoftCapacityOutage()));

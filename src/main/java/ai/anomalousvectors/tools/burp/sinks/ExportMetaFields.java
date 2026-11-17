@@ -28,4 +28,11 @@ final class ExportMetaFields {
         meta.put("indexed_at", Instant.now().toString());
         return meta;
     }
+
+    /** Labels a live HTTP observation without implying an association to a History row. */
+    static Map<String, Object> liveHttp(String schemaVersion) {
+        Map<String, Object> meta = meta(schemaVersion);
+        meta.put("capture", Map.of("source", "live_http_callback"));
+        return meta;
+    }
 }

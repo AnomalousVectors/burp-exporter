@@ -106,6 +106,27 @@ public final class ExportFieldTooltips {
 
     private static String metaTooltip(String fieldKey) {
         return switch (fieldKey) {
+            case "meta.capture.id" -> Tooltips.textWithSource(
+                    "Stable identifier for snapshots of one retained streaming exchange. It does not join independently captured live traffic.",
+                    "StreamingProxyRecovery assigns one capture UUID to an exact History row in the current run.");
+            case "meta.capture.source" -> Tooltips.textWithSource(
+                    "Distinguishes live HTTP observations from History-backed live stream recovery. Both observations may describe the same exchange.",
+                    "live_http_callback or proxy_history_stream. Explicit Proxy History snapshots do not use this capture label.");
+            case "meta.capture.revision" -> Tooltips.textWithSource(
+                    "Increasing snapshot number within one capture ID. Snapshots are retained separately, not overwritten.",
+                    "StreamingProxyRecovery increments after queue admission; retries preserve the prepared snapshot identity.");
+            case "meta.capture.observed_at" -> Tooltips.textWithSource(
+                    "Time this response snapshot was observed, not the connection completion time.",
+                    "StreamingProxyRecovery records Instant.now() when preparing a changed snapshot.");
+            case "meta.capture.window_ends_at" -> Tooltips.textWithSource(
+                    "Five-minute observation deadline measured from request receipt. Later stream bytes may not be captured.",
+                    "History request time is translated to a monotonic run deadline; heartbeats do not extend it.");
+            case "meta.capture.response_state" -> Tooltips.textWithSource(
+                    "Whether an original response was observed. An observed response may still be partial; silence is not completion.",
+                    "Based on the exact History row's originalResponse(). Short/conflicting unencoded Content-Length observations are distinguished; length agreement never proves completion.");
+            case "meta.capture.observation_state" -> Tooltips.textWithSource(
+                    "Whether this snapshot was made during observation or the bounded final Stop check. Neither state proves completion.",
+                    "observing or stopped. The window_ends_at deadline limits further reads even when no final Stop snapshot is available.");
             case "meta.schema_version" -> Tooltips.textWithSource(
                     "Export schema version for this document.",
                     "Reporters write their cached schema constant into meta.schema_version before export.");
