@@ -17,6 +17,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
+import burp.api.montoya.core.Annotations;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.handler.HttpHandler;
 import burp.api.montoya.http.handler.HttpRequestToBeSent;
@@ -24,12 +25,14 @@ import burp.api.montoya.http.handler.HttpResponseReceived;
 import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.http.message.responses.HttpResponse;
 
 /**
  * Shared implementation for live HTTP traffic capture.
  *
- * <p>{@link TrafficHttpHandler} exposes the public sink-neutral type while this package-private
- * support class keeps the larger implementation isolated from the tiny entrypoint wrapper.</p>
+ * <p>{@link TrafficHttpHandler} handles general HTTP callbacks and
+ * {@link TrafficProxyHttpHandler} handles native Proxy callbacks. This package-private support
+ * class shares document construction, namespaced admission and orphan lifecycle between them.</p>
  */
 class TrafficHttpHandlerSupport implements HttpHandler {
 
@@ -40,11 +43,14 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     private static final int ORPHAN_CHECK_INTERVAL_SECONDS = 30;
 
     private static final Object ORPHAN_LIFECYCLE_LOCK = new Object();
-    private static final ConcurrentHashMap<Integer, PendingOrphan> pendingOrphans = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<MessageKey, PendingOrphan> pendingOrphans = new ConcurrentHashMap<>();
     // Run admission is independent of request-stage scope/tool eligibility: later processing can
     // change the initiating sent request. These payload-free receipts also survive request-only
     // timeout, so a late response remains exportable once. Stop discards all receipts.
-    private static final ConcurrentHashMap<Integer, PendingOrphan> requestAdmissions = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<MessageKey, PendingOrphan> requestAdmissions = new ConcurrentHashMap<>();
+
+    // Native Proxy and general HTTP IDs belong to different Burp namespaces, even when equal.
+    record MessageKey(boolean nativeProxy, int id) {}
 
     /**
      * Scheduler that periodically flushes orphaned (response-less) requests as no-response documents.
@@ -153,24 +159,39 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     private RequestToBeSentAction handleHttpRequestToBeSentSafely(HttpRequestToBeSent request) {
+        ToolSource source = request.toolSource();
+        ToolType type = source == null ? null : source.toolType();
+        // Native Proxy owns this tool's documents and listener metadata; never publish both views.
+        if (type != ToolType.PROXY) {
+            captureRequest(request, new MessageKey(false, request.messageId()), type,
+                    request.annotations(), null);
+        }
+        return RequestToBeSentAction.continueWith(request);
+    }
+
+    /** Captures a native sent request without correlating it to general HTTP or History IDs. */
+    final void captureNativeRequest(HttpRequest request, int id, Annotations annotations, Integer port) {
+        captureRequest(request, new MessageKey(true, id), ToolType.PROXY, annotations, port);
+    }
+
+    private void captureRequest(HttpRequest request, MessageKey key, ToolType toolType,
+            Annotations annotations, Integer listenerPort) {
         RuntimeConfig.ExportRunToken runToken = RuntimeConfig.currentExportRunToken();
         RuntimeConfig.TrafficExportGate trafficGate = RuntimeConfig.trafficExportGate();
         if (!RuntimeConfig.isExportReady() || RuntimeConfig.isExportStopping()
                 || !trafficGate.anyTrafficExportEnabled()) {
-            return RequestToBeSentAction.continueWith(request);
+            return;
         }
         long requestSentMs = System.currentTimeMillis();
-        ToolSource toolSource = request.toolSource();
-        ToolType toolType = toolSource == null ? null : toolSource.toolType();
         if (toolType == ToolType.PROXY || toolType == null) {
             StreamingProxyRecovery.requestObserved();
         }
         PendingOrphan receipt = new PendingOrphan(null, requestSentMs, toolType,
-                RequestStageResolution.none(), runToken);
+                RequestStageResolution.none(), runToken, listenerPort);
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
             if (!RuntimeConfig.isExportRunActive(runToken) || RuntimeConfig.isExportStopping()
-                    || requestAdmissions.putIfAbsent(request.messageId(), receipt) != null) {
-                return RequestToBeSentAction.continueWith(request);
+                || requestAdmissions.putIfAbsent(key, receipt) != null) {
+                return;
             }
         }
         String scopeUrl = RequestResponseDocBuilder.buildBestEffortUrl(
@@ -181,17 +202,17 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         if (!ScopeFilter.shouldExport(
                 RuntimeConfig.getState(), scopeUrl, request.isInScope())) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
-            return RequestToBeSentAction.continueWith(request);
+            return;
         }
         if (!(toolType == null ? shouldExportNullToolSourceTraffic() : shouldExportTrafficByToolSource(toolType))) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
-            return RequestToBeSentAction.continueWith(request);
+            return;
         }
         if (toolType == ToolType.EXTENSIONS) {
             HttpService svc = request.httpService();
             if (svc != null && isRequestToConfiguredOpenSearch(svc.host(), svc.port())) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SELF_OPENSEARCH, 1);
-                return RequestToBeSentAction.continueWith(request);
+                return;
             }
         }
         ToolType reqToolType = toolType;
@@ -203,23 +224,22 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         Map<String, Object> skeleton = buildOrphanDocumentSkeleton(
                 request,
                 requestSentMs,
-                requestStageResolution.metadataForExport());
+                requestStageResolution.metadataForExport(), key, toolType, annotations, listenerPort);
         if (skeleton != null) {
             PendingOrphan pending = new PendingOrphan(
                     skeleton,
                     requestSentMs,
                     reqToolType,
                     requestStageResolution,
-                    runToken);
+                    runToken, listenerPort);
             synchronized (ORPHAN_LIFECYCLE_LOCK) {
                 if (RuntimeConfig.isExportRunActive(runToken)
-                        && requestAdmissions.get(request.messageId()) == receipt) {
-                    pendingOrphans.put(request.messageId(), pending);
+                        && requestAdmissions.get(key) == receipt) {
+                    pendingOrphans.put(key, pending);
                     ensureOrphanSchedulerStarted();
                 }
             }
         }
-        return RequestToBeSentAction.continueWith(request);
     }
 
     /** {@inheritDoc} */
@@ -236,25 +256,40 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     private ResponseReceivedAction handleHttpResponseReceivedSafely(HttpResponseReceived response) {
+        ToolSource source = response.toolSource();
+        ToolType type = source == null ? null : source.toolType();
+        if (type != ToolType.PROXY) {
+            captureResponse(response, response.initiatingRequest(),
+                    new MessageKey(false, response.messageId()), type, response.annotations());
+        }
+        return ResponseReceivedAction.continueWith(response);
+    }
+
+    /** Captures the original server response with Burp's initiating sent request and native ID. */
+    final void captureNativeResponse(HttpResponse response, HttpRequest request, int id, Annotations annotations) {
+        captureResponse(response, request, new MessageKey(true, id), ToolType.PROXY, annotations);
+    }
+
+    private void captureResponse(HttpResponse response, HttpRequest request, MessageKey key,
+            ToolType responseType, Annotations annotations) {
         PendingOrphan pending;
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
-            PendingOrphan receipt = requestAdmissions.remove(response.messageId());
-            PendingOrphan skeleton = pendingOrphans.remove(response.messageId());
+            PendingOrphan receipt = requestAdmissions.remove(key);
+            PendingOrphan skeleton = pendingOrphans.remove(key);
             pending = receipt == null ? null
                     : skeleton != null && skeleton.runToken.equals(receipt.runToken) ? skeleton : receipt;
         }
         // Pair only within the admitted run; late and duplicate responses cannot enter a new run.
         if (pending == null || !RuntimeConfig.isExportRunActive(pending.runToken)
                 || !RuntimeConfig.isExportReady()) {
-            return ResponseReceivedAction.continueWith(response);
+            return;
         }
         if (!RuntimeConfig.trafficExportGate().anyTrafficExportEnabled()) {
-            return ResponseReceivedAction.continueWith(response);
+            return;
         }
 
-        HttpRequest request = response.initiatingRequest();
         if (request == null) {
-            return ResponseReceivedAction.continueWith(response);
+            return;
         }
 
         boolean burpInScope = request.isInScope();
@@ -267,12 +302,10 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 RuntimeConfig.getState(), scopeUrl, burpInScope);
         if (!inScope) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
-            return ResponseReceivedAction.continueWith(response);
+            return;
         }
 
         ToolType requestFallbackType = pending.toolType;
-        ToolSource responseSource = response.toolSource();
-        ToolType responseType = responseSource == null ? null : responseSource.toolType();
         if (responseType == null) {
             ExportStats.recordTrafficToolSourceFallback();
         }
@@ -286,14 +319,14 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             toolType = null;
         } else {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
-            return ResponseReceivedAction.continueWith(response);
+            return;
         }
 
         if (toolType == ToolType.EXTENSIONS || toolType == null) {
             HttpService svc = request.httpService();
             if (svc != null && isRequestToConfiguredOpenSearch(svc.host(), svc.port())) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SELF_OPENSEARCH, 1);
-                return ResponseReceivedAction.continueWith(response);
+                return;
             }
         }
 
@@ -308,13 +341,13 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                         RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
 
         Map<String, Object> document =
-                buildDocument(response, request, burpInScope, requestSentMs, responseReceivedMs, toolType, repeaterMetadata);
-        if (response.annotations() == null) {
+                buildDocument(response, request, burpInScope, requestSentMs, responseReceivedMs,
+                        toolType, repeaterMetadata, key, annotations, pending.listenerPort);
+        if (annotations == null) {
             copyMissingAnnotationFieldsFromPendingRequest(document, pending);
         }
         TrafficExportQueue.offerForRun(document, pending.runToken);
 
-        return ResponseReceivedAction.continueWith(response);
     }
 
 
@@ -357,12 +390,21 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             Long responseReceivedMs,
             ToolType resolvedToolType,
             RepeaterMetadataFields.Metadata repeaterMetadata) {
-        HttpService service = request.httpService();
         ToolSource toolSource = response.toolSource();
         ToolType toolType = resolvedToolType;
         if (toolType == null) {
             toolType = toolSource == null ? null : toolSource.toolType();
         }
+        return buildDocument(response, request, burpInScope, requestSentMs, responseReceivedMs,
+                toolType, repeaterMetadata, new MessageKey(false, response.messageId()),
+                response.annotations(), null);
+    }
+
+    private Map<String, Object> buildDocument(HttpResponse response, HttpRequest request,
+            boolean burpInScope, Long requestSentMs, Long responseReceivedMs, ToolType toolType,
+            RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key,
+            Annotations annotations, Integer listenerPort) {
+        HttpService service = request.httpService();
         Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
         String url = RequestResponseDocBuilder.buildBestEffortUrl(
                 request,
@@ -377,12 +419,12 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         Map<String, Object> burp = new LinkedHashMap<>();
         burp.put("reporting_tool", toolType == null ? null : toolType.toolName());
         burp.put("is_in_scope", burpInScope);
-        burp.put("message_id", response.messageId());
-        BurpAnnotationFields.put(burp, response.annotations());
+        burp.put("message_id", key.id());
+        BurpAnnotationFields.put(burp, annotations);
         putLiveProxyAndTiming(
                 burp,
                 requestSentMs,
-                responseReceivedMs);
+                responseReceivedMs, listenerPort);
         document.put("burp", burp);
         RepeaterMetadataFields.put(document, repeaterMetadata);
 
@@ -390,7 +432,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         document.put("response", RequestResponseDocBuilder.buildTrafficResponseDoc(response));
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
 
-        document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION));
+        document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION, key.nativeProxy()));
         return document;
     }
 
@@ -432,13 +474,12 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      * Caller must hold Burp HTTP thread. Does not include {@code response}; add via
      * {@link RequestResponseDocBuilder#emptyTrafficResponseDoc()} when exporting.
      */
-    private Map<String, Object> buildOrphanDocumentSkeleton(
-            HttpRequestToBeSent request,
+    Map<String, Object> buildOrphanDocumentSkeleton(
+            HttpRequest request,
             long requestSentMs,
-            RepeaterMetadataFields.Metadata repeaterMetadata) {
+            RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key, ToolType toolType,
+            Annotations annotations, Integer listenerPort) {
         HttpService service = request.httpService();
-        ToolSource toolSource = request.toolSource();
-        ToolType toolType = toolSource == null ? null : toolSource.toolType();
         boolean burpInScope = request.isInScope();
         Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
         String url = RequestResponseDocBuilder.buildBestEffortUrl(
@@ -454,16 +495,16 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         Map<String, Object> burp = new LinkedHashMap<>();
         burp.put("reporting_tool", toolType == null ? null : toolType.toolName());
         burp.put("is_in_scope", burpInScope);
-        burp.put("message_id", request.messageId());
-        BurpAnnotationFields.put(burp, request.annotations());
-        putLiveProxyAndTiming(burp, requestSentMs, null);
+        burp.put("message_id", key.id());
+        BurpAnnotationFields.put(burp, annotations);
+        putLiveProxyAndTiming(burp, requestSentMs, null, listenerPort);
         document.put("burp", burp);
         RepeaterMetadataFields.put(document, repeaterMetadata);
 
         document.put("request", requestDoc);
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
 
-        document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION));
+        document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION, key.nativeProxy()));
         return document;
     }
 
@@ -553,7 +594,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      */
     static RepeaterMetadataFields.Metadata resolveResponseStageRepeaterMetadata(
             HttpRequest request,
-            HttpResponseReceived response,
+            HttpResponse response,
             ToolType toolType,
             RepeaterMetadataFields.Metadata requestStageMetadata) {
         return resolveResponseStageRepeaterMetadata(
@@ -576,7 +617,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      */
     static RepeaterMetadataFields.Metadata resolveResponseStageRepeaterMetadata(
             HttpRequest request,
-            HttpResponseReceived response,
+            HttpResponse response,
             ToolType toolType,
             RepeaterMetadataFields.Metadata requestStageMetadata,
             Supplier<RepeaterMetadataFields.Metadata> liveFallbackSupplier) {
@@ -590,7 +631,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
 
     static RepeaterMetadataFields.Metadata resolveResponseStageRepeaterMetadata(
             HttpRequest request,
-            HttpResponseReceived response,
+            HttpResponse response,
             ToolType toolType,
             RequestStageResolution requestStageResolution,
             Supplier<RepeaterMetadataFields.Metadata> liveFallbackSupplier) {
@@ -735,18 +776,19 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      * Writes {@code burp.proxy} and {@code burp.timing} for live HTTP documents.
      *
      * <p>Live HTTP has no History association; History-only fields remain unavailable.
-     * This general HTTP path retains handler wall-clock timing and unavailable History fields
-     * for all live HTTP tools, including Proxy.</p>
+     * Both callback families retain handler wall-clock timing; native Proxy additionally supplies
+     * its own listener port without a History association.</p>
      *
      * @param burp burp sub-document to mutate
      * @param requestSentMs request-sent epoch millis, or {@code null}
      * @param responseReceivedMs response-end epoch millis, or {@code null}
+     * @param listenerPort native Proxy listener port, or {@code null} for unavailable metadata
      */
     private static void putLiveProxyAndTiming(
             Map<String, Object> burp,
             Long requestSentMs,
-            Long responseReceivedMs) {
-        burp.put("proxy", BurpProxyFields.withoutProxyHistoryEditMetadata(null));
+            Long responseReceivedMs, Integer listenerPort) {
+        burp.put("proxy", BurpProxyFields.withoutProxyHistoryEditMetadata(listenerPort));
         burp.put("timing", BurpTimingFields.fromHandlerEpochMillis(requestSentMs, responseReceivedMs));
     }
 
@@ -776,9 +818,15 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             Map<String, Object> documentSkeleton,
             ToolType toolType,
             RequestStageResolution requestStageResolution) {
+        registerPendingOrphanForTest(messageId, documentSkeleton, toolType, requestStageResolution, false);
+    }
+
+    static void registerPendingOrphanForTest(int messageId, Map<String, Object> documentSkeleton,
+            ToolType toolType, RequestStageResolution requestStageResolution, boolean nativeProxy) {
         PendingOrphan pending = new PendingOrphan(documentSkeleton, 0L, toolType, requestStageResolution);
-        pendingOrphans.put(messageId, pending);
-        requestAdmissions.put(messageId, new PendingOrphan(
+        MessageKey key = new MessageKey(nativeProxy, messageId);
+        pendingOrphans.put(key, pending);
+        requestAdmissions.put(key, new PendingOrphan(
                 null, 0L, toolType, RequestStageResolution.none(), pending.runToken));
     }
 
@@ -787,7 +835,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      * {@code ai.anomalousvectors.tools.burp.sinks}.
      */
     static boolean containsPendingOrphanForTest(int messageId) {
-        return pendingOrphans.containsKey(messageId);
+        return pendingOrphans.containsKey(new MessageKey(false, messageId))
+                || pendingOrphans.containsKey(new MessageKey(true, messageId));
     }
 
     /**
@@ -806,13 +855,13 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             return;
         }
         long now = System.currentTimeMillis();
-        List<Integer> toFlush = new ArrayList<>();
-        for (Map.Entry<Integer, PendingOrphan> e : pendingOrphans.entrySet()) {
+        List<MessageKey> toFlush = new ArrayList<>();
+        for (Map.Entry<MessageKey, PendingOrphan> e : pendingOrphans.entrySet()) {
             if (now - e.getValue().timestamp >= ORPHAN_TIMEOUT_MS) {
                 toFlush.add(e.getKey());
             }
         }
-        for (Integer messageId : toFlush) {
+        for (MessageKey messageId : toFlush) {
             PendingOrphan po;
             synchronized (ORPHAN_LIFECYCLE_LOCK) {
                 po = pendingOrphans.remove(messageId);
@@ -843,6 +892,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         final ToolType toolType;
         final RequestStageResolution requestStageResolution;
         final RuntimeConfig.ExportRunToken runToken;
+        final Integer listenerPort;
 
         PendingOrphan(
                 Map<String, Object> documentSkeleton,
@@ -859,10 +909,17 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 ToolType toolType,
                 RequestStageResolution requestStageResolution,
                 RuntimeConfig.ExportRunToken runToken) {
+            this(documentSkeleton, timestamp, toolType, requestStageResolution, runToken, null);
+        }
+
+        PendingOrphan(Map<String, Object> documentSkeleton, long timestamp, ToolType toolType,
+                RequestStageResolution requestStageResolution, RuntimeConfig.ExportRunToken runToken,
+                Integer listenerPort) {
             this.documentSkeleton = documentSkeleton;
             this.timestamp = timestamp;
             this.toolType = toolType;
             this.runToken = runToken;
+            this.listenerPort = listenerPort;
             this.requestStageResolution = requestStageResolution == null
                     ? RequestStageResolution.none()
                     : requestStageResolution;

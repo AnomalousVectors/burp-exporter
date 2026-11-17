@@ -30,9 +30,9 @@ final class ExportMetaFields {
     }
 
     /** Labels a live HTTP observation without implying an association to a History row. */
-    static Map<String, Object> liveHttp(String schemaVersion) {
+    static Map<String, Object> liveHttp(String schemaVersion, boolean nativeProxy) {
         Map<String, Object> meta = meta(schemaVersion);
-        meta.put("capture", Map.of("source", "live_http_callback"));
+        meta.put("capture", Map.of("source", nativeProxy ? "live_proxy_callback" : "live_http_callback"));
         return meta;
     }
 }

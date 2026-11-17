@@ -111,7 +111,7 @@ public final class ExportFieldTooltips {
                     "StreamingProxyRecovery assigns one capture UUID to an exact History row in the current run.");
             case "meta.capture.source" -> Tooltips.textWithSource(
                     "Distinguishes live HTTP observations from History-backed live stream recovery. Both observations may describe the same exchange.",
-                    "live_http_callback or proxy_history_stream. Explicit Proxy History snapshots do not use this capture label.");
+                    "live_proxy_callback (native Proxy), live_http_callback (general HTTP), or proxy_history_stream. Explicit Proxy History snapshots do not use this capture label.");
             case "meta.capture.revision" -> Tooltips.textWithSource(
                     "Increasing snapshot number within one capture ID. Snapshots are retained separately, not overwritten.",
                     "StreamingProxyRecovery increments after queue admission; retries preserve the prepared snapshot identity.");

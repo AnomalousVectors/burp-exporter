@@ -1,6 +1,5 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
-import static ai.anomalousvectors.tools.burp.testutils.Reflect.call;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.callStatic;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -1139,15 +1138,14 @@ class TrafficHttpHandlerDocumentTest {
 
     @Test
     void buildOrphanDocumentSkeleton_writesRepeaterRequestStageMetadata_forRequestOnlyExports() {
-        Map<String, Object> skeleton = objectMap(call(
-                handler,
-                "buildOrphanDocumentSkeleton",
+        Map<String, Object> skeleton = handler.buildOrphanDocumentSkeleton(
                 requestToBeSent(
                         "GET /path?q=1 HTTP/1.1\r\nHost: example.com\r\n\r\n",
                         77,
                         ToolType.REPEATER),
                 1L,
-                new RepeaterMetadataFields.Metadata("Repeater Tab", "Group Alpha")));
+                new RepeaterMetadataFields.Metadata("Repeater Tab", "Group Alpha"),
+                new TrafficHttpHandlerSupport.MessageKey(false, 77), ToolType.REPEATER, null, null);
 
         assertThat(burpRepeater(skeleton)).containsEntry("tab_name", "Repeater Tab");
         assertThat(burpRepeater(skeleton)).containsEntry("tab_group", "Group Alpha");
@@ -1164,15 +1162,14 @@ class TrafficHttpHandlerDocumentTest {
                     new RepeaterMetadataFields.Metadata("Tracked Tab", "Tracked Group"),
                     System.currentTimeMillis());
 
-            Map<String, Object> skeleton = objectMap(call(
-                    handler,
-                    "buildOrphanDocumentSkeleton",
+            Map<String, Object> skeleton = handler.buildOrphanDocumentSkeleton(
                     requestToBeSent(
                             "GET /path?q=1 HTTP/1.1\r\nHost: example.com\r\n\r\n",
                             78,
                             ToolType.PROXY),
                     1L,
-                    TrafficHttpHandler.resolveRequestStageRepeaterMetadata(request, ToolType.PROXY)));
+                    TrafficHttpHandler.resolveRequestStageRepeaterMetadata(request, ToolType.PROXY),
+                    new TrafficHttpHandlerSupport.MessageKey(true, 78), ToolType.PROXY, null, 8080);
 
             assertThat(burpRepeater(skeleton)).containsEntry("tab_name", null);
             assertThat(burpRepeater(skeleton)).containsEntry("tab_group", null);

@@ -17,6 +17,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -24,20 +26,21 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
-import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
 import burp.api.montoya.http.HttpService;
-import burp.api.montoya.http.handler.HttpRequestToBeSent;
-import burp.api.montoya.http.handler.HttpResponseReceived;
-import burp.api.montoya.http.handler.RequestToBeSentAction;
-import burp.api.montoya.http.handler.ResponseReceivedAction;
+import burp.api.montoya.proxy.http.InterceptedRequest;
+import burp.api.montoya.proxy.http.InterceptedResponse;
+import burp.api.montoya.proxy.http.ProxyRequestToBeSentAction;
+import burp.api.montoya.proxy.http.ProxyResponseReceivedAction;
+import burp.api.montoya.proxy.http.ProxyRequestReceivedAction;
+import burp.api.montoya.proxy.http.ProxyResponseToBeSentAction;
 import burp.api.montoya.http.message.ContentType;
 import burp.api.montoya.http.message.MimeType;
 import burp.api.montoya.http.message.responses.analysis.AttributeType;
 
 /** Protects the Notes-free live path independently of any retained Proxy History rows. */
 class TrafficHttpHandlerLiveProxyTest {
-    private final TrafficHttpHandler handler = new TrafficHttpHandler();
+    private final TrafficProxyHttpHandler handler = new TrafficProxyHttpHandler();
     private final MontoyaApi api = mock(MontoyaApi.class);
 
     @BeforeEach
@@ -58,14 +61,14 @@ class TrafficHttpHandlerLiveProxyTest {
     }
 
     @Test
-    void originalServerPair_exportsOnceWithGeneralIdAndVerbatimReadOnlyNotes() {
-        HttpRequestToBeSent request = requestToBeSent("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
-                41, ToolType.PROXY);
-        HttpRequestToBeSent sent = requestToBeSent("GET /edited HTTP/1.1\r\nHost: example.test\r\n\r\n",
-                41, ToolType.PROXY);
+    void originalServerPair_exportsOnceWithNativeIdAndVerbatimReadOnlyNotes() {
+        InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                41);
+        InterceptedRequest sent = requestToBeSent("GET /edited HTTP/1.1\r\nHost: example.test\r\n\r\n",
+                41);
         when(sent.path()).thenReturn("/edited");
         when(sent.pathWithoutQuery()).thenReturn("/edited");
-        HttpResponseReceived response = responseReceived(sent, 41, ToolType.PROXY,
+        InterceptedResponse response = responseReceived(sent, 41,
                 "HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nA");
         Annotations annotations = mock(Annotations.class);
         String notes = "  automated analysis\n[[burp-exporter-correlation:v1:old-marker-literal]]\n";
@@ -74,19 +77,19 @@ class TrafficHttpHandlerLiveProxyTest {
         when(request.annotations()).thenReturn(annotations);
         when(response.annotations()).thenReturn(annotations);
         AtomicReference<Map<String, Object>> offered = new AtomicReference<>();
-        try (var requestAction = mockStatic(RequestToBeSentAction.class);
-                var responseAction = mockStatic(ResponseReceivedAction.class);
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
             var token = RuntimeConfig.currentExportRunToken();
             queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenAnswer(call -> {
                 offered.set(call.getArgument(0));
                 return true;
             });
-            handler.handleHttpRequestToBeSent(request);
-            handler.handleHttpResponseReceived(response);
-            handler.handleHttpResponseReceived(response);
-            requestAction.verify(() -> RequestToBeSentAction.continueWith(request));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(response),
+            handler.handleRequestToBeSent(request);
+            handler.handleResponseReceived(response);
+            handler.handleResponseReceived(response);
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response),
                     org.mockito.Mockito.times(2));
             queue.verify(() -> TrafficExportQueue.offerForRun(any(), org.mockito.ArgumentMatchers.eq(token)));
             Map<?, ?> burp = (Map<?, ?>) offered.get().get("burp");
@@ -94,7 +97,10 @@ class TrafficHttpHandlerLiveProxyTest {
             assertThat(burp.get("reporting_tool")).isEqualTo("Proxy");
             assertThat(burp.get("notes")).isEqualTo(notes);
             Map<?, ?> proxy = (Map<?, ?>) burp.get("proxy");
-            assertThat(proxy.values()).allMatch(java.util.Objects::isNull);
+            assertThat(proxy.get("listener_port")).isEqualTo(8080);
+            assertThat(proxy.get("history_id")).isNull();
+            Map<?, ?> capture = (Map<?, ?>) ((Map<?, ?>) offered.get().get("meta")).get("capture");
+            assertThat(capture.get("source")).isEqualTo("live_proxy_callback");
             Map<?, ?> requestDoc = (Map<?, ?>) offered.get().get("request");
             assertThat(((Map<?, ?>) requestDoc.get("path")).get("without_query")).isEqualTo("/edited");
             assertThat(((Map<?, ?>) offered.get().get("response")).get("body")).isNotNull();
@@ -106,77 +112,82 @@ class TrafficHttpHandlerLiveProxyTest {
 
     @Test
     void preStartAndPriorRunResponses_doNotLeakIntoNextRun() {
-        HttpRequestToBeSent request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 42, ToolType.PROXY);
-        HttpResponseReceived response = responseReceived(request, 42, ToolType.PROXY,
+        InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 42);
+        InterceptedResponse response = responseReceived(request, 42,
                 "HTTP/1.1 200 OK\r\n\r\n");
-        try (var requestAction = mockStatic(RequestToBeSentAction.class);
-                var responseAction = mockStatic(ResponseReceivedAction.class);
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
-            handler.handleHttpRequestToBeSent(request);
+            handler.handleRequestToBeSent(request);
             RuntimeConfig.setExportRunning(false);
             RuntimeConfig.setExportRunning(true);
-            handler.handleHttpResponseReceived(response);
-            handler.handleHttpResponseReceived(response);
+            handler.handleResponseReceived(response);
+            handler.handleResponseReceived(response);
             queue.verifyNoInteractions();
-            requestAction.verify(() -> RequestToBeSentAction.continueWith(request));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(response),
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response),
                     org.mockito.Mockito.times(2));
         }
     }
 
     @Test
     void stopClosesNewIntakeButLetsAdmittedResponseDrain() {
-        HttpRequestToBeSent request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 43, ToolType.PROXY);
-        HttpRequestToBeSent afterStop = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 44, ToolType.PROXY);
-        HttpResponseReceived response = responseReceived(request, 43, ToolType.PROXY,
+        InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 43);
+        InterceptedRequest afterStop = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 44);
+        InterceptedResponse response = responseReceived(request, 43,
                 "HTTP/1.1 200 OK\r\n\r\n");
-        try (var requestAction = mockStatic(RequestToBeSentAction.class);
-                var responseAction = mockStatic(ResponseReceivedAction.class);
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
-            handler.handleHttpRequestToBeSent(request);
+            handler.handleRequestToBeSent(request);
             RuntimeConfig.setExportStopping(true);
-            handler.handleHttpRequestToBeSent(afterStop);
-            handler.handleHttpResponseReceived(response);
+            handler.handleRequestToBeSent(afterStop);
+            handler.handleResponseReceived(response);
             assertThat(TrafficHttpHandlerSupport.containsPendingOrphanForTest(44)).isFalse();
             queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()));
-            requestAction.verify(() -> RequestToBeSentAction.continueWith(afterStop));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(response));
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(afterStop));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
         }
     }
 
     @Test
     void identicalConcurrentPairs_remainDistinctWithoutHistoryLookup() {
-        HttpRequestToBeSent first = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 51, ToolType.PROXY);
-        HttpRequestToBeSent second = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 52, ToolType.PROXY);
-        HttpResponseReceived firstResponse = responseReceived(first, 51, ToolType.PROXY,
+        InterceptedRequest first = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 51);
+        InterceptedRequest second = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 52);
+        when(second.listenerInterface()).thenReturn("[::1]:8081");
+        InterceptedResponse firstResponse = responseReceived(first, 51,
                 "HTTP/1.1 200 OK\r\n\r\n");
-        HttpResponseReceived secondResponse = responseReceived(second, 52, ToolType.PROXY,
+        InterceptedResponse secondResponse = responseReceived(second, 52,
                 "HTTP/1.1 200 OK\r\n\r\n");
         java.util.Set<Object> ids = new java.util.HashSet<>();
-        try (var requestAction = mockStatic(RequestToBeSentAction.class);
-                var responseAction = mockStatic(ResponseReceivedAction.class);
+        Map<Object, Object> ports = new java.util.HashMap<>();
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
             queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenAnswer(call -> {
                 Map<?, ?> doc = call.getArgument(0);
                 ids.add(((Map<?, ?>) doc.get("burp")).get("message_id"));
+                Map<?, ?> burp = (Map<?, ?>) doc.get("burp");
+                ports.put(burp.get("message_id"), ((Map<?, ?>) burp.get("proxy")).get("listener_port"));
                 return true;
             });
-            handler.handleHttpRequestToBeSent(first);
-            handler.handleHttpRequestToBeSent(second);
-            handler.handleHttpResponseReceived(secondResponse);
-            handler.handleHttpResponseReceived(firstResponse);
+            handler.handleRequestToBeSent(first);
+            handler.handleRequestToBeSent(second);
+            handler.handleResponseReceived(secondResponse);
+            handler.handleResponseReceived(firstResponse);
             assertThat(ids).containsExactlyInAnyOrder(51, 52);
+            assertThat(ports).containsEntry(51, 8080).containsEntry(52, 8081);
             queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), org.mockito.Mockito.times(2));
-            requestAction.verify(() -> RequestToBeSentAction.continueWith(first));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(firstResponse));
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(first));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(firstResponse));
             verify(api, never()).proxy();
         }
     }
 
     @Test
     void responseAnnotationsDeliberatelyEmpty_doNotResurrectOldRequestNotes() {
-        HttpRequestToBeSent request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 53, ToolType.PROXY);
-        HttpResponseReceived response = responseReceived(request, 53, ToolType.PROXY,
+        InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 53);
+        InterceptedResponse response = responseReceived(request, 53,
                 "HTTP/1.1 200 OK\r\n\r\n");
         Annotations before = mock(Annotations.class);
         when(before.hasNotes()).thenReturn(true);
@@ -184,94 +195,92 @@ class TrafficHttpHandlerLiveProxyTest {
         when(request.annotations()).thenReturn(before);
         when(response.annotations()).thenReturn(mock(Annotations.class));
         AtomicReference<Map<String, Object>> offered = new AtomicReference<>();
-        try (var requestAction = mockStatic(RequestToBeSentAction.class);
-                var responseAction = mockStatic(ResponseReceivedAction.class);
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
             queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenAnswer(call -> {
                 offered.set(call.getArgument(0));
                 return true;
             });
-            handler.handleHttpRequestToBeSent(request);
-            handler.handleHttpResponseReceived(response);
+            handler.handleRequestToBeSent(request);
+            handler.handleResponseReceived(response);
             assertThat(((Map<?, ?>) offered.get().get("burp")).containsKey("notes")).isFalse();
-            requestAction.verify(() -> RequestToBeSentAction.continueWith(request));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(response));
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
         }
     }
 
     @Test
     void requestOnlyTimeout_doesNotDiscardAnEventualResponseInTheSameRun() {
-        HttpRequestToBeSent request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 54, ToolType.PROXY);
-        HttpResponseReceived response = responseReceived(request, 54, ToolType.PROXY,
+        InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 54);
+        InterceptedResponse response = responseReceived(request, 54,
                 "HTTP/1.1 200 OK\r\n\r\n");
         TrafficHttpHandlerSupport.registerPendingOrphanForTest(54,
                 Map.of("burp", Map.of("message_id", 54, "reporting_tool", "Proxy")),
-                ToolType.PROXY, TrafficHttpHandlerSupport.RequestStageResolution.none());
-        try (var responseAction = mockStatic(ResponseReceivedAction.class);
+                ToolType.PROXY, TrafficHttpHandlerSupport.RequestStageResolution.none(), true);
+        try (var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
             TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
-            handler.handleHttpResponseReceived(response);
-            handler.handleHttpResponseReceived(response);
+            handler.handleResponseReceived(response);
+            handler.handleResponseReceived(response);
             queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), org.mockito.Mockito.times(2));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(response), org.mockito.Mockito.times(2));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response), org.mockito.Mockito.times(2));
             assertThat(TrafficHttpHandlerSupport.getPendingOrphansSize()).isZero();
         }
     }
 
     @Test
     void preStartRequest_isNotAdmittedByStartingBeforeItsResponse() {
-        HttpRequestToBeSent request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 55, ToolType.PROXY);
-        HttpResponseReceived response = responseReceived(request, 55, ToolType.PROXY,
+        InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 55);
+        InterceptedResponse response = responseReceived(request, 55,
                 "HTTP/1.1 200 OK\r\n\r\n");
-        try (var requestAction = mockStatic(RequestToBeSentAction.class);
-                var responseAction = mockStatic(ResponseReceivedAction.class);
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
             RuntimeConfig.setExportRunning(false);
-            handler.handleHttpRequestToBeSent(request);
+            handler.handleRequestToBeSent(request);
             RuntimeConfig.setExportRunning(true);
-            handler.handleHttpResponseReceived(response);
+            handler.handleResponseReceived(response);
             queue.verifyNoInteractions();
-            requestAction.verify(() -> RequestToBeSentAction.continueWith(request));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(response));
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
         }
     }
 
     @Test
-    void finalSentRequestBecomesEligible_afterRequestStageScopeOrToolRejection() {
+    void finalSentRequestBecomesEligible_afterRequestStageScopeRejection() {
         RuntimeConfig.updateState(new ConfigState.State(
                 List.of("traffic"), "custom",
                 List.of(new ConfigState.ScopeEntry("edited.example.test", ConfigState.Kind.STRING)),
                 RuntimeConfig.getState().sinks(), ConfigState.DEFAULT_SETTINGS_SUB,
                 List.of("proxy"), ConfigState.DEFAULT_FINDINGS_SEVERITIES, null));
-        HttpRequestToBeSent initial = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 56, ToolType.REPEATER);
-        HttpRequestToBeSent sent = requestToBeSent("GET /edited HTTP/1.1\r\n\r\n", 56, ToolType.PROXY);
+        InterceptedRequest initial = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 56);
+        InterceptedRequest sent = requestToBeSent("GET /edited HTTP/1.1\r\n\r\n", 56);
         when(sent.url()).thenReturn("https://edited.example.test/edited");
-        HttpResponseReceived response = responseReceived(sent, 56, ToolType.PROXY,
+        InterceptedResponse response = responseReceived(sent, 56,
                 "HTTP/1.1 200 OK\r\n\r\n");
-        try (var requestAction = mockStatic(RequestToBeSentAction.class);
-                var responseAction = mockStatic(ResponseReceivedAction.class);
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
                 var queue = mockStatic(TrafficExportQueue.class)) {
-            handler.handleHttpRequestToBeSent(initial);
+            handler.handleRequestToBeSent(initial);
             assertThat(TrafficHttpHandlerSupport.containsPendingOrphanForTest(56)).isFalse();
-            handler.handleHttpResponseReceived(response);
+            handler.handleResponseReceived(response);
             queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()));
-            requestAction.verify(() -> RequestToBeSentAction.continueWith(initial));
-            responseAction.verify(() -> ResponseReceivedAction.continueWith(response));
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(initial));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
         }
     }
 
-    private static HttpRequestToBeSent requestToBeSent(String rawRequest, int messageId, ToolType toolType) {
-        HttpRequestToBeSent request = mock(HttpRequestToBeSent.class);
+    private static InterceptedRequest requestToBeSent(String rawRequest, int messageId) {
+        InterceptedRequest request = mock(InterceptedRequest.class);
         HttpService service = mock(HttpService.class);
-        ToolSource toolSource = mock(ToolSource.class);
         ByteArray requestBytes = byteArray(rawRequest);
 
         when(service.host()).thenReturn("example.test");
         when(service.port()).thenReturn(443);
         when(service.secure()).thenReturn(true);
-        when(toolSource.toolType()).thenReturn(toolType);
 
-        when(request.toolSource()).thenReturn(toolSource);
+        when(request.listenerInterface()).thenReturn("127.0.0.1:8080");
         when(request.messageId()).thenReturn(messageId);
         when(request.isInScope()).thenReturn(true);
         when(request.url()).thenReturn("https://example.test/repeater/live");
@@ -293,19 +302,15 @@ class TrafficHttpHandlerLiveProxyTest {
         return request;
     }
 
-    private static HttpResponseReceived responseReceived(
-            HttpRequestToBeSent request,
+    private static InterceptedResponse responseReceived(
+            InterceptedRequest request,
             int messageId,
-            ToolType toolType,
             String rawResponse) {
-        HttpResponseReceived response = mock(HttpResponseReceived.class);
-        ToolSource toolSource = mock(ToolSource.class);
+        InterceptedResponse response = mock(InterceptedResponse.class);
         ByteArray responseBytes = byteArray(rawResponse);
 
-        when(toolSource.toolType()).thenReturn(toolType);
         when(response.initiatingRequest()).thenReturn(request);
         when(response.messageId()).thenReturn(messageId);
-        when(response.toolSource()).thenReturn(toolSource);
         when(response.annotations()).thenReturn(null);
         when(response.statusCode()).thenReturn((short) 200);
         when(response.reasonPhrase()).thenReturn("OK");
@@ -328,6 +333,112 @@ class TrafficHttpHandlerLiveProxyTest {
         ByteArray bytes = mock(ByteArray.class);
         when(bytes.getBytes()).thenReturn(value.getBytes(StandardCharsets.UTF_8));
         return bytes;
+    }
+
+    @ParameterizedTest
+    @CsvSource({"127.0.0.1:8080,8080", "[::1]:8081,8081", "::1:8082,8082",
+            "0.0.0.0:443,443", "*:65535,65535", "host.test:1,1"})
+    void listenerAddressVariants_preserveTheActualPort(String listener, int port) {
+        assertThat(TrafficProxyHttpHandler.listenerPort(listener)).isEqualTo(port);
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "8080", ":8080", "127.0.0.1:", "127.0.0.1:0", "127.0.0.1:65536",
+            "127.0.0.1:+8080", "127.0.0.1:eighty", "127.0.0.1: 8080", "host:999999999999"})
+    void invalidOrMissingListener_doesNotGuess(String listener) {
+        assertThat(TrafficProxyHttpHandler.listenerPort(listener)).isNull();
+    }
+
+    @Test
+    void generalProxyCallbacks_doNotDuplicateNativeDocuments() {
+        var general = new TrafficHttpHandler();
+        var request = mock(burp.api.montoya.http.handler.HttpRequestToBeSent.class);
+        var response = mock(burp.api.montoya.http.handler.HttpResponseReceived.class);
+        var source = mock(burp.api.montoya.core.ToolSource.class);
+        when(source.toolType()).thenReturn(ToolType.PROXY);
+        when(request.toolSource()).thenReturn(source);
+        when(response.toolSource()).thenReturn(source);
+        try (var requestAction = mockStatic(burp.api.montoya.http.handler.RequestToBeSentAction.class);
+                var responseAction = mockStatic(burp.api.montoya.http.handler.ResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            general.handleHttpRequestToBeSent(request);
+            general.handleHttpResponseReceived(response);
+            queue.verifyNoInteractions();
+            requestAction.verify(() -> burp.api.montoya.http.handler.RequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> burp.api.montoya.http.handler.ResponseReceivedAction.continueWith(response));
+            assertThat(TrafficHttpHandlerSupport.getPendingOrphansSize()).isZero();
+        }
+    }
+
+    @Test
+    void equalGeneralAndNativeIds_doNotConsumeEachOthersAdmissions() {
+        TrafficHttpHandlerSupport.registerPendingOrphanForTest(61,
+                Map.of("burp", Map.of("message_id", 61, "reporting_tool", "Proxy")),
+                ToolType.PROXY, TrafficHttpHandlerSupport.RequestStageResolution.none());
+        var request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 61);
+        var response = responseReceived(request, 61, "HTTP/1.1 200 OK\r\n\r\n");
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            handler.handleRequestToBeSent(request);
+            handler.handleResponseReceived(response);
+            assertThat(TrafficHttpHandlerSupport.getPendingOrphansSize()).isEqualTo(1);
+            TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
+            queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), org.mockito.Mockito.times(2));
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
+        }
+    }
+
+    @Test
+    void unusedNativeStages_preserveInterceptionAndAnnotationsWithoutExporting() {
+        var request = mock(InterceptedRequest.class);
+        var response = mock(InterceptedResponse.class);
+        try (var requestAction = mockStatic(ProxyRequestReceivedAction.class);
+                var responseAction = mockStatic(ProxyResponseToBeSentAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            handler.handleRequestReceived(request);
+            handler.handleResponseToBeSent(response);
+            requestAction.verify(() -> ProxyRequestReceivedAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseToBeSentAction.continueWith(response));
+            queue.verifyNoInteractions();
+            org.mockito.Mockito.verifyNoInteractions(request, response);
+        }
+    }
+
+    @Test
+    void nativeCaptureFailure_stillContinuesTheUnchangedRequest() {
+        var request = mock(InterceptedRequest.class);
+        when(request.httpService()).thenThrow(new IllegalStateException("unavailable"));
+        try (var action = mockStatic(ProxyRequestToBeSentAction.class)) {
+            handler.handleRequestToBeSent(request);
+            action.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+        }
+    }
+
+    @Test
+    void unavailableListenerAccessor_doesNotDiscardTheExchange() {
+        var request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 62);
+        var response = responseReceived(request, 62, "HTTP/1.1 200 OK\r\n\r\n");
+        when(request.listenerInterface()).thenThrow(new IllegalStateException("unavailable"));
+        AtomicReference<Map<String, Object>> offered = new AtomicReference<>();
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenAnswer(call -> {
+                offered.set(call.getArgument(0));
+                return true;
+            });
+            handler.handleRequestToBeSent(request);
+            handler.handleResponseReceived(response);
+            Map<?, ?> burp = (Map<?, ?>) offered.get().get("burp");
+            assertThat(((Map<?, ?>) burp.get("proxy")).get("listener_port")).isNull();
+            assertThat(burp.get("message_id")).isEqualTo(62);
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
+        }
     }
 
 }

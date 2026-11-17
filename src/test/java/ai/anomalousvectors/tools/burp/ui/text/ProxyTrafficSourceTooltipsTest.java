@@ -8,7 +8,8 @@ class ProxyTrafficSourceTooltipsTest {
     @Test
     void fieldSources_distinguishPayloadDirectionsAndAllIdNamespaces() {
         assertThat(ExportFieldTooltipsTraffic.trafficTooltip("burp.message_id"))
-                .contains("general HTTP messageId()", "not a UI History number", "meta.capture.source");
+                .contains("native Proxy messageId()", "general HTTP messageId()",
+                        "Neither is a UI History number", "meta.capture.source");
         assertThat(ExportFieldTooltipsTraffic.trafficTooltip("burp.proxy.history_id"))
                 .contains("ProxyHttpRequestResponse.id()", "UI row id");
         assertThat(ExportFieldTooltipsTraffic.trafficTooltip("request.body.b64"))
@@ -28,6 +29,9 @@ class ProxyTrafficSourceTooltipsTest {
         assertThat(ExportFieldTooltips.tooltipFor("traffic", "meta.capture.response_state"))
                 .contains("silence is not completion");
         assertThat(ExportFieldTooltipsTraffic.trafficTooltip("burp.proxy.listener_port"))
-                .contains("History-backed live stream", "Ordinary live HTTP observations", "no port is guessed");
+                .contains("listenerInterface()", "History-backed live stream",
+                        "Other live HTTP tools", "no port is guessed");
+        assertThat(ExportFieldTooltips.tooltipFor("traffic", "meta.capture.source"))
+                .contains("live_proxy_callback", "live_http_callback", "proxy_history_stream");
     }
 }

@@ -289,7 +289,7 @@ class ConfigPanelFieldTooltipsHeadlessTest {
                     .contains("selected final payload byte length");
             assertThat(requestSent.getToolTipText())
                     .contains("TimingData.timeRequestSent() when valid")
-                    .contains("Live HTTP callback observations use the general request callback timestamp")
+                    .contains("Live HTTP observations use their source's request-to-be-sent callback timestamp")
                     .contains("live WebSocket frames use the final callback time")
                     .doesNotContain("item.time() fallback");
         });

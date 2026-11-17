@@ -13,6 +13,7 @@ import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler;
 import ai.anomalousvectors.tools.burp.sinks.RepeaterTabsIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ToolWebSocketLiveHandler;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
+import ai.anomalousvectors.tools.burp.sinks.TrafficProxyHttpHandler;
 import ai.anomalousvectors.tools.burp.ui.BurpExporterPanel;
 import ai.anomalousvectors.tools.burp.ui.ConfigPanel;
 import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
@@ -41,6 +42,8 @@ public class Exporter implements BurpExtension {
     private volatile Registration unloadRegistration;
     private volatile Registration suiteTabRegistration;
     private volatile Registration httpHandlerRegistration;
+    private volatile Registration proxyRequestRegistration;
+    private volatile Registration proxyResponseRegistration;
     private volatile Registration proxyWebSocketRegistration;
     private volatile Registration requestEditorRegistration;
     private volatile Registration responseEditorRegistration;
@@ -102,6 +105,9 @@ public class Exporter implements BurpExtension {
             }
 
             httpHandlerRegistration = api.http().registerHttpHandler(new TrafficHttpHandler());
+            TrafficProxyHttpHandler proxyHttpHandler = new TrafficProxyHttpHandler();
+            proxyRequestRegistration = api.proxy().registerRequestHandler(proxyHttpHandler);
+            proxyResponseRegistration = api.proxy().registerResponseHandler(proxyHttpHandler);
             proxyWebSocketRegistration = api.proxy()
                     .registerWebSocketCreationHandler(ProxyWebSocketLiveHandler.instance());
             webSocketCreatedRegistration =
@@ -144,6 +150,10 @@ public class Exporter implements BurpExtension {
         proxyWebSocketRegistration = null;
         safeDeregister(httpHandlerRegistration);
         httpHandlerRegistration = null;
+        safeDeregister(proxyResponseRegistration);
+        proxyResponseRegistration = null;
+        safeDeregister(proxyRequestRegistration);
+        proxyRequestRegistration = null;
         safeDeregister(requestEditorRegistration);
         requestEditorRegistration = null;
         safeDeregister(responseEditorRegistration);

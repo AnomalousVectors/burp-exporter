@@ -87,8 +87,8 @@ class ExporterLifecycleTest {
             verify(fixture.userInterface).registerSuiteTab(eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class));
             verify(fixture.http).registerHttpHandler(argThat(
                     handler -> handler instanceof TrafficHttpHandler));
-            verify(fixture.proxy, never()).registerRequestHandler(any());
-            verify(fixture.proxy, never()).registerResponseHandler(any());
+            verify(fixture.proxy).registerRequestHandler(any());
+            verify(fixture.proxy).registerResponseHandler(any());
             verify(fixture.webSockets).registerWebSocketCreatedHandler(any());
             verify(fixture.logging).logToOutput(argThat(msg ->
                     msg.contains("initialized successfully") && !msg.startsWith("[")));
@@ -159,6 +159,8 @@ class ExporterLifecycleTest {
             assertThat(storageInstance).doesNotExist();
 
             verify(fixture.httpRegistration).deregister();
+            verify(fixture.proxyRequestRegistration).deregister();
+            verify(fixture.proxyResponseRegistration).deregister();
             verify(fixture.proxyWebSocketRegistration).deregister();
             verify(fixture.suiteTabRegistration).deregister();
             verify(fixture.unloadRegistration, atLeastOnce()).deregister();
@@ -262,6 +264,8 @@ class ExporterLifecycleTest {
         final Registration unloadRegistration = mock(Registration.class);
         final Registration suiteTabRegistration = mock(Registration.class);
         final Registration httpRegistration = mock(Registration.class);
+        final Registration proxyRequestRegistration = mock(Registration.class);
+        final Registration proxyResponseRegistration = mock(Registration.class);
         final Registration proxyWebSocketRegistration = mock(Registration.class);
         final Registration webSocketRegistration = mock(Registration.class);
         final WebSockets webSockets = mock(WebSockets.class);
@@ -286,6 +290,8 @@ class ExporterLifecycleTest {
             when(userInterface.registerSuiteTab(eq(ProductInfo.SUITE_TAB_TITLE), any(Component.class)))
                     .thenReturn(suiteTabRegistration);
             when(http.registerHttpHandler(any())).thenReturn(httpRegistration);
+            when(proxy.registerRequestHandler(any())).thenReturn(proxyRequestRegistration);
+            when(proxy.registerResponseHandler(any())).thenReturn(proxyResponseRegistration);
             when(proxy.registerWebSocketCreationHandler(any())).thenReturn(proxyWebSocketRegistration);
             when(webSockets.registerWebSocketCreatedHandler(any())).thenReturn(webSocketRegistration);
         }

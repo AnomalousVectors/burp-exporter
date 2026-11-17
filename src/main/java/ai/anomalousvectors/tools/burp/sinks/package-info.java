@@ -4,6 +4,7 @@
  * <p>This package houses:</p>
  * <ul>
  *   <li><b>Traffic reporters</b> — {@link ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler},
+ *       {@link ai.anomalousvectors.tools.burp.sinks.TrafficProxyHttpHandler},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter},
  *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler},
@@ -34,8 +35,9 @@
  *       {@link ai.anomalousvectors.tools.burp.sinks.SnapshotSummary} one-shot run summaries.</li>
  * </ul>
  *
- * <p>General HTTP callbacks capture live traffic, including Proxy, from the initiating sent request
- * and original server response. Callback message IDs are not UI History row IDs. Live export
+ * <p>Native Proxy callbacks capture live Proxy traffic with its own listener metadata; general HTTP
+ * callbacks capture other tools. Both use the initiating sent request and original server response.
+ * Native Proxy and general HTTP message IDs are separate namespaces, neither a UI History row ID. Live export
  * does not join callbacks to History or write Notes to enrich those IDs. A separate
  * {@link ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery} worker observes retained
  * streaming responses for up to five minutes and publishes immutable, independently identified
