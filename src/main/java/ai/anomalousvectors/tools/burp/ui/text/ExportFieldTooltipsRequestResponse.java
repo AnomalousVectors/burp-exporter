@@ -169,9 +169,18 @@ final class ExportFieldTooltipsRequestResponse {
 
     static String responseBodyFieldTooltip(String leaf) {
         return switch (leaf) {
+            case "omitted" -> Tooltips.textWithSource(
+                    "True when the video response body policy deliberately omits payload in both destinations. "
+                            + "The traffic record and observed length remain available; this is not search truncation.",
+                    "RequestResponseDocBuilder omits classified video response payloads before encoding.");
+            case "omission_reason" -> Tooltips.textWithSource(
+                    "Why the response payload is absent. video_response_body_disabled means video response "
+                            + "payloads are not exported. Required so field selection cannot hide this capture limit.",
+                    "RequestResponseDocBuilder.populateResponsePayload() preserves the policy reason.");
             case "b64" -> Tooltips.textWithSource(
                     "On-the-wire body bytes as Base64 — exactly what Burp captured (still compressed when Content-Encoding is set). "
-                            + "Use for exact replay; use body.decoded_b64 for the deepest successfully decoded representation.",
+                            + "Video response payloads are always omitted in both destinations. "
+                            + "Use for exact replay only when present and not search-truncated.",
                     "HttpMessageDocSupport.buildBodyContent() Base64-encodes the raw body bytes.");
             case "decoded_b64" -> Tooltips.textWithSource(
                     "Deepest successfully decoded body bytes as Base64. Present after at least one Content-Encoding layer is removed, "
@@ -182,7 +191,7 @@ final class ExportFieldTooltipsRequestResponse {
             case "content_encoding.complete" -> contentEncodingCompleteTooltip();
             case "length" -> Tooltips.textWithSource(
                     "On-the-wire body length in bytes (compressed size when Content-Encoding is set).",
-                    "HttpMessageDocSupport.buildBodyContent() uses HttpResponse.body().getBytes().length.");
+                    "RequestResponseDocBuilder reads HttpResponse.body().length(), including when video payload is omitted.");
             case "offset" -> Tooltips.textWithSource(
                     "Byte offset of the response body within the raw HTTP message.",
                     "HttpMessageDocSupport.buildBodyContent() uses HttpResponse.bodyOffset().");

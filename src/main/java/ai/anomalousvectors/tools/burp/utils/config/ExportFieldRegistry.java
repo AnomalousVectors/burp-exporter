@@ -14,8 +14,8 @@ import java.util.Set;
  *
  * <p>This registry backs both the Fields panel and document filtering. Toggleable field keys are
  * discovered automatically from mapping JSON leaf paths (directories such as {@code burp} are
- * omitted; children like {@code burp.reporting_tool} are shown). Only {@code meta.*} leaves are
- * required and always exported; the top-level {@code meta} object is a system field.</p>
+ * omitted; children like {@code burp.reporting_tool} are shown). Meta and response-body omission
+ * semantics are required, so field filtering cannot conceal a deliberate capture limit.</p>
  */
 public final class ExportFieldRegistry {
 
@@ -33,14 +33,18 @@ public final class ExportFieldRegistry {
     public static final List<String> TRAFFIC_CAPTURE_LEAF_PATHS = List.of(
             "meta.capture.id", "meta.capture.source", "meta.capture.revision",
             "meta.capture.observed_at", "meta.capture.window_ends_at", "meta.capture.response_state",
-            "meta.capture.observation_state");
+            "meta.capture.observation_state", "meta.capture.grpc_status_state");
 
     static {
         for (String index : List.of("exporter", "traffic", "settings", "sitemap", "findings")) {
             TOGGLEABLE_BY_INDEX.put(index, MappingFieldCatalog.discoverToggleableLeaves(index));
-            SYSTEM_BY_INDEX.put(index, List.of("meta"));
             List<String> required = new ArrayList<>(META_LEAF_PATHS);
             if ("traffic".equals(index)) required.addAll(TRAFFIC_CAPTURE_LEAF_PATHS);
+            List<String> bodyPolicy = bodyPolicyPaths(index);
+            required.addAll(bodyPolicy);
+            List<String> system = new ArrayList<>(List.of("meta"));
+            system.addAll(bodyPolicy);
+            SYSTEM_BY_INDEX.put(index, List.copyOf(system));
             REQUIRED_DISPLAY_BY_INDEX.put(index, List.copyOf(required));
         }
 
@@ -58,6 +62,27 @@ public final class ExportFieldRegistry {
      */
     public static boolean isMetaLeafPath(String path) {
         return path != null && (META_LEAF_PATHS.contains(path) || TRAFFIC_CAPTURE_LEAF_PATHS.contains(path));
+    }
+
+    /** Returns whether a leaf carries mandatory identity, observation or omission semantics. */
+    public static boolean isRequiredLeafPath(String path) {
+        return isMetaLeafPath(path) || isBodyPolicyLeafPath(path);
+    }
+
+    static boolean isBodyPolicyLeafPath(String path) {
+        return path != null && (path.equals("response.body.omitted")
+                || path.equals("response.body.omission_reason") || path.endsWith(".response.body.omitted")
+                || path.endsWith(".response.body.omission_reason"));
+    }
+
+    private static List<String> bodyPolicyPaths(String index) {
+        List<String> prefixes = switch (index) {
+            case "traffic", "sitemap" -> List.of("response.body.");
+            case "findings" -> List.of("requests_responses.response.body.", "collaborator.http.response.body.");
+            default -> List.of();
+        };
+        return prefixes.stream().flatMap(prefix ->
+                java.util.stream.Stream.of(prefix + "omitted", prefix + "omission_reason")).toList();
     }
 
     /**

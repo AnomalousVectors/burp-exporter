@@ -134,13 +134,7 @@ public final class PreparedBulkSender {
         if (!ExportRunContext.allowsRunMutation()) {
             return;
         }
-        String index = indexName == null || indexName.isBlank() ? "unknown" : indexName;
-        Logger.logInfoPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
-                + " Prefix-truncated " + count
-                + " document(s) to fit live bulk budget "
-                + formatMib(maxBytes)
-                + " for " + index
-                + " (search path only; files sink unchanged).");
+        SearchBodyTruncationLog.record(count, maxBytes);
     }
 
     private static List<List<PreparedExportDocument>> splitByByteBudget(
@@ -467,11 +461,6 @@ public final class PreparedBulkSender {
                 + " Prepared bulk failed for " + indexName + ": " + msg);
         AmazonOpenSearchPressureLog.maybeNoteTransportPressure(msg, indexName, "Prepared bulk");
         BulkRateLimitBackoff.noteTransportPressure(msg, indexName, "Prepared bulk");
-    }
-
-    private static String formatMib(long bytes) {
-        double mib = bytes / (1024.0 * 1024.0);
-        return String.format(java.util.Locale.ROOT, "%.2fMiB", mib);
     }
 
     private record RefittedPart(

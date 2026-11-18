@@ -72,11 +72,25 @@ class ExportFieldRegistryTest {
             if ("traffic".equals(index)) {
                 assertThat(ExportFieldRegistry.getRequiredDisplayFields(index))
                         .containsAll(ExportFieldRegistry.TRAFFIC_CAPTURE_LEAF_PATHS);
-            } else {
+            } else if ("settings".equals(index) || "exporter".equals(index)) {
                 assertThat(ExportFieldRegistry.getRequiredDisplayFields(index))
                         .containsExactlyElementsOf(ExportFieldRegistry.META_LEAF_PATHS);
             }
         }
+    }
+
+    @Test
+    void omissionSemanticsAreRequiredAndCannotBeHiddenByOptionalFieldSelection() {
+        for (String index : List.of("traffic", "sitemap")) {
+            assertThat(ExportFieldRegistry.getRequiredDisplayFields(index))
+                    .contains("response.body.omitted", "response.body.omission_reason");
+            assertThat(ExportFieldRegistry.getAllowedKeys(index, Set.of()))
+                    .contains("response.body.omitted", "response.body.omission_reason");
+            assertThat(ExportFieldRegistry.getToggleableFields(index))
+                    .doesNotContain("response.body.omitted", "response.body.omission_reason");
+        }
+        assertThat(ExportFieldRegistry.getAllowedKeys("findings", Set.of()))
+                .contains("requests_responses.response.body.omitted", "collaborator.http.response.body.omission_reason");
     }
 
     @Test

@@ -126,6 +126,8 @@
                 "properties": {
                   "body": {
                     "properties": {
+                      "omitted": { "type": "boolean" },
+                      "omission_reason": { "type": "keyword", "ignore_above": 8191 },
                       "b64": { "type": "binary", "doc_values": false },
                       "content_encoding": {
                         "properties": {
@@ -394,6 +396,8 @@
             "properties": {
               "body": {
                 "properties": {
+                  "omitted": { "type": "boolean" },
+                  "omission_reason": { "type": "keyword", "ignore_above": 8191 },
                   "b64": { "type": "binary", "doc_values": false },
                   "content_encoding": {
                     "properties": {

@@ -14,6 +14,7 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
+import ai.anomalousvectors.tools.burp.utils.opensearch.SearchBodyTruncationLog;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -120,6 +121,7 @@ public final class ExportReporterLifecycle {
         IndexingRetryCoordinator retryCoordinator = IndexingRetryCoordinator.getInstance();
         boolean retryStopped = retryCoordinator.stopDrainThread(remainingMillis(deadline));
         retryCoordinator.clearPendingWork();
+        SearchBodyTruncationLog.flushAndClear();
         return trafficDiscarded && retryStopped;
     }
 

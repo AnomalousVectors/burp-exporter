@@ -39,7 +39,7 @@ public final class ExportFieldFilter {
 
     private static Object filterValue(Object current, String pathPrefix, Set<String> allowed) {
         if (current == null) {
-            return isIncluded(pathPrefix, allowed) ? null : ABSENT;
+            return isIncluded(pathPrefix, allowed, false) ? null : ABSENT;
         }
         if (current instanceof Map<?, ?> currentMap) {
             return filterMap(currentMap, pathPrefix, allowed);
@@ -77,7 +77,7 @@ public final class ExportFieldFilter {
             return ABSENT;
         }
         if (currentList.isEmpty()) {
-            return List.of();
+            return isIncluded(pathPrefix, allowed, false) ? List.of() : ABSENT;
         }
         List<Object> out = new ArrayList<>();
         for (Object item : currentList) {
@@ -91,6 +91,10 @@ public final class ExportFieldFilter {
     }
 
     private static boolean isIncluded(String path, Set<String> allowed) {
+        return isIncluded(path, allowed, true);
+    }
+
+    private static boolean isIncluded(String path, Set<String> allowed, boolean includePolicyDescendants) {
         if (path == null || path.isEmpty()) {
             return true;
         }
@@ -100,7 +104,11 @@ public final class ExportFieldFilter {
         String childPrefix = path + '.';
         for (String allowedPath : allowed) {
             if (allowedPath.startsWith(childPrefix)) {
-                return true;
+                // Required omission leaves preserve actual policy evidence, not empty/null
+                // containers from unrelated sparse HTTP, Findings or WebSocket shapes.
+                if (includePolicyDescendants || !ExportFieldRegistry.isBodyPolicyLeafPath(allowedPath)) {
+                    return true;
+                }
             }
             if (path.startsWith(allowedPath + '.')) {
                 return true;

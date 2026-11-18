@@ -101,7 +101,7 @@ public final class ExportFieldCatalog {
                 Node populated = appendMappingProperties(directory, path, field.path("properties"), indexShortName);
                 current = current.withChild(populated);
             } else if (MappingFieldCatalog.isMappingLeaf(field)) {
-                Kind kind = ExportFieldRegistry.isMetaLeafPath(path)
+                Kind kind = ExportFieldRegistry.isRequiredLeafPath(path)
                         ? Kind.REQUIRED_LEAF
                         : Kind.TOGGLEABLE_LEAF;
                 current = current.withChild(new Node(name, path, kind, List.of()));

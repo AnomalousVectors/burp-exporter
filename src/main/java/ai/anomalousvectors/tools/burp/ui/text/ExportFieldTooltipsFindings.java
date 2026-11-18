@@ -246,7 +246,8 @@ final class ExportFieldTooltipsFindings {
                     "Raw HTTP request bytes from the Collaborator pingback as Base64.",
                     "FindingsIndexReporter.buildCollaboratorInteractionsList() uses HttpRequest.toByteArray() from HttpDetails.requestResponse().request() and Base64-encodes the bytes.");
             case "response_b64" -> Tooltips.textWithSource(
-                    "Raw HTTP response bytes from the Collaborator pingback as Base64.",
+                    "Raw HTTP response bytes from the Collaborator pingback as Base64. Absent when the "
+                            + "video response body policy omits the payload; response.body.omission_reason explains why.",
                     "FindingsIndexReporter.buildCollaboratorInteractionsList() uses HttpResponse.toByteArray() from HttpDetails.requestResponse().response() and Base64-encodes the bytes.");
             case "request.header" -> Tooltips.textWithSource(
                     "Parsed Collaborator HTTP request headers as ordered rows.",

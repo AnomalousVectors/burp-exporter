@@ -124,6 +124,11 @@ public final class ExportFieldTooltips {
             case "meta.capture.response_state" -> Tooltips.textWithSource(
                     "Whether an original response was observed. An observed response may still be partial; silence is not completion.",
                     "Based on the exact History row's originalResponse(). Short/conflicting unencoded Content-Length observations are distinguished; length agreement never proves completion.");
+            case "meta.capture.grpc_status_state" -> Tooltips.textWithSource(
+                    "For a History-backed gRPC stream, observed means grpc-status was available in the public "
+                            + "response headers; not_observed means no status was exposed at this observation. "
+                            + "HTTP 200 alone does not establish gRPC success.",
+                    "StreamingProxyRecovery reads originalResponse().headerValue(\"grpc-status\") without cross-exchange enrichment.");
             case "meta.capture.observation_state" -> Tooltips.textWithSource(
                     "Whether this snapshot was made during observation or the bounded final Stop check. Neither state proves completion.",
                     "observing or stopped. The window_ends_at deadline limits further reads even when no final Stop snapshot is available.");

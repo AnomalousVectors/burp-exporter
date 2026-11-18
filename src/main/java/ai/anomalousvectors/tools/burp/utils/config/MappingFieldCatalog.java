@@ -79,7 +79,7 @@ final class MappingFieldCatalog {
             if (isDirectory(field)) {
                 collectLeaves(indexShortName, path, field.path("properties"), out);
             } else if (isLeaf(field)) {
-                if (!ExportFieldRegistry.isMetaLeafPath(path)) {
+                if (!ExportFieldRegistry.isRequiredLeafPath(path)) {
                     out.add(path);
                 }
             }

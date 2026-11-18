@@ -12,6 +12,34 @@ import org.junit.jupiter.api.Test;
 class ExportFieldFilterTest {
 
     @Test
+    void omissionLeavesPreserveEvidenceWithoutCreatingEmptySparseContainers() {
+        ConfigState.State original = RuntimeConfig.getState();
+        try {
+            RuntimeConfig.updateState(new ConfigState.State(List.of("traffic", "findings"), "all",
+                    List.of(), null, ConfigState.DEFAULT_SETTINGS_SUB, ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES, ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                    ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                    Map.of("traffic", Set.of(), "findings", Set.of())));
+            Map<String, Object> emptyResponse = new LinkedHashMap<>();
+            emptyResponse.put("response", null);
+            emptyResponse.put("meta", Map.of("schema_version", "1"));
+            assertThat(ExportFieldFilter.filterDocument(emptyResponse, "traffic")).containsOnlyKeys("meta");
+            Map<String, Object> finding = new LinkedHashMap<>();
+            finding.put("requests_responses", List.of());
+            finding.put("collaborator", List.of());
+            finding.put("meta", Map.of("schema_version", "1"));
+            assertThat(ExportFieldFilter.filterDocument(finding, "findings")).containsOnlyKeys("meta");
+            Map<String, Object> policy = Map.of("omitted", true, "omission_reason", "video_response_body_disabled");
+            finding.put("requests_responses", List.of(Map.of("response", Map.of("body", policy))));
+            assertThat(ExportFieldFilter.filterDocument(finding, "findings"))
+                    .containsEntry("requests_responses", finding.get("requests_responses"))
+                    .doesNotContainKey("collaborator");
+        } finally {
+            RuntimeConfig.updateState(original);
+        }
+    }
+
+    @Test
     void filterDocument_copiesEnabledNestedFields_withoutWholeParent() {
         ConfigState.State original = RuntimeConfig.getState();
         try {

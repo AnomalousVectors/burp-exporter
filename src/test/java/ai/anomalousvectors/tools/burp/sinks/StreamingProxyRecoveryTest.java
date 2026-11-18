@@ -82,6 +82,125 @@ class StreamingProxyRecoveryTest {
         StreamingPollPolicy policy = new StreamingPollPolicy();
         policy.charge(1_000L, 1_800L);
         assertThat(policy.allowedAt()).isEqualTo(9_000L);
+        assertThat(StreamingPollPolicy.intervalMs(0L, 8L * 1024L * 1024L)).isEqualTo(32_000L);
+        assertThat(StreamingPollPolicy.intervalMs(0L, 580L)).isEqualTo(5_000L);
+    }
+
+    @Test
+    void finalPassRefreshesEveryDueSmallStreamBeyondTheOrdinaryWorkSlice() {
+        observer.tick();
+        for (int i=0; i<32; i++) rows.add(row(1_000+i, WALL+100L));
+        clock.addAndGet(5_000L);
+        observer.tick();
+        outputs.clear();
+        for (ProxyHttpRequestResponse row : rows) {
+            HttpResponse response = row.originalResponse();
+            body(response, "data: complete\n\n");
+            when(row.originalResponse()).thenAnswer(call -> { clock.addAndGet(10L); return response; });
+        }
+        RuntimeConfig.beginExportStop();
+        RuntimeConfig.setExportStopping(true);
+        // Match the actual UI lifecycle: accepted work still owns the valid run token.
+        observer.observeFinalSnapshots();
+        assertThat(outputs).hasSize(32);
+        assertThat(outputs).allSatisfy(document -> {
+            assertThat(capture(document).get("observation_state")).isEqualTo("stopped");
+            assertThat(bodyDoc(document).get("length")).isEqualTo(16);
+        });
+        assertThat(StreamingProxyRecovery.status()).contains("final_unread=0");
+    }
+
+    @Test
+    void grpcStatusAvailabilityIsExplicitWithoutInferringSuccessFromHttp200() {
+        observer.tick();
+        ProxyHttpRequestResponse source = row(95, WALL + 100L);
+        rows.add(source);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        HttpResponse response = source.originalResponse();
+        when(response.headerValue("Content-Type")).thenReturn("application/grpc");
+        body(response, "message-one");
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(capture(outputs.getLast()).get("grpc_status_state")).isEqualTo("not_observed");
+        when(response.headerValue("grpc-status")).thenReturn("7");
+        body(response, "message-two");
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(capture(outputs.getLast()).get("grpc_status_state")).isEqualTo("observed");
+    }
+
+    @Test
+    void newSmallExchangeGetsATurnBeforePreviouslyReadExpensiveExchange() {
+        observer.tick();
+        ProxyHttpRequestResponse expensive = row(96, WALL + 100L);
+        rows.add(expensive);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        HttpResponse response = expensive.originalResponse();
+        when(expensive.originalResponse()).thenAnswer(call -> { clock.addAndGet(110L); return response; });
+        rows.add(row(97, WALL + 5_001L));
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(burp(outputs.getLast()).get("message_id")).isEqualTo(97);
+    }
+
+    @Test
+    void ownedInitializationFailureRemainsVisibleInStatus() throws Exception {
+        when(proxy.history(any(ProxyHistoryFilter.class))).thenThrow(new IllegalStateException("unavailable"));
+        MontoyaApiProvider.set(api);
+        StreamingProxyRecovery.start();
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3L);
+        while (!StreamingProxyRecovery.status().contains("failures=1") && System.nanoTime() < deadline) {
+            Thread.sleep(10L);
+        }
+        assertThat(StreamingProxyRecovery.status()).contains("failures=1", "snapshots=0");
+    }
+
+    @Test
+    void actualUiStopCallsFinalReadWhileKeepingAcceptedRunAlive() throws Exception {
+        var firstRead = new java.util.concurrent.CountDownLatch(1);
+        var finalRead = new java.util.concurrent.CountDownLatch(1);
+        ProxyHttpRequestResponse source = row(94, System.currentTimeMillis() + 100L);
+        HttpResponse response = source.originalResponse();
+        when(source.originalResponse()).thenAnswer(call -> {
+            if (RuntimeConfig.isExportStopping()) finalRead.countDown(); else firstRead.countDown();
+            return response;
+        });
+        rows.add(source);
+        MontoyaApiProvider.set(api);
+        var stopOwner = new java.util.concurrent.atomic.AtomicReference<java.util.concurrent.CompletableFuture<Void>>();
+        var button = new java.util.concurrent.atomic.AtomicReference<javax.swing.JButton>();
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            StreamingProxyRecovery.start();
+            assertThat(firstRead.await(3L, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            javax.swing.SwingUtilities.invokeAndWait(() -> {
+                var controls = new ai.anomalousvectors.tools.burp.ui.ConfigControlPanel(
+                        new javax.swing.JTextArea(), new javax.swing.JPanel(), new javax.swing.JTextArea(),
+                        new javax.swing.JPanel(), 30, 15, area -> { }, () -> { }, () -> { },
+                        callbacks -> { }, callbacks -> {
+                            assertThat(RuntimeConfig.currentExportRunToken().isValid()).isTrue();
+                            stopOwner.set(java.util.concurrent.CompletableFuture.runAsync(StreamingProxyRecovery::stop));
+                        }).build();
+                button.set(findStopButton(controls));
+                button.get().doClick();
+            });
+            javax.swing.SwingUtilities.invokeAndWait(() -> { });
+            stopOwner.get().get(3L, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(finalRead.getCount()).isZero();
+            assertThat(StreamingProxyRecovery.status()).contains("final_unread=0");
+        });
+    }
+
+    private static javax.swing.JButton findStopButton(java.awt.Container container) {
+        for (java.awt.Component child : container.getComponents()) {
+            if (child instanceof javax.swing.JButton button && "control.startStop".equals(button.getName())) return button;
+            if (child instanceof java.awt.Container nested) {
+                javax.swing.JButton found = findStopButton(nested);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     @Test

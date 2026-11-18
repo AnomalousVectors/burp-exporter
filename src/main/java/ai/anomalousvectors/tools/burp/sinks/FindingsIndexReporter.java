@@ -947,9 +947,11 @@ public final class FindingsIndexReporter {
                     }
                     HttpResponse hresp = hrr.hasResponse() ? hrr.response() : null;
                     if (hresp != null) {
-                        ByteArray bytes = hresp.toByteArray();
-                        http.put("response_b64", bytes != null ? Base64.getEncoder().encodeToString(bytes.getBytes()) : null);
                         responseDoc = RequestResponseDocBuilder.buildTrafficResponseDoc(hresp);
+                        Object body = responseDoc.get("body");
+                        boolean omitted = body instanceof Map<?, ?> fields && Boolean.TRUE.equals(fields.get("omitted"));
+                        ByteArray bytes = omitted ? null : hresp.toByteArray();
+                        http.put("response_b64", bytes != null ? Base64.getEncoder().encodeToString(bytes.getBytes()) : null);
                     } else {
                         responseDoc = emptyTrafficResponseDoc();
                     }

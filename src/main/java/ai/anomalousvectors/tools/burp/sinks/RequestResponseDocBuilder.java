@@ -800,8 +800,23 @@ public final class RequestResponseDocBuilder {
         MimeType inferred = response.inferredMimeType();
         boolean montoyaTextualHint = HttpMessageDocSupport.isTextualMimeHint(mime) || HttpMessageDocSupport.isTextualMimeHint(stated) || HttpMessageDocSupport.isTextualMimeHint(inferred);
 
-        byte[] bodyBytes = response.body() == null ? null : response.body().getBytes();
-        HttpMessageDocSupport.putBodyFields(
+        boolean omitVideo = isVideoResponse(responseHeaders, mime, stated, inferred);
+        if (omitVideo) {
+            // Inspect length without materializing/encoding the payload. The public response
+            // accessor may already own a copy; this bounds our subsequent representation work.
+            var sourceBody = response.body();
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("length", sourceBody == null ? 0 : sourceBody.length());
+            body.put("offset", response.bodyOffset());
+            body.put("b64", null);
+            body.put("text", null);
+            body.put("omitted", true);
+            body.put("omission_reason", "video_response_body_disabled");
+            resp.put("body", body);
+        } else {
+            var sourceBody = response.body();
+            byte[] bodyBytes = sourceBody == null ? null : sourceBody.getBytes();
+            HttpMessageDocSupport.putBodyFields(
                 resp,
                 bodyBytes,
                 responseHeaders,
@@ -812,6 +827,7 @@ public final class RequestResponseDocBuilder {
                 montoyaTextualHint,
                 response.bodyOffset(),
                 false);
+        }
 
         if (trafficShape) {
             HttpMessageDocSupport.putResponseBodyField(resp, "markers", HttpMessageDocSupport.trafficMarkersToList(response.markers()));
@@ -819,9 +835,20 @@ public final class RequestResponseDocBuilder {
             resp.put("markers", HttpMessageDocSupport.markersToList(response.markers()));
         }
 
-        if (response instanceof HttpResponseReceived received) {
+        if (!omitVideo && response instanceof HttpResponseReceived received) {
             putResponseAttributes(resp, received, trafficShape);
         }
+    }
+
+    // Content type and Burp's classification are used, never a filename extension or a blanket
+    // binary-body test: protobuf, multipart application feeds and manifests remain eligible.
+    private static boolean isVideoResponse(List<HttpHeader> headers, MimeType... hints) {
+        String declared = HttpMessageDocSupport.headerValue(headers, "Content-Type");
+        if (declared != null && declared.trim().toLowerCase(Locale.ROOT).startsWith("video/")) return true;
+        // An explicit application content type is authoritative; do not suppress a binary API
+        // payload merely because sniffing happens to resemble a video container.
+        if (declared != null && !declared.isBlank()) return false;
+        return Arrays.stream(hints).anyMatch(hint -> hint == MimeType.VIDEO);
     }
 
     static String safeResponseHttpVersion(HttpResponse response) {

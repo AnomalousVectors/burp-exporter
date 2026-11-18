@@ -752,9 +752,7 @@ public final class ChunkedBulkSender {
         boolean firstTruncation = ExportStats.recordSearchBodyPrefixTruncationOnce(
                 prepared.operationId(), TrafficRouteBucket.INDEX_KEY);
         if (firstTruncation) {
-            Logger.logInfoPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
-                    + " Prefix-truncated traffic document to fit live bulk budget "
-                    + maxBytes + " bytes (search path only; files sink unchanged).");
+            SearchBodyTruncationLog.record(1, maxBytes);
         }
     }
 

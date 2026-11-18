@@ -48,6 +48,7 @@ public final class StreamingProxyRecovery {
     private final Map<Integer, Capture> tracked = new LinkedHashMap<>();
     private final Set<Integer> baseline = java.util.Collections.synchronizedSet(new HashSet<>());
     private final StreamingPollPolicy policy = new StreamingPollPolicy();
+    private final StreamingRecoveryLog diagnostics;
     private final AtomicLong discoveryUntil = new AtomicLong();
     private volatile boolean closed;
     private volatile boolean finishing;
@@ -58,8 +59,10 @@ public final class StreamingProxyRecovery {
     private long rejected;
     private long failures;
     private long removed;
-    private long lastWarning;
-    private int diagnosticRows;
+    private long snapshotWireBytes;
+    private volatile int finalUnread;
+    private boolean finalPass;
+    private boolean capacityPressure;
     private StreamingResponseRules rules = StreamingResponseRules.empty();
 
     StreamingProxyRecovery(MontoyaApi api, ExportRunToken token, LongSupplier clock,
@@ -70,6 +73,7 @@ public final class StreamingProxyRecovery {
         this.output = output;
         startedWallMs = wallMs;
         startedMs = clock.getAsLong();
+        diagnostics = new StreamingRecoveryLog(clock);
     }
 
     /**
@@ -121,14 +125,12 @@ public final class StreamingProxyRecovery {
             // One Stop owner submits the final read; concurrent lifecycle cleanup is a no-op.
             if (observer == null || observer.finishing) return;
             observer.finishing = true;
+            observer.finalUnread = -1;
         }
         if (observer != null && RuntimeConfig.isExportStopping()
                 && RuntimeConfig.remainingExportStopBudgetMs() > 0L
                 && observer.active() && SCHEDULER.peek() != null) {
-            var finalRead = SCHEDULER.peek().submit(() -> {
-                observer.tracked.values().forEach(c -> c.nextRead = 0L);
-                observer.tickSafely();
-            });
+            var finalRead = SCHEDULER.peek().submit(observer::observeFinalSnapshots);
             try {
                 finalRead.get(Math.min(1_000L, RuntimeConfig.remainingExportStopBudgetMs()),
                         TimeUnit.MILLISECONDS);
@@ -137,8 +139,8 @@ public final class StreamingProxyRecovery {
                 finalRead.cancel(true);
             } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
                 finalRead.cancel(true);
-                Logger.logWarnPanelOnly("[StreamingRecovery] Final observation did not finish within "
-                        + "the Stop budget; earlier snapshots are retained.");
+                Logger.logWarnPanelOnly("[StreamingRecovery] Final observation exceeded the Stop "
+                        + "budget; earlier snapshots are retained.");
             }
         }
         synchronized (OWNER) {
@@ -148,7 +150,13 @@ public final class StreamingProxyRecovery {
             SCHEDULER.stop();
         }
         if (observer != null) {
-            lastSummary = "Stopped; " + lastSummary;
+            observer.diagnostics.flush(true);
+            if (observer.finalUnread != 0 && observer.initialized) {
+                Logger.logWarnPanelOnly("[StreamingRecovery] Final refresh incomplete: unread="
+                        + (observer.finalUnread < 0 ? "not_attempted" : observer.finalUnread)
+                        + "; response tails may be absent from retained snapshots.");
+            }
+            lastSummary = "Stopped; " + observer.summary();
             Logger.logInfoPanelOnly("[StreamingRecovery] " + lastSummary
                     + "; retained snapshots are observations, not proof of complete responses.");
         }
@@ -159,15 +167,29 @@ public final class StreamingProxyRecovery {
         return lastSummary;
     }
 
+    // The single worker owns this final pass. The Stop caller still enforces the absolute budget
+    // and closes publication even if a public API read does not respond to interruption.
+    void observeFinalSnapshots() {
+        finishing = true;
+        finalPass = true;
+        finalUnread = tracked.size();
+        tracked.values().forEach(c -> c.nextRead = 0L);
+        tickSafely();
+    }
+
     private static boolean enabled(ExportRunToken token) {
         return RuntimeConfig.isExportRunActive(token) && !RuntimeConfig.isExportStopping()
                 && RuntimeConfig.trafficExportGate().includesToolType("proxy");
     }
 
     private boolean active() {
+        // Normal UI Stop keeps the token active until accepted work drains; cleanup callers may
+        // have invalidated it already. Both paths must refer to this exact run, never a later one.
+        boolean ownsStoppingRun = RuntimeConfig.isExportRunActive(token)
+                || (token.equals(RuntimeConfig.lastInvalidatedExportRunToken())
+                && !RuntimeConfig.currentExportRunToken().isValid());
         return !closed && (enabled(token) || (finishing && RuntimeConfig.isExportStopping()
-                && token.equals(RuntimeConfig.lastInvalidatedExportRunToken())
-                && !RuntimeConfig.currentExportRunToken().isValid()
+                && ownsStoppingRun
                 && !RuntimeConfig.isExportStopForceAbortRequested()
                 && !RuntimeConfig.isExportStopBudgetExpired()));
     }
@@ -180,16 +202,28 @@ public final class StreamingProxyRecovery {
             failures++;
             if (!initialized) {
                 closed = true;
-                warn("History recovery initialization failed (" + e.getClass().getSimpleName()
+                diagnostics.warn(StreamingRecoveryLog.Reason.INITIALIZATION,
+                        "History recovery initialization failed (" + e.getClass().getSimpleName()
                         + "); live HTTP capture continues without streaming recovery");
             } else {
-                warn("History read failed; previously captured snapshots are retained");
+                diagnostics.warn(StreamingRecoveryLog.Reason.HISTORY,
+                        "History read failed; previously captured snapshots are retained");
             }
         } finally {
-            lastSummary = "tracking=" + tracked.size() + "/" + StreamingPollPolicy.MAX_TRACKED
-                    + ", snapshots=" + snapshots + ", cutoff=" + expired
-                    + ", capacity_checks=" + rejected + ", removed=" + removed + ", failures=" + failures;
+            // A late non-cooperative read must not overwrite a newer run's status/log window.
+            if (!closed || (current == this && !initialized)) {
+                lastSummary = summary();
+                diagnostics.flush(false);
+            }
         }
+    }
+
+    private String summary() {
+        return "tracking=" + tracked.size() + "/" + StreamingPollPolicy.MAX_TRACKED
+                + ", snapshots=" + snapshots + ", cutoff=" + expired
+                + ", capacity_checks=" + rejected + ", removed=" + removed + ", failures=" + failures
+                + ", snapshot_wire_bytes=" + snapshotWireBytes + ", final_unread="
+                + (finalUnread < 0 ? "not_attempted" : finalUnread);
     }
 
     // One worker owns mutable tracking state. Tests drive this method with a deterministic clock.
@@ -224,13 +258,16 @@ public final class StreamingProxyRecovery {
         boolean due = tracked.values().stream().anyMatch(c -> c.nextRead <= now);
         if (!discover && !due) return;
         long began = clock.getAsLong();
+        capacityPressure = false;
         Map<Integer, ProxyHttpRequestResponse> selected = new HashMap<>();
         // The predicate must remain metadata-only; payload acquisition happens after enumeration.
         api.proxy().history(row -> select(row, now, discover, selected));
         if (discover) nextDiscovery = now + 5_000L;
         // Expensive reads are individually budgeted. Leave other due rows for a later turn.
         List<Capture> ready = new ArrayList<>(tracked.values());
-        ready.sort(Comparator.comparingLong(c -> c.nextRead));
+        // Oldest attempted reads win among due rows. A repeatedly growing large body cannot
+        // keep overtaking unread small exchanges just because its original deadline is older.
+        ready.sort(Comparator.comparingLong(c -> c.lastRead));
         int reads = 0;
         for (Capture capture : ready) {
             if (!active()) break;
@@ -242,19 +279,22 @@ public final class StreamingProxyRecovery {
                 continue;
             }
             // Share enumeration across cheap reads; a single costly read ends this pass.
-            if (reads > 0 && clock.getAsLong() - began >= 100L) break;
+            if (!finishing && reads > 0 && clock.getAsLong() - began >= 100L) break;
             try {
-                read(capture, row, now);
+                capture.lastRead = now;
+                boolean refreshed = read(capture, row, now);
+                if (finalPass && refreshed) finalUnread--;
             } catch (RuntimeException e) {
                 failures++;
                 capture.nextRead = now + StreamingPollPolicy.intervalMs(
                         StreamingPollPolicy.WINDOW_MS - (capture.deadline - now));
-                warn("A stream observation failed; other exchanges remain eligible");
+                diagnostics.warn(StreamingRecoveryLog.Reason.OBSERVATION,
+                        "A stream observation failed; other exchanges remain eligible");
             }
             reads++;
         }
         policy.charge(began, clock.getAsLong());
-        if (rejected > 0L) warn("Tracking capacity reached; some exchanges may not be observed");
+        if (discover) diagnostics.capacity(capacityPressure);
     }
 
     // Burp may invoke filter predicates on its own threads; do not assume worker-thread affinity.
@@ -272,12 +312,10 @@ public final class StreamingProxyRecovery {
         long deadline = startedMs + (received - startedWallMs) + StreamingPollPolicy.WINDOW_MS;
         if (received < startedWallMs || received > startedWallMs + (now - startedMs)
                 || now >= deadline) return false;
-        if (diagnosticRows++ < 32) {
-            Logger.logDebug("[StreamingRecovery] Candidate: history_id=" + id
-                    + ", has_response=" + row.hasResponse() + ", mime=" + row.mimeType() + ".");
-        }
+        diagnostics.candidate();
         if (tracked.size() >= StreamingPollPolicy.MAX_TRACKED) {
             rejected++;
+            capacityPressure = true;
             return false;
         }
         // A missing response may still become a stream; descriptors contain no payload views.
@@ -287,25 +325,25 @@ public final class StreamingProxyRecovery {
         return false;
     }
 
-    private void read(Capture capture, ProxyHttpRequestResponse row, long now) {
+    private boolean read(Capture capture, ProxyHttpRequestResponse row, long now) {
         long age = StreamingPollPolicy.WINDOW_MS - (capture.deadline - now);
         capture.nextRead = Math.min(capture.deadline, now + StreamingPollPolicy.intervalMs(age));
         HttpRequest request = row.finalRequest();
-        if (request == null) return;
+        if (request == null) return false;
         boolean inScope = request.isInScope();
         String url = request.url();
         if (!ScopeFilter.shouldExport(RuntimeConfig.getState(), url, inScope)) {
             // A held request can still be edited into scope. Once a response exists, its sent
             // request is authoritative and an excluded row must not occupy a stream slot.
             if (row.hasResponse()) retire(capture);
-            return;
+            return true;
         }
-        if (!row.hasResponse()) return;
+        if (!row.hasResponse()) return true;
         // Burp's inferred History MIME can be UNRECOGNIZED even while its UI labels the row SSE.
         // Acquiring the original public response for header classification may itself copy bytes;
         // account for that cost on this worker, never inside the metadata filter or a callback.
         HttpResponse response = row.originalResponse();
-        if (response == null || clock.getAsLong() >= capture.deadline) return;
+        if (response == null || clock.getAsLong() >= capture.deadline) return false;
         String contentType = response.headerValue("Content-Type");
         boolean declaredSse = contentType != null
                 && "text/event-stream".equalsIgnoreCase(contentType.split(";", 2)[0].trim());
@@ -313,12 +351,19 @@ public final class StreamingProxyRecovery {
         if (!stream) {
             // Classification is sufficient; do not build/hash/export ordinary response bodies.
             retire(capture);
-            return;
+            return true;
         }
         capture.stream = true;
+        var wireBody = response.body();
+        long wireBytes = wireBody == null ? 0L : wireBody.length();
+        capture.nextRead = Math.min(capture.deadline,
+                now + StreamingPollPolicy.intervalMs(age, wireBytes));
         Map<String, Object> document = document(row, request, response, inScope);
         String signature = SnapshotFingerprint.of(document);
-        if (signature.equals(capture.signature) && !finishing) return;
+        if (signature.equals(capture.signature) && !finishing) {
+            diagnostics.unchanged();
+            return true;
+        }
         Map<String, Object> observation = new LinkedHashMap<>();
         observation.put("id", capture.captureId);
         observation.put("source", "proxy_history_stream");
@@ -328,19 +373,24 @@ public final class StreamingProxyRecovery {
                 + capture.deadline - startedMs).toString());
         observation.put("response_state", responseState(response, document));
         observation.put("observation_state", finishing ? "stopped" : "observing");
+        if (contentType != null && contentType.toLowerCase(java.util.Locale.ROOT).startsWith("application/grpc")) {
+            observation.put("grpc_status_state", response.headerValue("grpc-status") == null
+                    ? "not_observed" : "observed");
+        }
         Map<String, Object> meta = ExportMetaFields.meta("1");
         meta.put("capture", observation);
         document.put("meta", meta);
         boolean accepted = active() && clock.getAsLong() < capture.deadline && (output == null
                 ? TrafficExportQueue.offerStreamingObservationForRun(document, token, this::active)
                 : output.test(document, token));
-        Logger.logDebug("[StreamingRecovery] Snapshot: history_id=" + capture.id
-                + ", revision=" + (capture.revision + 1L) + ", admitted=" + accepted + ".");
+        if (!closed) diagnostics.snapshot(accepted);
         if (accepted) {
             capture.revision++;
             capture.signature = signature;
             snapshots++;
+            snapshotWireBytes += wireBytes;
         }
+        return accepted;
     }
 
     private void retire(Capture capture) {
@@ -397,19 +447,12 @@ public final class StreamingProxyRecovery {
         return "observed_completion_unknown";
     }
 
-    private void warn(String reason) {
-        long now = clock.getAsLong();
-        if (lastWarning == 0L || now - lastWarning >= 30_000L) {
-            lastWarning = now;
-            Logger.logWarnPanelOnly("[StreamingRecovery] " + reason + ".");
-        }
-    }
-
     private static final class Capture {
         private final int id;
         private final long deadline;
         private final String captureId = UUID.randomUUID().toString();
         private long nextRead;
+        private long lastRead;
         private long revision;
         private String signature = "";
         private boolean stream;

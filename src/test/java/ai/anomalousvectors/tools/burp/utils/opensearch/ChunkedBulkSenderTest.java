@@ -120,11 +120,13 @@ class ChunkedBulkSenderTest {
     }
 
     @Test
-    void noteTrafficPrefixTruncation_logsOncePerOperation() throws Exception {
+    void noteTrafficPrefixTruncation_countsOncePerOperationAndAggregatesNotices() throws Exception {
         ExportStats.resetForTests();
+        SearchBodyTruncationLog.flushAndClear();
+        SwingUtilities.invokeAndWait(() -> {});
         List<String> messages = new CopyOnWriteArrayList<>();
         Logger.LogListener listener = (level, message) -> {
-            if ("INFO".equals(level) && message.contains("Prefix-truncated traffic document")) {
+            if ("INFO".equals(level) && message.contains("Prefix-truncated ")) {
                 messages.add(message);
             }
         };
@@ -141,11 +143,16 @@ class ChunkedBulkSenderTest {
             SwingUtilities.invokeAndWait(() -> {});
 
             assertThat(ExportStats.getSearchBodyPrefixTruncations("traffic")).isEqualTo(2L);
+            assertThat(messages).hasSize(1);
+            SearchBodyTruncationLog.flushAndClear();
+            SwingUtilities.invokeAndWait(() -> {});
             assertThat(messages).hasSize(2).allSatisfy(message ->
                     assertThat(message).contains(
-                            "524288 bytes",
+                            "1 document(s)",
+                            "budget=524288 bytes",
                             "search path only; files sink unchanged"));
         } finally {
+            SearchBodyTruncationLog.flushAndClear();
             Logger.unregisterListener(listener);
             Logger.resetState();
             ExportStats.resetForTests();

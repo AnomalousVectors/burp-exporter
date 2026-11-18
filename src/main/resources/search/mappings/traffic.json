@@ -49,7 +49,8 @@
               "observed_at": { "type": "date" },
               "window_ends_at": { "type": "date" },
               "response_state": { "type": "keyword", "ignore_above": 8191 },
-              "observation_state": { "type": "keyword", "ignore_above": 8191 }
+              "observation_state": { "type": "keyword", "ignore_above": 8191 },
+              "grpc_status_state": { "type": "keyword", "ignore_above": 8191 }
             }
           },
           "schema_version": { "type": "keyword", "ignore_above": 8191 },
@@ -154,6 +155,8 @@
         "properties": {
           "body": {
             "properties": {
+              "omitted": { "type": "boolean" },
+              "omission_reason": { "type": "keyword", "ignore_above": 8191 },
               "b64": { "type": "binary", "doc_values": false },
               "content_encoding": {
                 "properties": {
