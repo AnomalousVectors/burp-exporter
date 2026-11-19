@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.StringKeyedMaps;
 import burp.api.montoya.core.Marker;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.http.handler.HttpResponseReceived;
@@ -753,14 +754,63 @@ public final class RequestResponseDocBuilder {
     /**
      * Builds a response sub-document for the traffic index ({@code status}, {@code protocol},
      * nested {@code mime_type}, headers, body, cookies).
+     *
+     * <p>Performs body preparation synchronously; callers must keep potentially large message
+     * work off forwarding callbacks and the EDT. Does not modify the source response.</p>
+     *
+     * @param response readable source response; must not be {@code null}
+     * @return mutable response document with the existing video-body omission policy applied
+     * @throws RuntimeException if a required source accessor or body preparation fails
      */
     public static Map<String, Object> buildTrafficResponseDoc(HttpResponse response) {
+        PreparedTrafficResponse prepared = prepareTrafficResponse(response);
+        prepared.complete();
+        return prepared.document();
+    }
+
+    // Only the streaming worker uses the deferred view. It keeps all metadata fresh but can
+    // compare raw-body digests before Base64, decompression and text preparation. Nothing from
+    // this short-lived preparation is cached across polls except the worker's digest strings.
+    static PreparedTrafficResponse prepareTrafficResponse(HttpResponse response) {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("status", TrafficResponseStatusFields.from(response));
         resp.put("protocol", TrafficProtocolFields.responseProtocol(safeResponseHttpVersion(response)));
-        populateResponsePayload(resp, response, true);
-        return resp;
+        ResponseBodyPreparation body = populateResponsePayload(resp, response, true, true);
+        return new PreparedTrafficResponse(resp, body);
     }
+
+    static final class PreparedTrafficResponse {
+        private final Map<String, Object> document;
+        private ResponseBodyPreparation body;
+
+        private PreparedTrafficResponse(Map<String, Object> document, ResponseBodyPreparation body) {
+            this.document = document;
+            this.body = body;
+        }
+
+        Map<String, Object> document() {
+            return document;
+        }
+
+        Map<String, Object> bodyInputs() {
+            if (body == null) return Map.of();
+            return Map.of("sha256", body.bytes == null ? "absent" : SnapshotFingerprint.ofBytes(body.bytes),
+                    "hints", body.hints, "textual", body.textual, "offset", body.offset);
+        }
+
+        void complete() {
+            if (body == null) return;
+            Map<String, Object> prepared = HttpMessageDocSupport.buildBodyContent(
+                    body.bytes, body.headers, body.hints, body.textual, body.offset, false);
+            // Markers and any Montoya-derived attributes were already read for comparison.
+            prepared.putAll(StringKeyedMaps.nested(document, "body", LinkedHashMap::new));
+            document.put("body", prepared);
+            body = null;
+        }
+    }
+
+    private record ResponseBodyPreparation(byte[] bytes, List<HttpHeader> headers,
+            List<String> hints, boolean textual, int offset) { }
 
     /**
      * Empty traffic-index response used when a pair has no response yet (orphans, history rows).
@@ -786,6 +836,12 @@ public final class RequestResponseDocBuilder {
             Map<String, Object> resp,
             HttpResponse response,
             boolean trafficShape) {
+        populateResponsePayload(resp, response, trafficShape, false);
+    }
+
+    private static ResponseBodyPreparation populateResponsePayload(
+            Map<String, Object> resp, HttpResponse response, boolean trafficShape, boolean deferBody) {
+        ResponseBodyPreparation preparation = null;
         List<HttpHeader> responseHeaders = response.headers();
         resp.put("headers", HttpMessageDocSupport.headersToList(responseHeaders));
         String responseDate = HttpMessageDocSupport.headerValue(responseHeaders, "Date");
@@ -816,17 +872,18 @@ public final class RequestResponseDocBuilder {
         } else {
             var sourceBody = response.body();
             byte[] bodyBytes = sourceBody == null ? null : sourceBody.getBytes();
-            HttpMessageDocSupport.putBodyFields(
-                resp,
-                bodyBytes,
-                responseHeaders,
-                HttpMessageDocSupport.mediaTypeHints(
+            List<String> hints = HttpMessageDocSupport.mediaTypeHints(
                         HttpMessageDocSupport.mimeTypeHint(mime),
                         HttpMessageDocSupport.mimeTypeHint(stated),
-                        HttpMessageDocSupport.mimeTypeHint(inferred)),
-                montoyaTextualHint,
-                response.bodyOffset(),
-                false);
+                        HttpMessageDocSupport.mimeTypeHint(inferred));
+            if (deferBody) {
+                resp.put("body", new LinkedHashMap<String, Object>());
+                preparation = new ResponseBodyPreparation(bodyBytes, responseHeaders, hints,
+                        montoyaTextualHint, response.bodyOffset());
+            } else {
+                HttpMessageDocSupport.putBodyFields(resp, bodyBytes, responseHeaders, hints,
+                        montoyaTextualHint, response.bodyOffset(), false);
+            }
         }
 
         if (trafficShape) {
@@ -838,6 +895,7 @@ public final class RequestResponseDocBuilder {
         if (!omitVideo && response instanceof HttpResponseReceived received) {
             putResponseAttributes(resp, received, trafficShape);
         }
+        return preparation;
     }
 
     // Content type and Burp's classification are used, never a filename extension or a blanket

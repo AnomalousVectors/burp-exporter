@@ -16,6 +16,14 @@ final class SnapshotFingerprint {
 
     private SnapshotFingerprint() { }
 
+    static String ofBytes(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 unavailable", e);
+        }
+    }
+
     static String of(Map<String, Object> document) {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");

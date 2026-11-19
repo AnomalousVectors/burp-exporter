@@ -87,6 +87,185 @@ class StreamingProxyRecoveryTest {
     }
 
     @Test
+    void finalReadSharesRemainingTimeWithoutTakingTheDeliveryAndTeardownReserve() {
+        assertThat(StreamingPollPolicy.finalReadBudgetMs(20_000L)).isEqualTo(10_000L);
+        assertThat(StreamingPollPolicy.finalReadBudgetMs(15_000L)).isEqualTo(7_500L);
+        assertThat(StreamingPollPolicy.finalReadBudgetMs(10_000L)).isEqualTo(4_000L);
+        assertThat(StreamingPollPolicy.finalReadBudgetMs(6_001L)).isEqualTo(1L);
+        assertThat(StreamingPollPolicy.finalReadBudgetMs(6_000L)).isZero();
+        assertThat(StreamingPollPolicy.finalReadBudgetMs(1L)).isZero();
+        assertThat(StreamingPollPolicy.finalReadBudgetMs(0L)).isZero();
+    }
+
+    @Test
+    void lateFinalReadCannotPublishAfterItsOwnAllowanceEvenWithSharedStopTimeRemaining()
+            throws Exception {
+        observer.tick();
+        ProxyHttpRequestResponse source = row(1_098, WALL + 100L);
+        rows.add(source);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        outputs.clear();
+        var deadline = StreamingProxyRecovery.class.getDeclaredField("finalReadDeadline");
+        deadline.setAccessible(true);
+        deadline.setLong(observer, clock.get() + 100L);
+        HttpResponse response = source.originalResponse();
+        when(source.originalResponse()).thenAnswer(call -> {
+            clock.addAndGet(101L);
+            body(response, "data: late tail\n\n");
+            return response;
+        });
+        RuntimeConfig.beginExportStop();
+        RuntimeConfig.setExportStopping(true);
+        observer.observeFinalSnapshots();
+        assertThat(outputs).isEmpty();
+        assertThat(RuntimeConfig.remainingExportStopBudgetMs()).isGreaterThan(5_000L);
+        assertThat(StreamingProxyRecovery.status()).contains("final_unread=1");
+    }
+
+    @Test
+    void deferredBodyTracksDecodingHintsAndOffsetAndKeepsPrivateInputsOutOfExport() {
+        ProxyHttpRequestResponse source = row(1_097, WALL + 100L);
+        HttpResponse response = source.originalResponse();
+        var prepared = RequestResponseDocBuilder.prepareTrafficResponse(response);
+        String original = SnapshotFingerprint.of(prepared.bodyInputs());
+        assertThat(prepared.document().get("body")).isEqualTo(Map.of("markers", List.of()));
+        when(response.bodyOffset()).thenReturn(99);
+        var moved = RequestResponseDocBuilder.prepareTrafficResponse(response);
+        assertThat(SnapshotFingerprint.of(moved.bodyInputs())).isNotEqualTo(original);
+        when(response.inferredMimeType()).thenReturn(MimeType.JSON);
+        var hinted = RequestResponseDocBuilder.prepareTrafficResponse(response);
+        assertThat(SnapshotFingerprint.of(hinted.bodyInputs()))
+                .isNotEqualTo(SnapshotFingerprint.of(moved.bodyInputs()));
+        prepared.complete();
+        Map<String, Object> completed = new java.util.LinkedHashMap<>(prepared.document());
+        prepared.complete();
+        assertThat(prepared.document()).isEqualTo(completed);
+        assertThat(((Map<?, ?>) completed.get("body")).keySet().stream().map(String::valueOf).toList())
+                .contains("b64", "text", "markers").doesNotContain("sha256", "hints");
+    }
+
+    @Test
+    void unchangedResponseSkipsBodyPreparationButMetadataAndSameLengthChangesDoNot() {
+        observer.tick();
+        ProxyHttpRequestResponse source = row(98, WALL + 100L);
+        rows.add(source);
+        HttpResponse response = source.originalResponse();
+        try (var bodies = org.mockito.Mockito.mockStatic(HttpMessageDocSupport.class,
+                org.mockito.Mockito.CALLS_REAL_METHODS)) {
+            for (int i = 0; i < 3; i++) {
+                clock.addAndGet(5_000L);
+                observer.tick();
+            }
+            assertThat(outputs).hasSize(1);
+            bodies.verify(() -> HttpMessageDocSupport.buildBodyContent(
+                    org.mockito.ArgumentMatchers.any(byte[].class), any(), any(),
+                    org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyInt(),
+                    org.mockito.ArgumentMatchers.eq(false)), org.mockito.Mockito.times(1));
+            when(source.annotations().notes()).thenReturn("updated user notes");
+            clock.addAndGet(5_000L);
+            observer.tick();
+            when(response.reasonPhrase()).thenReturn("Changed metadata");
+            clock.addAndGet(5_000L);
+            observer.tick();
+            body(response, "data: b\n\n");
+            clock.addAndGet(5_000L);
+            observer.tick();
+            assertThat(outputs).hasSize(4);
+            assertThat(bodyDoc(outputs.get(0)).get("b64"))
+                    .isEqualTo(bodyDoc(outputs.get(2)).get("b64"))
+                    .isNotEqualTo(bodyDoc(outputs.get(3)).get("b64"));
+            assertThat(capture(outputs.getLast()).get("revision")).isEqualTo(4L);
+            verify(source.annotations(), never()).setNotes(any(String.class));
+        }
+    }
+
+    @Test
+    void slowFinalReadBeyondOneSecondStillPublishesAndLeavesDeliveryTime() throws Exception {
+        ProxyHttpRequestResponse source = row(99, System.currentTimeMillis() + 100L);
+        HttpResponse response = source.originalResponse();
+        when(source.originalResponse()).thenAnswer(call -> {
+            if (RuntimeConfig.isExportStopping()) {
+                Thread.sleep(1_200L);
+                body(response, "data: final tail\n\n");
+            }
+            return response;
+        });
+        rows.add(source);
+        MontoyaApiProvider.set(api);
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            StreamingProxyRecovery.start();
+            long initialDeadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3L);
+            while (TrafficExportQueue.getCurrentSize() == 0 && System.nanoTime() < initialDeadline) {
+                Thread.sleep(10L);
+            }
+            assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+            RuntimeConfig.beginExportStop();
+            RuntimeConfig.setExportStopping(true);
+            StreamingProxyRecovery.stop();
+            assertThat(StreamingProxyRecovery.status()).contains("final_unread=0", "snapshots=2");
+            assertThat(RuntimeConfig.remainingExportStopBudgetMs()).isGreaterThan(5_000L);
+        });
+    }
+
+    @Test
+    void forcedStopInterruptsFinalWaitAndOldReadCannotPublishIntoRestart() throws Exception {
+        var initial = new java.util.concurrent.CountDownLatch(1);
+        var held = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var returned = new java.util.concurrent.CountDownLatch(1);
+        ProxyHttpRequestResponse source = row(1_099, System.currentTimeMillis() + 100L);
+        HttpResponse response = source.originalResponse();
+        when(source.originalResponse()).thenAnswer(call -> {
+            if (RuntimeConfig.isExportStopping()) {
+                held.countDown();
+                boolean released = false;
+                while (!released) {
+                    try { released = release.await(5L, java.util.concurrent.TimeUnit.SECONDS); }
+                    catch (InterruptedException ignored) { /* Simulate a non-cooperative Burp read. */ }
+                }
+                returned.countDown();
+            } else initial.countDown();
+            return response;
+        });
+        rows.add(source);
+        MontoyaApiProvider.set(api);
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            StreamingProxyRecovery.start();
+            assertThat(initial.await(3L, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            RuntimeConfig.beginExportStop();
+            RuntimeConfig.setExportStopping(true);
+            Thread owner = new Thread(() -> {
+                RuntimeConfig.beginExportStopWorker(Thread.currentThread());
+                try { StreamingProxyRecovery.stop(); }
+                finally { RuntimeConfig.endExportStopWorker(Thread.currentThread()); }
+            });
+            owner.start();
+            try {
+                assertThat(held.await(3L, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                RuntimeConfig.requestExportStopForceAbort();
+                owner.join(2_000L);
+                assertThat(owner.isAlive()).isFalse();
+                int admitted = TrafficExportQueue.getCurrentSize();
+                RuntimeConfig.setExportRunning(false);
+                RuntimeConfig.setExportStopping(false);
+                RuntimeConfig.setExportRunning(true);
+                String stopped = StreamingProxyRecovery.status();
+                release.countDown();
+                assertThat(returned.await(2L, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                var oldWorker = ai.anomalousvectors.tools.burp.testutils.LazySchedulers.peek(
+                        StreamingProxyRecovery.class, "SCHEDULER");
+                assertThat(oldWorker).isNull();
+                assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(admitted);
+                assertThat(StreamingProxyRecovery.status()).isEqualTo(stopped);
+            } finally {
+                release.countDown();
+                owner.join(2_000L);
+            }
+        });
+    }
+
+    @Test
     void finalPassRefreshesEveryDueSmallStreamBeyondTheOrdinaryWorkSlice() {
         observer.tick();
         for (int i=0; i<32; i++) rows.add(row(1_000+i, WALL+100L));

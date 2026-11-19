@@ -9,6 +9,12 @@ final class StreamingPollPolicy {
     static final long WIRE_BYTES_PER_SECOND = 256L * 1024L;
     private long allowedAt;
 
+    // Preserve five seconds for delivery/validation plus the scheduler's one-second teardown.
+    // Half the remaining time also leaves larger backlogs a proportional share of Stop.
+    static long finalReadBudgetMs(long remainingStopMs) {
+        return Math.max(0L, Math.min(remainingStopMs / 2L, remainingStopMs - 6_000L));
+    }
+
     static long intervalMs(long ageMs) {
         if (ageMs < 30_000L) return 5_000L;
         if (ageMs < 120_000L) return 10_000L;

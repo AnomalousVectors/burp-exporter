@@ -52,6 +52,7 @@ public final class StreamingProxyRecovery {
     private final AtomicLong discoveryUntil = new AtomicLong();
     private volatile boolean closed;
     private volatile boolean finishing;
+    private volatile long finalReadDeadline = Long.MAX_VALUE;
     private boolean initialized;
     private long nextDiscovery;
     private long snapshots;
@@ -116,31 +117,40 @@ public final class StreamingProxyRecovery {
      *
      * <p>Available snapshots already admitted to the normal queue drain normally. Unread later
      * bytes are not claimed as captured; non-cooperative public API reads cannot publish after
-     * closure or into a new run. Safe to call repeatedly, off the EDT.</p>
+     * closure or into a new run. Final reads receive at most half the remaining Stop time and
+     * leave a delivery/cleanup reserve; they do not extend the shared deadline. Safe to call
+     * repeatedly, off the EDT. Interrupted waits preserve the caller's interrupt status.</p>
      */
     public static void stop() {
         StreamingProxyRecovery observer;
+        long readBudgetMs;
         synchronized (OWNER) {
             observer = current;
             // One Stop owner submits the final read; concurrent lifecycle cleanup is a no-op.
             if (observer == null || observer.finishing) return;
+            readBudgetMs = StreamingPollPolicy.finalReadBudgetMs(
+                    RuntimeConfig.remainingExportStopBudgetMs());
+            observer.finalReadDeadline = observer.clock.getAsLong() + readBudgetMs;
             observer.finishing = true;
             observer.finalUnread = -1;
         }
         if (observer != null && RuntimeConfig.isExportStopping()
-                && RuntimeConfig.remainingExportStopBudgetMs() > 0L
+                && readBudgetMs > 0L
                 && observer.active() && SCHEDULER.peek() != null) {
             var finalRead = SCHEDULER.peek().submit(observer::observeFinalSnapshots);
             try {
-                finalRead.get(Math.min(1_000L, RuntimeConfig.remainingExportStopBudgetMs()),
-                        TimeUnit.MILLISECONDS);
+                finalRead.get(readBudgetMs, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 finalRead.cancel(true);
-            } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+            } catch (java.util.concurrent.TimeoutException e) {
                 finalRead.cancel(true);
-                Logger.logWarnPanelOnly("[StreamingRecovery] Final observation exceeded the Stop "
-                        + "budget; earlier snapshots are retained.");
+                Logger.logWarnPanelOnly("[StreamingRecovery] Final observation exceeded its Stop "
+                        + "allowance; remaining time is reserved for delivery and cleanup.");
+            } catch (java.util.concurrent.ExecutionException e) {
+                finalRead.cancel(true);
+                Logger.logWarnPanelOnly("[StreamingRecovery] Final observation failed; "
+                        + "earlier snapshots are retained.");
             }
         }
         synchronized (OWNER) {
@@ -188,7 +198,8 @@ public final class StreamingProxyRecovery {
         boolean ownsStoppingRun = RuntimeConfig.isExportRunActive(token)
                 || (token.equals(RuntimeConfig.lastInvalidatedExportRunToken())
                 && !RuntimeConfig.currentExportRunToken().isValid());
-        return !closed && (enabled(token) || (finishing && RuntimeConfig.isExportStopping()
+        return !closed && (!finishing || clock.getAsLong() < finalReadDeadline)
+                && (enabled(token) || (finishing && RuntimeConfig.isExportStopping()
                 && ownsStoppingRun
                 && !RuntimeConfig.isExportStopForceAbortRequested()
                 && !RuntimeConfig.isExportStopBudgetExpired()));
@@ -358,9 +369,19 @@ public final class StreamingProxyRecovery {
         long wireBytes = wireBody == null ? 0L : wireBody.length();
         capture.nextRead = Math.min(capture.deadline,
                 now + StreamingPollPolicy.intervalMs(age, wireBytes));
-        Map<String, Object> document = document(row, request, response, inScope);
+        if (!active()) return false;
+        var preparedResponse = RequestResponseDocBuilder.prepareTrafficResponse(response);
+        Map<String, Object> document = document(row, request, preparedResponse.document(), inScope);
+        String preparationSignature = SnapshotFingerprint.of(Map.of(
+                "document", document, "body_inputs", preparedResponse.bodyInputs()));
+        if (preparationSignature.equals(capture.preparationSignature) && !finishing) {
+            diagnostics.unchanged();
+            return true;
+        }
+        preparedResponse.complete();
         String signature = SnapshotFingerprint.of(document);
         if (signature.equals(capture.signature) && !finishing) {
+            capture.preparationSignature = preparationSignature;
             diagnostics.unchanged();
             return true;
         }
@@ -387,6 +408,7 @@ public final class StreamingProxyRecovery {
         if (accepted) {
             capture.revision++;
             capture.signature = signature;
+            capture.preparationSignature = preparationSignature;
             snapshots++;
             snapshotWireBytes += wireBytes;
         }
@@ -399,7 +421,7 @@ public final class StreamingProxyRecovery {
     }
 
     private static Map<String, Object> document(ProxyHttpRequestResponse row, HttpRequest request,
-            HttpResponse response, boolean inScope) {
+            Map<String, Object> response, boolean inScope) {
         Map<String, Object> document = new LinkedHashMap<>();
         Map<String, Object> burp = new LinkedHashMap<>();
         burp.put("reporting_tool", "Proxy");
@@ -414,8 +436,7 @@ public final class StreamingProxyRecovery {
         requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
                 RequestResponseDocBuilder.safeRequestHttpVersion(request)));
         document.put("request", requestDoc);
-        document.put("response", response == null ? RequestResponseDocBuilder.emptyTrafficResponseDoc()
-                : RequestResponseDocBuilder.buildTrafficResponseDoc(response));
+        document.put("response", response);
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
         return document;
     }
@@ -455,6 +476,7 @@ public final class StreamingProxyRecovery {
         private long lastRead;
         private long revision;
         private String signature = "";
+        private String preparationSignature = "";
         private boolean stream;
 
         private Capture(int id, long deadline, long now) {
