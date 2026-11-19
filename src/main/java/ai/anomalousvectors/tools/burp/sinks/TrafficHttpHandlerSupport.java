@@ -364,7 +364,10 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     /**
-     * Builds the traffic document for OpenSearch. Caller must hold Burp HTTP thread.
+     * Builds a sink-neutral traffic document synchronously from readable callback views.
+     *
+     * <p>Live capture invokes this on Burp's callback thread before queue admission. This helper
+     * performs no destination I/O and does not acquire a Burp thread or lock.</p>
      *
      * @param response the received response (with initiating request)
      * @param request  the initiating request

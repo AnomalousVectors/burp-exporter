@@ -31,8 +31,9 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse;
  *
  * <p>Each exact History row owns an independent capture. Immutable, numbered snapshots may
  * overlap a request-only live HTTP observation; no cross-API pairing is attempted. All History
- * reads, message preparation and delivery run on one bounded, cost-paced worker, never on a
- * forwarding callback or the EDT. A five-minute observation deadline is not HTTP completion.</p>
+ * reads and message preparation run on one bounded, cost-paced worker, never on a forwarding
+ * callback or the EDT. Admitted snapshots use the ordinary traffic queue for asynchronous
+ * destination delivery. A five-minute observation deadline is not HTTP completion.</p>
  */
 public final class StreamingProxyRecovery {
     private static final Object OWNER = new Object();

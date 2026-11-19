@@ -755,8 +755,11 @@ public final class RequestResponseDocBuilder {
      * Builds a response sub-document for the traffic index ({@code status}, {@code protocol},
      * nested {@code mime_type}, headers, body, cookies).
      *
-     * <p>Performs body preparation synchronously; callers must keep potentially large message
-     * work off forwarding callbacks and the EDT. Does not modify the source response.</p>
+     * <p>Performs body preparation synchronously on the caller's thread without modifying the
+     * source response or sending to a destination. Live handlers invoke it during callback
+     * capture, so large bodies have callback cost; History snapshots and streaming observations
+     * invoke it on their background owners. Do not invoke potentially large preparation on the
+     * EDT.</p>
      *
      * @param response readable source response; must not be {@code null}
      * @return mutable response document with the existing video-body omission policy applied

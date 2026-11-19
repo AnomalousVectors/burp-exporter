@@ -33,13 +33,14 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.export.SearchBodyPrefixFitter;
 
 /**
- * Sends traffic documents to OpenSearch using a chunked POST to the standard Bulk API.
+ * Sends bounded traffic batches to the standard search database Bulk API.
  *
  * <p>Drains prepared {@link ai.anomalousvectors.tools.burp.sinks.TrafficQueueEntry} items into one
  * NDJSON body (single materialization for SigV4/HTTP). Avoids a full {@code BulkRequest} in
  * memory. Uses only the production Bulk API ({@code POST /&lt;index&gt;/_bulk}); not the
- * experimental Streaming Bulk API. Thread-safe for concurrent calls; each call performs one bulk
- * request. Used only by the traffic export path.</p>
+ * experimental Streaming Bulk API or HTTP chunked transfer. Thread-safe for concurrent calls;
+ * normally sends one bulk request, but a reduced live byte budget can require re-fitting and
+ * splitting before transport. Used only by the traffic export path.</p>
  *
  * @see <a href="https://docs.opensearch.org/latest/api-reference/document-apis/bulk/">Bulk API</a>
  */
@@ -48,10 +49,10 @@ public final class ChunkedBulkSender {
     private ChunkedBulkSender() {}
 
     /**
-     * Result of one chunked bulk request: success count and total documents sent.
+     * Outcome of one drained traffic batch, including any re-fitted sub-requests.
      */
     public static final class Result {
-        /** Number of documents that were successfully indexed. */
+        /** Successfully acknowledged operations, including {@code noop} outcomes. */
         public final int successCount;
         /** Total number of documents sent in this bulk request. */
         public final int attemptedCount;
@@ -75,7 +76,7 @@ public final class ChunkedBulkSender {
         /**
          * Creates a result without route attribution or explicit per-item details.
          *
-         * @param successCount successfully indexed documents
+         * @param successCount successfully acknowledged operations, including noops
          * @param attemptedCount attempted documents
          * @param attemptedBytes estimated bytes attempted
          * @param successBytes estimated bytes associated with successful documents
@@ -97,7 +98,7 @@ public final class ChunkedBulkSender {
         /**
          * Creates a result with traffic-route attribution.
          *
-         * @param successCount successfully indexed documents
+         * @param successCount successfully acknowledged operations, including noops
          * @param attemptedCount attempted documents
          * @param attemptedBytes estimated bytes attempted
          * @param successBytes estimated bytes associated with successful documents
@@ -131,7 +132,7 @@ public final class ChunkedBulkSender {
         /**
          * Creates a result with route attribution and a classified outcome.
          *
-         * @param successCount successfully indexed documents
+         * @param successCount successfully acknowledged operations, including noops
          * @param attemptedCount attempted documents
          * @param attemptedBytes estimated bytes attempted
          * @param successBytes estimated bytes associated with successful documents
@@ -169,7 +170,7 @@ public final class ChunkedBulkSender {
          *
          * <p>Map and list inputs are defensively copied.</p>
          *
-         * @param successCount successfully indexed documents
+         * @param successCount successfully acknowledged operations, including noops
          * @param attemptedCount attempted documents
          * @param attemptedBytes estimated bytes attempted
          * @param successBytes estimated bytes associated with successful documents
@@ -218,7 +219,7 @@ public final class ChunkedBulkSender {
     }
 
     /**
-     * Performs one chunked bulk index request: drains from the queue (respecting batch limits),
+     * Sends a bounded traffic batch: drains from the queue (respecting batch limits),
      * writes NDJSON to {@code POST &lt;baseUrl&gt;/&lt;indexName&gt;/_bulk}, parses the response.
      *
      * <p>Documents are prepared at enqueue time. Batch is limited by
@@ -227,7 +228,8 @@ public final class ChunkedBulkSender {
      * is available within the first {@code maxWaitMs}, returns a result with zero attempted
      * count (no request is sent). The method blocks while waiting for the first entry, offered-load
      * pacing, and HTTP completion. Interruption restores the interrupt flag and returns a
-     * non-success result; stale or stopped export runs do not mutate current-run state.</p>
+     * non-success result; stale or stopped export runs do not mutate current-run state. If the live
+     * byte budget shrinks before transport, the batch may be re-fitted and sent in sub-requests.</p>
      *
      * @param baseUrl    search-database base URL
      * @param indexName  target index name (e.g. {@code tool-burp-traffic})
@@ -546,11 +548,11 @@ public final class ChunkedBulkSender {
     }
 
     /**
-     * Adds a preemptive Basic Auth header when credentials are configured.
+     * Applies configured header-based authentication before the first request.
      *
-     * <p>Chunked NDJSON entities are not repeatable. If authentication waits for a 401 challenge,
-     * some clients cannot transparently replay the same request body. Sending Authorization on the
-     * first request avoids repeated 401 loops on the live traffic bulk path.</p>
+     * <p>The sender materializes repeatable NDJSON bytes. Sending configured Basic, API-key or
+     * bearer authorization immediately avoids an unnecessary challenge round trip; certificate
+     * authentication belongs to the transport rather than this header helper.</p>
      *
      * @param post mutable request that receives a sensitive Authorization header when configured
      */
@@ -878,7 +880,7 @@ public final class ChunkedBulkSender {
                 runningBytes += docBytes;
                 attemptedBytesRef.addAndGet(docBytes);
                 attemptedTrafficRoutes.add(TrafficRouteBucket.fromPrepared(prepared));
-                // Files always receive the original prepared document (full bodies).
+                // Files receive the original prepared source, not the search-only fitted copy.
                 acceptedDocumentsForFileEmit.add(prepared);
                 return true;
             }

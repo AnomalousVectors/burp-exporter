@@ -41,7 +41,8 @@ public final class PreparedBulkSender {
      * structurally prefix-truncated via {@link SearchBodyPrefixFitter}; HTTP is refused if the
      * fitted NDJSON still exceeds the latest live budget. If pacing observes a smaller budget
      * before HTTP starts, the derived search copies are fitted and split again. Original list
-     * entries are never mutated (dual-sink file emit stays full).</p>
+     * entries are never mutated; dual-sink Files output retains the original prepared source
+     * after capture policy and field selection.</p>
      *
      * @param baseUrl search database base URL
      * @param indexName target index name
