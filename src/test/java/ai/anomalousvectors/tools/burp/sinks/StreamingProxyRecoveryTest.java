@@ -27,6 +27,7 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.HttpService;
+import burp.api.montoya.http.message.HttpHeader;
 import burp.api.montoya.http.message.MimeType;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
@@ -307,6 +308,40 @@ class StreamingProxyRecoveryTest {
         clock.addAndGet(5_000L);
         observer.tick();
         assertThat(capture(outputs.getLast()).get("grpc_status_state")).isEqualTo("observed");
+    }
+
+    @Test
+    void grpcHeaderOnlyStatusChangePublishesWithTheSameResponseBytes() {
+        observer.tick();
+        ProxyHttpRequestResponse source = row(1_101, WALL + 100L);
+        rows.add(source);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        HttpResponse response = source.originalResponse();
+        HttpHeader type = mock(HttpHeader.class);
+        when(type.name()).thenReturn("Content-Type");
+        when(type.value()).thenReturn("application/grpc+proto");
+        when(response.headers()).thenReturn(List.of(type));
+        when(response.headerValue("Content-Type")).thenReturn("application/grpc+proto");
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(capture(outputs.getLast()).get("grpc_status_state")).isEqualTo("not_observed");
+        Map<?, ?> originalBody = bodyDoc(outputs.getLast());
+        HttpHeader status = mock(HttpHeader.class);
+        when(status.name()).thenReturn("grpc-status");
+        when(status.value()).thenReturn("7");
+        when(response.headers()).thenReturn(List.of(type, status));
+        when(response.headerValue("grpc-status")).thenReturn("7");
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(3);
+        assertThat(capture(outputs.getLast()).get("grpc_status_state")).isEqualTo("observed");
+        assertThat(bodyDoc(outputs.getLast())).isEqualTo(originalBody);
+        Map<?, ?> exportedResponse = (Map<?, ?>) outputs.getLast().get("response");
+        assertThat(exportedResponse.get("headers").toString()).contains("grpc-status", "7");
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(3);
     }
 
     @Test
