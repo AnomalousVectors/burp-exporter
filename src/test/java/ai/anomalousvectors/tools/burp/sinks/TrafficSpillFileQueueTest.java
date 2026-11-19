@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -22,11 +23,57 @@ import org.junit.jupiter.params.provider.ValueSource;
 
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.export.ExportLineCodec;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 class TrafficSpillFileQueueTest {
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void poll_preservesLargeBase64BodiesBeyondDefaultParserLimit(boolean preparedPoll)
+            throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-large-body");
+        try {
+            byte[] body = new byte[16 * 1024 * 1024];
+            for (int i = 0; i < body.length; i++) {
+                body[i] = (byte) i;
+            }
+            Map<String, Object> document = Map.of(
+                    "request", Map.of("url", Map.of("raw", "https://spill.example/large")),
+                    "response", Map.of("body", Map.of(
+                            "length", body.length, "b64", Base64.getEncoder().encodeToString(body))));
+            byte[] bulkBytes = ExportLineCodec.bulkNdjsonBytes("large-spill-operation", document);
+            TrafficQueueEntry entry = TrafficQueueEntry.fromPrepared(new PreparedExportDocument(
+                    "large-spill-operation", "tool-burp-traffic", "traffic",
+                    document, bulkBytes.length, bulkBytes, TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT));
+            TrafficSpillFileQueue queue = new TrafficSpillFileQueue(dir, 10, 128L * 1024 * 1024);
+            long dropsBefore = ExportStats.getTrafficSpillDrops();
+            assertThat(queue.offerDetailed(entry)).isEqualTo(TrafficSpillFileQueue.OfferResult.QUEUED);
+
+            if (preparedPoll) {
+                TrafficQueueEntry recovered = queue.pollEntry();
+                assertThat(recovered).isNotNull();
+                assertThat(recovered.document()).isEqualTo(document);
+                assertThat(recovered.prepared().operationId()).isEqualTo("large-spill-operation");
+                assertThat(recovered.prepared().indexName()).isEqualTo("tool-burp-traffic");
+                assertThat(recovered.prepared().indexKey()).isEqualTo("traffic");
+                assertThat(recovered.prepared().trafficRouteKey())
+                        .isEqualTo(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT);
+                assertThat(recovered.prepared().estimatedBulkBytes()).isEqualTo(bulkBytes.length);
+                assertThat(recovered.prepared().bulkNdjsonBytes()).isEqualTo(bulkBytes);
+            } else {
+                assertThat(queue.poll()).isEqualTo(document);
+            }
+            assertThat(queue.pollEntry()).isNull();
+            assertThat(queue.size()).isZero();
+            assertThat(queue.bytes()).isZero();
+            assertThat(ExportStats.getTrafficSpillDrops()).isEqualTo(dropsBefore);
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
 
     @ParameterizedTest
     @ValueSource(strings = {"null", "[]", "\"damaged\"", "true", "7", "", "{broken"})
@@ -297,6 +344,8 @@ class TrafficSpillFileQueueTest {
             byte[] damagedBytes = damagedContent.getBytes(StandardCharsets.UTF_8);
             System.arraycopy(damagedBytes, 0, replacement, 0, damagedBytes.length);
             Files.write(firstFile, replacement);
+            long dropsBefore = ExportStats.getTrafficSpillDrops();
+            long parseDropsBefore = ExportStats.getTrafficDropReasonCount("spill_parse_failed");
 
             if (preparedPoll) {
                 TrafficQueueEntry recovered = queue.pollEntry();
@@ -312,6 +361,9 @@ class TrafficSpillFileQueueTest {
                 assertThat(queue.poll()).isNull();
             }
             assertThat(errors).hasSize(1);
+            assertThat(ExportStats.getTrafficSpillDrops()).isEqualTo(dropsBefore + 1);
+            assertThat(ExportStats.getTrafficDropReasonCount("spill_parse_failed"))
+                    .isEqualTo(parseDropsBefore + 1);
             assertThat(queue.size()).isZero();
             assertThat(queue.bytes()).isZero();
             try (Stream<Path> files = Files.list(dir)) {

@@ -1045,7 +1045,7 @@ public final class ExportStats {
     }
 
     /**
-     * Records one or more traffic documents dropped because spill storage was unavailable/full.
+     * Records traffic documents lost to spill rejection or unreadable spilled content.
      *
      * @param count number of dropped spill documents; ignored if {@code <= 0}
      */
@@ -1055,7 +1055,7 @@ public final class ExportStats {
         }
     }
 
-    /** Returns total traffic documents dropped due to spill rejection this session. */
+    /** Returns total traffic documents lost to spill rejection or parse failure this session. */
     public static long getTrafficSpillDrops() {
         return trafficSpillDrops.get();
     }

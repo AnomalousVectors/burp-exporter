@@ -18,6 +18,8 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.JsonFactory;
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -283,6 +285,7 @@ final class TrafficSpillFileQueue {
                 try {
                     return extractDocument(payload);
                 } catch (IOException e) {
+                    recordParseDrop();
                     Logger.logError("[TrafficSpill] Parse failed: " + e.getMessage());
                 }
             }
@@ -303,6 +306,7 @@ final class TrafficSpillFileQueue {
                 try {
                     return extractEntry(payload);
                 } catch (IOException e) {
+                    recordParseDrop();
                     Logger.logError("[TrafficSpill] Parse failed: " + e.getMessage());
                 }
             }
@@ -641,12 +645,28 @@ final class TrafficSpillFileQueue {
     }
 
     private static JsonNode readSpillObject(byte[] payload) throws IOException {
-        JsonNode root = JSON.readTree(payload);
+        JsonFactory factory = JSON.getFactory();
+        if (payload.length > factory.streamReadConstraints().getMaxStringLength()) {
+            // Admitted bodies and prepared NDJSON are Base64 strings that may exceed Jackson's
+            // default. Bound this private reader by the already allocated spill payload instead;
+            // no decoded JSON string can contain more characters than its enclosing UTF-8 bytes.
+            factory = factory.rebuild().streamReadConstraints(factory.streamReadConstraints()
+                    .rebuild().maxStringLength(payload.length).build()).build();
+        }
+        JsonNode root;
+        try (JsonParser parser = factory.createParser(payload)) {
+            root = JSON.readTree(parser);
+        }
         // Valid non-object JSON must use the same skip-and-continue path as broken JSON syntax.
         if (root == null || !root.isObject()) {
             throw new IOException("Traffic spill must contain a JSON object.");
         }
         return root;
+    }
+
+    private static void recordParseDrop() {
+        ExportStats.recordTrafficSpillDrop(1);
+        ExportStats.recordTrafficDropReason("spill_parse_failed", 1);
     }
 
     private Map<String, Object> extractDocument(JsonNode root) {
