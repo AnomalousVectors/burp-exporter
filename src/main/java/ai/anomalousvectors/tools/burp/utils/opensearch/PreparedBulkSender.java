@@ -345,7 +345,8 @@ public final class PreparedBulkSender {
      * Parses a prepared-bulk response for isolated callers and tests.
      *
      * <p>Malformed, blank, or incomplete responses become explicit failed-item outcomes; the
-     * method does not throw parse failures.</p>
+     * method does not throw parse failures. Excess response items make the entire attempted
+     * batch transient because its positional acknowledgments cannot be trusted.</p>
      *
      * @param responseBody raw response body
      * @param attemptedCount number of request items expected
@@ -369,6 +370,15 @@ public final class PreparedBulkSender {
                     attemptedCount, "bulk_response_parse_exception", "Bulk response body was blank");
         }
         BulkNdjsonResponseParser.ParsedBulk parsed = BulkNdjsonResponseParser.parse(responseBody, indexName);
+        if (parsed.responseItemCount() > attemptedCount) {
+            // An overlong response cannot prove which acknowledgments belong to this batch.
+            // Retry its stable operation IDs rather than inventing successes or permanent drops.
+            return failedBulkResult(
+                    attemptedCount,
+                    "bulk_response_item_count_mismatch",
+                    "Bulk response contained excess items: expected=" + attemptedCount
+                            + ", received=" + parsed.responseItemCount());
+        }
         if (requestId > 0L) {
             BulkNdjsonResponseParser.warnIfOutcomeFlagMismatch(parsed, indexName, requestId);
         }
@@ -382,7 +392,7 @@ public final class PreparedBulkSender {
                     "Bulk response could not be parsed into item outcomes");
         }
         int observed = parsed.breakdown().successTotal() + parsed.breakdown().failed();
-        if (observed >= attemptedCount) {
+        if (observed == attemptedCount) {
             return new OpenSearchClientWrapper.BulkResult(parsed.breakdown(), parsed.failedItems());
         }
         List<OpenSearchClientWrapper.FailedItem> completedFailures =

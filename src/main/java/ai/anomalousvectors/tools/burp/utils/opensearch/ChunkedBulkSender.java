@@ -583,7 +583,7 @@ public final class ChunkedBulkSender {
      *
      * @param responseBody raw bulk response
      * @param attemptedCount expected request item count
-     * @return normalized result with explicit failures for malformed or omitted items
+     * @return normalized result with explicit failures for malformed, omitted, or excess items
      */
     static Result parseBulkResponse(String responseBody, int attemptedCount) {
         return parseBulkResponse(responseBody, attemptedCount, List.of(), "");
@@ -596,7 +596,7 @@ public final class ChunkedBulkSender {
      * @param attemptedCount expected request item count
      * @param attemptedTrafficRoutes routes aligned with request order
      * @param indexName target index used in diagnostics
-     * @return normalized and attributed result
+     * @return normalized and attributed result; excess items make all attempts transient
      */
     static Result parseBulkResponse(
             String responseBody,
@@ -622,6 +622,17 @@ public final class ChunkedBulkSender {
                     "Bulk response body was blank");
         }
         BulkNdjsonResponseParser.ParsedBulk parsed = BulkNdjsonResponseParser.parse(responseBody, indexName);
+        if (parsed.responseItemCount() > attemptedCount) {
+            // An overlong response cannot establish request-order identity. Keep every attempted
+            // document retryable instead of trusting surplus successes or permanent rejections.
+            return failedResult(
+                    attemptedCount,
+                    0,
+                    attemptedTrafficRoutes,
+                    "bulk_response_item_count_mismatch",
+                    "Bulk response contained excess items: expected=" + attemptedCount
+                            + ", received=" + parsed.responseItemCount());
+        }
         if (requestId > 0L) {
             BulkNdjsonResponseParser.warnIfOutcomeFlagMismatch(parsed, indexName, requestId);
         }

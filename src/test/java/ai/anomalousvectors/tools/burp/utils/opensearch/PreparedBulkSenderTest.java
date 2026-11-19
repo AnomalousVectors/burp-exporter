@@ -15,7 +15,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -80,6 +83,45 @@ class PreparedBulkSenderTest {
             assertThat(item.index()).isEqualTo(1);
             assertThat(item.type()).isEqualTo("bulk_response_incomplete");
         });
+    }
+
+    @ParameterizedTest
+    @CsvSource({"201, 201", "201, 400", "400, 201"})
+    void parseBulkResponse_excessItems_retriesExactBatchWithoutTrustingItemPositions(
+            int firstStatus, int extraStatus) {
+        String body = """
+                {"items":[
+                  {"index":{"status":%d,"error":{"type":"mapper_parsing_exception"}}},
+                  {"index":{"status":201}},
+                  {"index":{"status":%d,"error":{"type":"mapper_parsing_exception"}}}
+                ]}
+                """.formatted(firstStatus, extraStatus);
+        List<PreparedExportDocument> documents = List.of(
+                ExportDocumentIdentity.prepare("traffic-idx", "traffic", Map.of("message", "first")),
+                ExportDocumentIdentity.prepare("traffic-idx", "traffic", Map.of("message", "second")));
+        ExportStats.resetForTests();
+        try {
+            OpenSearchClientWrapper.BulkResult result =
+                    PreparedBulkSender.parseBulkResponse(body, documents.size(), "traffic-idx");
+
+            assertThat(result.successCount()).isZero();
+            assertThat(result.breakdown().failed()).isEqualTo(2);
+            assertThat(result.maxSuccessfulRequestBytes()).isZero();
+            assertThat(result.failedItems).extracting(item -> Objects.requireNonNull(item).index())
+                    .containsExactly(0, 1);
+            assertThat(result.failedItems).allSatisfy(item -> {
+                assertThat(item.type()).isEqualTo("bulk_response_item_count_mismatch");
+                assertThat(item.reason()).contains("expected=2", "received=3");
+            });
+            List<PreparedExportDocument> retry = IndexingRetryCoordinator.filterTransientFailures(
+                    documents, result.failedItems, result.successCount(), "traffic-idx", "traffic");
+            assertThat(retry).hasSize(2);
+            assertThat(retry.get(0)).isSameAs(documents.get(0));
+            assertThat(retry.get(1)).isSameAs(documents.get(1));
+            assertThat(ExportStats.getTotalPermanentDrops()).isZero();
+        } finally {
+            ExportStats.resetForTests();
+        }
     }
 
     @Test
