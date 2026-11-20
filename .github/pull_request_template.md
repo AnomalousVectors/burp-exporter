@@ -12,7 +12,7 @@ Describe what changed and why.
 
 - [ ] Passed full build:
   - Add opensearch.url to your host file and point to your configured OpenSearch instance.
-  - Run `gradle clean build -POPENSEARCH_USER=admin -POPENSEARCH_PASSWORD=<yourPassword>`
+  - Run `./gradlew clean build -POPENSEARCH_USER=admin "-POPENSEARCH_PASSWORD=<yourPassword>"` (on Windows, replace `./gradlew` with `.\gradlew.bat`).
 - [ ] Loaded successfully in Burp Suite
 - [ ] UI changes validated visually
 - [ ] No unrelated files were modified
