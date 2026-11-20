@@ -7,6 +7,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 import javax.swing.SwingUtilities;
 
+import tools.jackson.databind.json.JsonMapper;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -111,6 +113,10 @@ class StatsClipboardSnapshotTest {
         assertThat(text).contains("Database Exported Size:");
         assertThat(text).contains("Files Exported Size:");
         assertThat(text).contains("Traffic Spill Status:");
+        assertThat(text.substring(text.indexOf("\nOverview\n"), text.indexOf("\nProcess\n")))
+                .doesNotContain("Streaming Recovery", "tracking=");
+        assertThat(text).contains("\nStreaming Recovery\n  Status: "
+                + ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         assertThat(text).doesNotContain("Proxy Correlation", "History Lookups", "Pending Durable");
         assertThat(text).contains("Permanent Drop Reasons: max_fit_exceeded=2");
         assertThat(text).contains("Body Truncations by Index: traffic: 1");
@@ -145,6 +151,11 @@ class StatsClipboardSnapshotTest {
                 .contains("Mis-gate Suspects")
                 .contains("\"Bulk Byte Budget\":\"5.0 MiB\"")
                 .contains("\"Snapshot Flush Cap\":\"3\"");
+        var payload = JsonMapper.builderWithJackson2Defaults().build().readTree(
+                infoMessages.get(1).substring("[Stats] Session stop ".length()));
+        assertThat(payload.path("sections").path("Overview").has("Streaming Recovery")).isFalse();
+        assertThat(payload.path("sections").path("Streaming Recovery").path("Status").asString())
+                .isEqualTo(ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         assertThat(infoMessages).noneMatch(message -> message.contains("\"kind\":\"search_counts\""));
     }
 

@@ -117,6 +117,8 @@ public final class StatsClipboardSnapshot {
         }
         if (RuntimeConfig.isAnyTrafficExportEnabled()) {
             sections.put("Traffic Spill", buildOpenSearchSpillSection());
+            sections.put("Streaming Recovery", Map.of("Status",
+                    ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status()));
         }
         if (fileVisible) {
             sections.put("Files", buildFilesSection());
@@ -127,7 +129,6 @@ public final class StatsClipboardSnapshot {
     private static Map<String, String> buildOverviewSection(boolean fileVisible, boolean openSearchVisible) {
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Export Running", RuntimeConfig.isExportRunning() ? "Yes" : "No");
-        rows.put("Streaming Recovery", ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         if (openSearchVisible) {
             rows.put("Soft Outage", StatsPanelFormatters.formatSoftOutage(
                     IndexingRetryCoordinator.getInstance().isSoftCapacityOutage()));

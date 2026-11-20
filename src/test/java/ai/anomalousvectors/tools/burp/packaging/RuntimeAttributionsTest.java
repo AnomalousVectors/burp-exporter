@@ -11,6 +11,7 @@ import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 import java.util.jar.JarFile;
@@ -120,6 +121,68 @@ class RuntimeAttributionsTest {
                     .filter(name -> isLegal(name) && !name.startsWith(ROOT))
                     .filter(name -> !Files.isRegularFile(applicationResources.resolve(name))).toList()).isEmpty();
         }
+    }
+
+    @Test
+    void packaging_removesOnlyRedundantEmbeddedPomsAndJvmIrrelevantBuildInputs() throws Exception {
+        int redundant = 0;
+        int distinct = 0;
+        try (JarFile packaged = packagedJar()) {
+            assertThat(packaged.getJarEntry("VersionInfo.java")).isNull();
+            assertThat(packaged.getJarEntry("META-INF/INDEX.LIST")).isNull();
+            assertThat(packaged.stream().map(entry -> entry.getName())
+                    .filter(name -> name.startsWith("META-INF/native-image/")).toList()).isEmpty();
+            Map<String, Path> artifacts = runtimeArtifacts();
+            for (JsonNode component : inventory(packaged).path("components")) {
+                String key = component.path("coordinate").asString() + "/" + component.path("artifact").asString();
+                byte[] published;
+                try (InputStream input = resource(packaged, component.path("pom").asString())) {
+                    published = input.readAllBytes();
+                }
+                try (JarFile original = new JarFile(artifacts.get(key).toFile())) {
+                    for (var entry : original.stream().filter(item -> !item.isDirectory()
+                            && item.getName().startsWith("META-INF/maven/")
+                            && item.getName().endsWith("/pom.xml")).toList()) {
+                        byte[] bytes;
+                        try (InputStream input = original.getInputStream(entry)) {
+                            bytes = input.readAllBytes();
+                        }
+                        if (Arrays.equals(bytes, published)) {
+                            assertThat(packaged.getJarEntry(entry.getName())).as(entry.getName()).isNull();
+                            redundant++;
+                        } else {
+                            try (InputStream input = resource(packaged, entry.getName())) {
+                                assertThat(input.readAllBytes()).as(entry.getName()).isEqualTo(bytes);
+                            }
+                            distinct++;
+                        }
+                    }
+                }
+            }
+        }
+        assertThat(redundant).as("Published POM copies actually removed").isPositive();
+        assertThat(distinct).as("Distinct embedded POM evidence actually retained").isPositive();
+    }
+
+    @Test
+    void mavenVersionProperties_surviveAtOriginalLookupPathsByteForByte() throws Exception {
+        int checked = 0;
+        try (JarFile packaged = packagedJar()) {
+            for (Path dependency : runtimeArtifacts().values()) {
+                try (JarFile original = new JarFile(dependency.toFile())) {
+                    for (var entry : original.stream().filter(item -> !item.isDirectory()
+                            && item.getName().startsWith("META-INF/maven/")
+                            && item.getName().endsWith("/pom.properties")).toList()) {
+                        try (InputStream source = original.getInputStream(entry);
+                                InputStream output = resource(packaged, entry.getName())) {
+                            assertThat(output.readAllBytes()).as(entry.getName()).isEqualTo(source.readAllBytes());
+                        }
+                        checked++;
+                    }
+                }
+            }
+        }
+        assertThat(checked).isPositive();
     }
 
     private static JsonNode inventory(JarFile jar) throws IOException {

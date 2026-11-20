@@ -128,7 +128,19 @@ spotbugs {
     reportLevel.set(Confidence.HIGH)
 }
 
+// SpotBugs does not resolve this upstream multi-release-only package. Give analysis the same
+// Java 21 adapter view used by the distributable, without changing or analyzing dependency bytes.
+val spotbugsJackson3Adapter = tasks.register<Sync>("spotbugsJackson3Adapter") {
+    from({ configurations.compileClasspath.get().filter { it.name.startsWith("opensearch-java-") }
+        .map { zipTree(it) } })
+    include("META-INF/versions/21/org/opensearch/client/json/jackson3/**/*.class")
+    eachFile { path = path.removePrefix("META-INF/versions/21/") }
+    includeEmptyDirs = false
+    into(layout.buildDirectory.dir("spotbugs/jackson3-adapter"))
+}
+
 tasks.withType<SpotBugsTask>().configureEach {
+    auxClassPaths.from(spotbugsJackson3Adapter)
     analyseClassFile.set(layout.buildDirectory.file("spotbugs/$name-analyse-class-file.txt"))
     reports.create("html") {
         required.set(true)

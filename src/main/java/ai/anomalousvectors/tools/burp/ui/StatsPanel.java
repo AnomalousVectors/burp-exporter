@@ -530,8 +530,7 @@ public final class StatsPanel extends JPanel {
                         "Authorization Failures",
                         "Traffic Spill Status",
                         "Database Exported Size",
-                        "Files Exported Size",
-                        "Streaming Recovery"
+                        "Files Exported Size"
                 }),
                 new MetricSection("Process", new String[] {
                         "Heap Used / Max", "Heap Committed",
@@ -564,6 +563,7 @@ public final class StatsPanel extends JPanel {
                 new MetricSection(MISC_TRAFFIC_SPILL_SECTION, new String[] {
                         "Queue", "Oldest Age (s)", "Enqueued / Dequeued / Dropped", "Drop Reasons"
                 }),
+                new MetricSection("Streaming Recovery", new String[] { "Status" }),
                 new MetricSection("Database Retry", new String[] {
                         "Queue Depth", "Oldest Queued Age"
                 }),
@@ -635,7 +635,7 @@ public final class StatsPanel extends JPanel {
         peakCooldownWaitMsValue = miscValues.get("Peak Cooldown Wait (ms)");
         peakFlushSlotWaitMsValue = miscValues.get("Peak Flush Slot Wait (ms)");
         pendingOrphansValue = miscValues.get("Pending Orphans");
-        streamingRecoveryValue = miscValues.get("Streaming Recovery");
+        streamingRecoveryValue = miscValues.get("Status");
         bulkInFlightValue = miscValues.get("Bulk In-Flight");
         bulkByteBudgetValue = miscValues.get("Bulk Byte Budget");
         snapshotFlushCapValue = miscValues.get("Snapshot Flush Cap");
@@ -1499,7 +1499,7 @@ public final class StatsPanel extends JPanel {
      * Exported Size follow database enablement, Traffic Spill Status follows live traffic export
      * relevance, and Files Exported Size follows files enablement. The {@code Files} section and
      * OpenSearch-prefixed groups follow the currently visible lower-panel destinations. Traffic
-     * Spill detail follows traffic export relevance (files and/or database).</p>
+     * Spill and Streaming Recovery details follow traffic export relevance (files and/or database).</p>
      *
      * @param fileVisible whether the Files metrics group should be visible
      * @param openSearchVisible whether the OpenSearch metrics group should be visible
@@ -1515,12 +1515,12 @@ public final class StatsPanel extends JPanel {
         setMiscRowVisible("Overview", 3, trafficRelevant);
         setMiscRowVisible("Overview", 4, openSearchVisible);
         setMiscRowVisible("Overview", 5, fileVisible);
-        setMiscRowVisible("Overview", 6, trafficRelevant);
         setMiscSectionVisible("Process", true);
         for (String section : MISC_DATABASE_SECTIONS) {
             setMiscSectionVisible(section, openSearchVisible);
         }
         setMiscSectionVisible(MISC_TRAFFIC_SPILL_SECTION, trafficRelevant);
+        setMiscSectionVisible("Streaming Recovery", trafficRelevant);
         setMiscSectionVisible("Files", fileVisible);
         miscStatsCard.revalidate();
         miscStatsCard.repaint();
@@ -1954,7 +1954,7 @@ public final class StatsPanel extends JPanel {
         tooltips.put("Pending Orphans", Tooltips.htmlRaw(
                 "Live HTTP request/response pairs held until a matching response arrives.",
                 "A non-zero value during heavy traffic is normal; sustained growth may indicate pairing pressure."));
-        tooltips.put("Streaming Recovery", Tooltips.htmlRaw(
+        tooltips.put("Status", Tooltips.htmlRaw(
                 "Independent History-backed observations for streaming live Proxy exports.",
                 "Tracking includes responses awaiting classification, up to 256 at once. Snapshots are",
                 "immutable observations; cutoff counts five-minute deadlines, not completed responses.",

@@ -598,10 +598,39 @@ class StatsPanelTest {
             assertThat(findByName(miscCard, "miscStats.row.Overview.3", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.row.Overview.4", JPanel.class).isVisible()).isTrue();
             assertThat(findByName(miscCard, "miscStats.row.Overview.5", JPanel.class).isVisible()).isTrue();
+            assertThat(findByName(miscCard, "miscStats.row.Overview.6", JPanel.class)).isNull();
+            JLabel streamingHeader = findByName(miscCard, "miscStats.section.Streaming Recovery", JLabel.class);
+            JPanel streamingRow = findByName(miscCard, "miscStats.row.Streaming Recovery.0", JPanel.class);
+            assertThat(streamingHeader.isVisible()).isTrue();
+            assertThat(collectLabelTexts(streamingRow)).contains("Status");
+            assertThat(streamingRow.getToolTipText()).contains("History-backed", "Polling tapers");
+            assertThat(collectLabelTexts(streamingRow)).contains(
+                    ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
             assertThat(labels).doesNotContain("Proxy-History Attempted/Success");
 
             assertThat(openSearchRow0.getBackground()).isNotEqualTo(openSearchRow1.getBackground());
             assertThat(openSearchRow0.getBackground()).isEqualTo(openSearchRow2.getBackground());
+        } finally {
+            RuntimeConfig.updateState(previous);
+        }
+    }
+
+    @Test
+    void miscStatsCard_hidesStreamingRecoveryWhenTrafficIsNotSelected() {
+        ConfigState.State previous = RuntimeConfig.getState();
+        try {
+            ConfigState.State state = runtimeState(true, false);
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_SETTINGS), state.scopeType(), state.customEntries(), state.sinks(),
+                    state.settingsSub(), state.trafficToolTypes(), state.findingsSeverities(),
+                    state.enabledExportFieldsByIndex()));
+            StatsPanel panel = onEdt(StatsPanel::new);
+            JPanel miscCard = JPanel.class.cast(get(panel, "miscStatsCard"));
+            assertThat(findByName(miscCard, "miscStats.section.Streaming Recovery", JLabel.class).isVisible())
+                    .isFalse();
+            assertThat(findByName(miscCard, "miscStats.row.Streaming Recovery.0", JPanel.class).isVisible())
+                    .isFalse();
+            assertThat(StatsClipboardSnapshot.buildClipboardText()).doesNotContain("Streaming Recovery");
         } finally {
             RuntimeConfig.updateState(previous);
         }
@@ -661,6 +690,8 @@ class StatsPanelTest {
             assertThat(findByName(miscCard, "miscStats.section.Database Traffic", JLabel.class).isVisible())
                     .isFalse();
             // Traffic source is still enabled for files-only runs → Traffic Spill remains relevant.
+            assertThat(findByName(miscCard, "miscStats.section.Streaming Recovery", JLabel.class).isVisible())
+                    .isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Traffic Spill", JLabel.class).isVisible())
                     .isTrue();
             assertThat(findByName(miscCard, "miscStats.section.Database Retry", JLabel.class).isVisible())

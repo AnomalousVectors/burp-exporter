@@ -66,6 +66,23 @@ val runtimePoms by lazy {
         .incoming.artifacts.artifacts.associateBy { coordinate(it) }
 }
 
+// Keep distinct embedded POMs and version properties at their original lookup paths. A path is
+// redundant only when every supplying artifact has the same bytes in its owner-qualified POM.
+val redundantEmbeddedPomPaths by lazy {
+    val copies = mutableMapOf<String, MutableList<Boolean>>()
+    runtimeArtifacts.forEach { artifact ->
+        val published = runtimePoms.getValue(coordinate(artifact)).file.readBytes()
+        JarFile(artifact.file).use { jar ->
+            jar.stream().filter { !it.isDirectory && it.name.startsWith("META-INF/maven/")
+                && it.name.endsWith("/pom.xml") }.forEach { entry ->
+                val identical = jar.getInputStream(entry).use { it.readAllBytes().contentEquals(published) }
+                copies.getOrPut(entry.name) { mutableListOf() }.add(identical)
+            }
+        }
+    }
+    copies.filterValues { matches -> matches.all { it } }.keys
+}
+
 val attributionRoot = layout.buildDirectory.dir("generated/runtime-attributions")
 val generateRuntimeAttributions = tasks.register("generateRuntimeAttributions") {
     group = "build"
@@ -168,6 +185,10 @@ tasks.named<Jar>("fatJar") {
             .filter { it.name.endsWith("jar") }
             .map { zipTree(it) }
     }) {
+        includeEmptyDirs = false
+        // These are generated source and executable/native-image build inputs, not JVM resources.
+        exclude("VersionInfo.java", "META-INF/INDEX.LIST", "META-INF/native-image/**")
+        exclude { it.relativePath.pathString in redundantEmbeddedPomPaths }
         // Logback's web-container integration is unrelated to the extension's SLF4J backend.
         exclude("META-INF/services/jakarta.servlet.ServletContainerInitializer")
         exclude("ch/qos/logback/classic/servlet/**")

@@ -19,6 +19,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Properties;
 import java.util.jar.JarFile;
 import java.util.regex.Pattern;
 
@@ -177,6 +178,29 @@ class PackagedJarTest {
             assertThatThrownBy(() -> loader.loadClass("org.junit.jupiter.api.Test"))
                     .isInstanceOf(ClassNotFoundException.class);
         }
+    }
+
+    @Test
+    void isolatedRuntime_retainsRuntimeVersionMetadata() throws Exception {
+        try (URLClassLoader loader = runtimeLoader()) {
+            Class<?> factory = loader.loadClass("software.amazon.awssdk.thirdparty.jackson.core.JsonFactory");
+            Object version = factory.getMethod("version").invoke(factory.getConstructor().newInstance());
+            assertThat(version.toString()).isNotEqualTo("0.0.0");
+            Properties sdk = versionProperties(loader, "software.amazon.awssdk", "sdk-core");
+            assertThat(loader.loadClass("software.amazon.awssdk.core.util.VersionInfo")
+                    .getField("SDK_VERSION").get(null)).isEqualTo(sdk.getProperty("version"));
+            Properties jackson = versionProperties(loader, "tools.jackson.core", "jackson-core");
+            assertThat(jackson.getProperty("version")).isNotBlank();
+        }
+    }
+
+    private static Properties versionProperties(ClassLoader loader, String group, String artifact) throws IOException {
+        Properties properties = new Properties();
+        try (var input = loader.getResourceAsStream("META-INF/maven/" + group + "/" + artifact + "/pom.properties")) {
+            assertThat(input).as("Version resource for %s:%s", group, artifact).isNotNull();
+            properties.load(input);
+        }
+        return properties;
     }
 
     @Test
