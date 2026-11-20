@@ -34,7 +34,7 @@ class RuntimeAttributionsTest {
     void inventory_identifiesEveryResolvedRuntimeArtifactAndExactDigest() throws Exception {
         try (JarFile packaged = packagedJar()) {
             JsonNode inventory = inventory(packaged);
-            assertThat(inventory.path("schemaVersion").asInt()).isEqualTo(1);
+            assertThat(inventory.path("schemaVersion").asInt()).isEqualTo(2);
             assertThat(inventory.path("applicationVersion").asText())
                     .isEqualTo(System.getProperty("burp.exporter.version"));
             Map<String, Path> expected = runtimeArtifacts();
@@ -91,18 +91,19 @@ class RuntimeAttributionsTest {
     }
 
     @Test
-    void inventory_explainsMissingEmbeddedNoticesWithoutInventingLegalConclusions() throws Exception {
+    void inventory_distinguishesSupplementalTextsFromOriginalBinaryNotices() throws Exception {
         try (JarFile packaged = packagedJar()) {
             for (JsonNode component : inventory(packaged).path("components")) {
                 if (component.path("notices").isEmpty()) {
-                    assertThat(component.path("noticeCoverage").asText()).isEqualTo("POM_ONLY_REVIEW_REQUIRED");
+                    assertThat(component.path("supplementalNotices")).isNotEmpty();
+                    assertThat(component.path("noticeCoverage").asText()).isEqualTo("UPSTREAM_TEXTS_SUPPLEMENTED");
                 } else {
                     assertThat(component.path("noticeCoverage").asText()).isEqualTo("BUNDLED_TEXTS_PRESERVED");
                 }
             }
             try (InputStream stream = resource(packaged, ROOT + "THIRD-PARTY.txt")) {
                 assertThat(new String(stream.readAllBytes(), StandardCharsets.UTF_8))
-                        .contains("POM_ONLY_REVIEW_REQUIRED", "not a legal-compliance certification",
+                        .contains("UPSTREAM_TEXTS_SUPPLEMENTED", "not a legal-compliance certification",
                                 "not Burp Exporter's runtime graph");
             }
         }

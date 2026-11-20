@@ -308,3 +308,4 @@ tasks.build {
 }
 
 apply(from = "gradle/runtime-attributions.gradle.kts")
+apply(from = "gradle/runtime-legal-supplements.gradle.kts")
