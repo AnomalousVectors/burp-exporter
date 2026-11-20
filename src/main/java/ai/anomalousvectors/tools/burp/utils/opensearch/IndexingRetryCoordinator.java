@@ -676,7 +676,7 @@ public final class IndexingRetryCoordinator {
                 logRetryRecovery(indexKey, indexName, sent, batch.size() - sent);
                 // Successes only: failures were already counted when first queued.
                 ExportStats.recordRetryDrainBulkSuccess(indexKey, result.breakdown());
-                ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, sent));
+                ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, result.breakdown().exportedCount()));
                 ExportStats.recordOpenSearchSuccess();
                 if (sent == batch.size() && queue.size(indexName) == 0) {
                     ExportStats.clearLastError(indexKey);
@@ -1555,7 +1555,7 @@ public final class IndexingRetryCoordinator {
                         BulkByteBudget.recordFailure();
                         recordRetryRecovery(indexKey, batch, result);
                         ExportStats.recordRetryDrainBulkSuccess(indexKey, result.breakdown());
-                        ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, sent));
+                        ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, result.breakdown().exportedCount()));
                         ExportStats.recordOpenSearchSuccess();
                     }
                     filterTransientFailures(
@@ -1569,7 +1569,7 @@ public final class IndexingRetryCoordinator {
                     logRetryRecovery(indexKey, indexName, sent, 0);
                     // Successes only: failures were already counted when first queued.
                     ExportStats.recordRetryDrainBulkSuccess(indexKey, result.breakdown());
-                    ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, sent));
+                    ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, result.breakdown().exportedCount()));
                     ExportStats.recordOpenSearchSuccess();
                     if (queue.size(indexName) == 0) {
                         ExportStats.clearLastError(indexKey);
@@ -1583,7 +1583,7 @@ public final class IndexingRetryCoordinator {
                     logRetryRecovery(indexKey, indexName, sent, reQueue.size());
                     // Do not recordBulkBreakdown here — that would re-count still-failed items.
                     ExportStats.recordRetryDrainBulkSuccess(indexKey, result.breakdown());
-                    ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, sent));
+                    ExportStats.recordExportedBytes(indexKey, estimateSuccessfulBytes(batch, result.breakdown().exportedCount()));
                     ExportStats.recordOpenSearchSuccess();
                     offerAllAccountingDrops(indexName, indexKey, reQueue);
                 } else {
@@ -1740,7 +1740,7 @@ public final class IndexingRetryCoordinator {
             return;
         }
         RouteRecoveryAttribution attribution =
-                recordTrafficRouteRecoveries(batch, result.failedItems, recovered);
+                recordTrafficRouteRecoveries(batch, result.failedItems, recovered, result.noopIndexes);
         if (attribution.attributed() != recovered) {
             Logger.logWarnPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
                     + " Traffic route attribution incomplete:"
@@ -1749,7 +1749,7 @@ public final class IndexingRetryCoordinator {
                     + " batch=" + (batch == null ? 0 : batch.size()) + ".");
         } else if (!attribution.routeSummary().isBlank()) {
             Logger.logInfoPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
-                    + " Traffic route Exported updated:"
+                    + " Traffic route retry acknowledgments:"
                     + " " + attribution.routeSummary() + ".");
         }
     }
@@ -1761,8 +1761,8 @@ public final class IndexingRetryCoordinator {
      * success has no failure list and attributes every document. Ambiguous partial results are left
      * unattributed instead of guessing.</p>
      *
-     * <p>Each recovered document increments both Recovered Failures and Exported (success) on the
-     * matching traffic route so Stats source sub-rows stay aligned with the Traffic parent row.</p>
+     * <p>Each acknowledgment resolves a Recovered Failure on its route. Only created/updated
+     * documents increment Exported; already-present or superseded revisions do not add writes.</p>
      *
      * @return attribution result with count and operator-facing route summary
      */
@@ -1770,6 +1770,12 @@ public final class IndexingRetryCoordinator {
             List<PreparedExportDocument> batch,
             List<OpenSearchClientWrapper.FailedItem> failedItems,
             int expectedRecovered) {
+        return recordTrafficRouteRecoveries(batch, failedItems, expectedRecovered, List.of());
+    }
+
+    private static RouteRecoveryAttribution recordTrafficRouteRecoveries(
+            List<PreparedExportDocument> batch, List<OpenSearchClientWrapper.FailedItem> failedItems,
+            int expectedRecovered, List<Integer> noopIndexes) {
         if (batch == null || batch.isEmpty() || expectedRecovered <= 0) {
             return RouteRecoveryAttribution.none();
         }
@@ -1788,13 +1794,14 @@ public final class IndexingRetryCoordinator {
             return RouteRecoveryAttribution.none();
         }
         Map<String, Integer> byRouteLabel = new LinkedHashMap<>();
+        var noopPositions = new java.util.HashSet<>(noopIndexes);
         int attributed = 0;
         for (int i = 0; i < batch.size(); i++) {
             if (!failed[i]) {
                 TrafficRouteBucket.Route route = TrafficRouteBucket.fromPrepared(batch.get(i));
                 TrafficRouteBucket.recordOpenSearchRecovery(route, 1);
-                // Also bump route Exported so Proxy History / tool-type sub-rows match parent Traffic.
-                TrafficRouteBucket.recordOpenSearchSuccess(route, 1);
+                // A resolved retry is not necessarily a new indexed write.
+                if (!noopPositions.contains(i)) TrafficRouteBucket.recordOpenSearchSuccess(route, 1);
                 byRouteLabel.merge(trafficRouteLabel(route), 1, (left, right) -> left + right);
                 attributed++;
             }

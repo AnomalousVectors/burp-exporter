@@ -297,6 +297,18 @@ class SearchBodyPrefixFitterTest {
                 .startsWith("{\"index\":{\"_id\":\"" + original.operationId() + "\"}}\n");
     }
 
+    @Test
+    void fitToBudget_preservesStreamReplacementGuard() {
+        var revision = new SearchDocumentRevision("stream-to-fit", 9);
+        var original = ExportDocumentIdentity.prepareStreaming("tool-burp-traffic", "traffic",
+                trafficDocWithBody(256 * 1024), "proxy", revision);
+        var fitted = SearchBodyPrefixFitter.fitToBudget(original, 128 * 1024L);
+        assertThat(fitted).isNotSameAs(original);
+        assertThat(fitted.resolvedBulkBytes()).isLessThanOrEqualTo(128 * 1024L);
+        assertThat(fitted.searchRevision()).isEqualTo(revision);
+        assertThat(fitted.operationId()).isEqualTo(original.operationId());
+    }
+
     @ParameterizedTest
     @NullSource
     @ValueSource(ints = 7)

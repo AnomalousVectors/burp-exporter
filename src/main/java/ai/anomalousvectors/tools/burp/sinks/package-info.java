@@ -40,8 +40,9 @@
  * Native Proxy and general HTTP message IDs are separate namespaces, neither a UI History row ID. Live export
  * does not join callbacks to History or write Notes to enrich those IDs. A separate
  * {@link ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery} worker observes retained
- * streaming responses for up to five minutes and publishes immutable, independently identified
- * snapshots from each exact History row. Explicit Proxy History snapshots use
+ * streaming responses for up to five minutes and publishes immutable snapshots from each exact
+ * History row. Database snapshots replace that capture's document with strict revision ordering;
+ * file sinks append observations. Explicit Proxy History snapshots use
  * each row's own ID, finalRequest(), and documented received server response. Notes and highlights are read-only
  * metadata on every path.</p>
  *

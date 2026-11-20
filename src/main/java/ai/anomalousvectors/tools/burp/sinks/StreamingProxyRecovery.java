@@ -19,6 +19,7 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import burp.api.montoya.MontoyaApi;
@@ -30,8 +31,10 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse;
  * Observes retained streaming responses for live Proxy export without changing traffic or Notes.
  *
  * <p>Each exact History row owns an independent capture. Immutable, numbered snapshots may
- * overlap a request-only live HTTP observation; no cross-API pairing is attempted. All History
- * reads and message preparation run on one bounded, cost-paced worker, never on a forwarding
+ * overlap a request-only live HTTP observation; no cross-API pairing is attempted. Search
+ * destinations replace one exact capture's document using ordered revisions; Files append each
+ * admitted snapshot. All History reads and message preparation run on one bounded, cost-paced
+ * worker, never on a forwarding
  * callback or the EDT. Admitted snapshots use the ordinary traffic queue for asynchronous
  * destination delivery. A five-minute observation deadline is not HTTP completion.</p>
  */
@@ -403,7 +406,9 @@ public final class StreamingProxyRecovery {
         meta.put("capture", observation);
         document.put("meta", meta);
         boolean accepted = active() && clock.getAsLong() < capture.deadline && (output == null
-                ? TrafficExportQueue.offerStreamingObservationForRun(document, token, this::active)
+                ? TrafficExportQueue.offerStreamingObservationForRun(document, token, this::active,
+                        new SearchDocumentRevision(
+                                capture.captureId, capture.revision + 1L))
                 : output.test(document, token));
         if (!closed) diagnostics.snapshot(accepted);
         if (accepted) {

@@ -14,6 +14,57 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 class BulkNdjsonResponseParserTest {
 
     @Test
+    void ownedRevisionConflictIsQuietAcknowledgedNoop_butRawErrorsRemainConsistent() throws Exception {
+        var prepared = ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity.prepareStreaming(
+                "tool-burp-traffic", "traffic", java.util.Map.of(), "proxy",
+                new ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision("stream", 2));
+        String body = """
+                {"errors":true,"items":[{"index":{"_id":"stream","status":409,
+                "error":{"type":"version_conflict_engine_exception","reason":"older or equal"}}}]}
+                """;
+        List<String> logs = new CopyOnWriteArrayList<>();
+        Logger.LogListener listener = (level, message) -> logs.add(message);
+        Logger.registerListener(listener);
+        try {
+            var parsed = BulkNdjsonResponseParser.parse(body, "tool-burp-traffic", List.of(prepared));
+            assertThat(parsed.breakdown().noop()).isEqualTo(1);
+            assertThat(parsed.noopIndexes()).containsExactly(0);
+            assertThat(parsed.breakdown().exportedCount()).isZero();
+            assertThat(parsed.failedItems()).isEmpty();
+            assertThat(parsed.hasOutcomeFlagMismatch()).isFalse();
+            SwingUtilities.invokeAndWait(() -> {});
+            assertThat(logs).noneMatch(message -> message.contains("Bulk item failure"));
+            var inconsistent = BulkNdjsonResponseParser.parse(
+                    body.replace("\"errors\":true", "\"errors\":false"), "tool-burp-traffic", List.of(prepared));
+            assertThat(inconsistent.hasOutcomeFlagMismatch()).isTrue();
+        } finally {
+            Logger.unregisterListener(listener);
+        }
+    }
+
+    @Test
+    void conflictsRequireExactOwnedIdentityTypeActionAndItemCount() {
+        var versioned = ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity.prepareStreaming(
+                "tool-burp-traffic", "traffic", java.util.Map.of(), "proxy",
+                new ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision("stream", 2));
+        var ordinary = ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity.prepare(
+                "tool-burp-traffic", "traffic", java.util.Map.of());
+        String body = """
+                {"errors":true,"items":[{"index":{"_id":"stream","status":409,
+                "error":{"type":"version_conflict_engine_exception"}}}]}
+                """;
+        for (String invalid : List.of(body.replace("stream", "wrong"),
+                body.replace("version_conflict_engine_exception", "security_exception"),
+                body.replace("\"index\"", "\"update\""), body.replace("409", "429"))) {
+            assertThat(BulkNdjsonResponseParser.parse(invalid, "traffic", List.of(versioned)).failedItems())
+                    .hasSize(1);
+        }
+        assertThat(BulkNdjsonResponseParser.parse(body, "traffic", List.of(ordinary)).failedItems()).hasSize(1);
+        assertThat(BulkNdjsonResponseParser.parse(body, "traffic", List.of(versioned, versioned)).failedItems())
+                .hasSize(1);
+    }
+
+    @Test
     void parse_classifiesCreatedUpdatedAndNoop() {
         String body = """
                 {"items":[

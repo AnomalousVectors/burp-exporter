@@ -4,7 +4,9 @@
  * <p>Documents are filtered once, assigned a stable operation identifier, and serialized for
  * retries, spill persistence, file output, and search bulk requests. Search-only fitting may
  * derive a smaller representation while preserving that identity; file sinks retain the original
- * prepared source. Prepared maps and byte arrays are caller-owned and must not be mutated after
+ * prepared source. Streaming operations also carry a separate database identity and increasing
+ * version, allowing ordered replacement without changing per-snapshot bookkeeping or file append
+ * behavior. Prepared maps and byte arrays are caller-owned and must not be mutated after
  * publication.</p>
  */
 package ai.anomalousvectors.tools.burp.utils.export;

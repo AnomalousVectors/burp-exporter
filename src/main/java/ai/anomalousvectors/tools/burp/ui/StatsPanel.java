@@ -1988,9 +1988,12 @@ public final class StatsPanel extends JPanel {
                 "Rolling search database export throughput over the last 10 seconds.",
                 "Based on successful document acknowledgements across all indexes."));
         tooltips.put("Exported Docs", Tooltips.htmlRaw(
-                "Session total of documents successfully indexed to the search database (all indexes)."));
+                "Session total of successful document writes to the search database (all indexes).",
+                "Streaming replacements count as writes, not additional stored documents.",
+                "Already-present or superseded revisions do not add another write."));
         tooltips.put("Count Basis", Tooltips.htmlRaw(
                 "Live Database Counts and clipboard values use in-process session counters.",
+                "Counts include created and updated writes, not unique stored documents.",
                 "Stop pushes the final exporter <code>stats_snapshot</code> but does not call",
                 "<code>_refresh</code>/<code>_count</code> or duplicate database counts in Log."));
         tooltips.put("Authorization Failures", Tooltips.htmlRaw(

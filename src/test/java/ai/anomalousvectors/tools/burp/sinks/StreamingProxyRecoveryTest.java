@@ -741,20 +741,21 @@ class StreamingProxyRecoveryTest {
         observer.tick();
         Map<String, Object> document = outputs.getFirst();
         var token = RuntimeConfig.currentExportRunToken();
+        var revision = new ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision("stopping-stream", 1);
         TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
-            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> false)).isFalse();
+            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> false, revision)).isFalse();
             assertThat(TrafficExportQueue.getCurrentSize()).isZero();
             RuntimeConfig.beginExportStop();
             RuntimeConfig.setExportStopping(true);
             RuntimeConfig.invalidateExportRun();
-            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> true)).isTrue();
+            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> true, revision)).isTrue();
             assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
             RuntimeConfig.requestExportStopForceAbort();
-            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> true)).isFalse();
+            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> true, revision)).isFalse();
             RuntimeConfig.setExportRunning(false);
             RuntimeConfig.setExportStopping(false);
             RuntimeConfig.setExportRunning(true);
-            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> true)).isFalse();
+            assertThat(TrafficExportQueue.offerStreamingObservationForRun(document, token, () -> true, revision)).isFalse();
         });
     }
 

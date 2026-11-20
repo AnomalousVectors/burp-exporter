@@ -18,6 +18,21 @@ import org.junit.jupiter.api.Test;
 class ExportLineCodecTest {
 
     @Test
+    void versionedActionAgreesAcrossAllSerializers_withoutChangingJsonl() throws Exception {
+        var revision = new SearchDocumentRevision("stream", 4);
+        Map<String, Object> source = Map.of("message", "latest");
+        byte[] bytes = ExportLineCodec.bulkNdjsonBytes("operation", source, revision);
+        var prepared = new PreparedExportDocument("operation", "tool-burp-traffic", "traffic",
+                source, bytes.length, bytes, "proxy", revision);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ExportLineCodec.writeBulkNdjson(output, prepared);
+        assertThat(output.toByteArray()).isEqualTo(bytes);
+        assertThat(String.join("", ExportLineCodec.bulkNdjsonLines(prepared)))
+                .isEqualTo(new String(bytes, StandardCharsets.UTF_8));
+        assertThat(ExportLineCodec.jsonDocumentLine(source)).isEqualTo("{\"message\":\"latest\"}\n");
+    }
+
+    @Test
     void jsonAndBulk_preserveInsertionOrderNullBinaryAndNumericValues() throws IOException {
         Map<String, Object> document = new LinkedHashMap<>();
         document.put("z", null);

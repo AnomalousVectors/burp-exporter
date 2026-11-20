@@ -9,7 +9,7 @@ import java.util.Map;
  * treat both values as immutable after preparation and must not expose them to concurrent
  * mutation.</p>
  *
- * @param operationId stable search bulk operation identifier preserved across retries and spill
+ * @param operationId stable per-snapshot operation identifier preserved across retries and spill
  *                    round-trips
  * @param indexName full target index name
  * @param indexKey short index key (for example {@code traffic})
@@ -18,6 +18,8 @@ import java.util.Map;
  * @param bulkNdjsonBytes pre-serialized bulk action+document NDJSON pair for OpenSearch flush
  * @param trafficRouteKey optional internal traffic-attribution key; never serialized into the
  *                        exported document source
+ * @param searchRevision optional trusted streaming replacement metadata; null keeps the
+ *                       operation ID as the database ID with ordinary indexing semantics
  */
 public record PreparedExportDocument(
         String operationId,
@@ -26,7 +28,26 @@ public record PreparedExportDocument(
         Map<String, Object> document,
         long estimatedBulkBytes,
         byte[] bulkNdjsonBytes,
-        String trafficRouteKey) {
+        String trafficRouteKey,
+        SearchDocumentRevision searchRevision) {
+
+    /**
+     * Creates an ordinary operation without streaming replacement semantics.
+     *
+     * @param operationId stable per-snapshot operation identifier
+     * @param indexName full target index name
+     * @param indexKey logical index key
+     * @param document filtered document body
+     * @param estimatedBulkBytes estimated bulk payload bytes
+     * @param bulkNdjsonBytes serialized bulk action and source
+     * @param trafficRouteKey optional internal traffic attribution
+     */
+    public PreparedExportDocument(String operationId, String indexName, String indexKey,
+            Map<String, Object> document, long estimatedBulkBytes, byte[] bulkNdjsonBytes,
+            String trafficRouteKey) {
+        this(operationId, indexName, indexKey, document, estimatedBulkBytes, bulkNdjsonBytes,
+                trafficRouteKey, null);
+    }
 
     /**
      * Creates an operation without an explicit traffic-attribution route.

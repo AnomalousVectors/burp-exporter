@@ -11,6 +11,62 @@ import org.junit.jupiter.api.Test;
 class ExportDocumentIdentityTest {
 
     @Test
+    void streamingIdentityIsIndependentOfSourceFields_andOrdinarySourceCannotEnableReplacement() {
+        var previous = ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.getState();
+        try {
+            ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.updateState(
+                    new ai.anomalousvectors.tools.burp.utils.config.ConfigState.State(
+                            java.util.List.of("traffic"), "all", java.util.List.of(), null,
+                            ai.anomalousvectors.tools.burp.utils.config.ConfigState.DEFAULT_SETTINGS_SUB,
+                            ai.anomalousvectors.tools.burp.utils.config.ConfigState.DEFAULT_TRAFFIC_TOOL_TYPES,
+                            ai.anomalousvectors.tools.burp.utils.config.ConfigState.DEFAULT_FINDINGS_SEVERITIES,
+                            ai.anomalousvectors.tools.burp.utils.config.ConfigState.DEFAULT_EXPORTER_SUB_OPTIONS,
+                            ai.anomalousvectors.tools.burp.utils.config.ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS,
+                            Map.of("traffic", java.util.Set.of())));
+            Map<String, Object> document = Map.of("meta", Map.of("schema_version", "1",
+                    "capture", Map.of("id", "untrusted", "revision", 500)));
+            var prepared = ExportDocumentIdentity.prepareStreaming("tool-burp-traffic", "traffic",
+                    Map.of(), "proxy", new SearchDocumentRevision("trusted", 2));
+            assertThat(prepared.document().toString()).doesNotContain("capture", "trusted", "untrusted");
+            assertThat(prepared.searchRevision()).isEqualTo(new SearchDocumentRevision("trusted", 2));
+            assertThat(ExportDocumentIdentity.prepare("tool-burp-traffic", "traffic", document).searchRevision())
+                    .isNull();
+        } finally {
+            ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.updateState(previous);
+        }
+    }
+
+    @Test
+    void streaming_reusesDatabaseIdentityButNotOperationIdentity_andPreservesDerivedMetadata() throws Exception {
+        var first = ExportDocumentIdentity.prepareStreaming("tool-burp-traffic", "traffic",
+                sampleDoc("one"), "proxy", new SearchDocumentRevision("capture-a", 1));
+        var second = ExportDocumentIdentity.prepareStreaming("tool-burp-traffic", "traffic",
+                sampleDoc("two"), "proxy", new SearchDocumentRevision("capture-a", 2));
+        var independent = ExportDocumentIdentity.prepareStreaming("tool-burp-traffic", "traffic",
+                sampleDoc("two"), "proxy", new SearchDocumentRevision("capture-b", 1));
+        assertThat(first.operationId()).isNotEqualTo(second.operationId());
+        assertThat(first.searchRevision().documentId()).isEqualTo(second.searchRevision().documentId());
+        assertThat(independent.searchRevision().documentId()).isNotEqualTo(second.searchRevision().documentId());
+        var derived = ExportDocumentIdentity.reprepareDerived(second, Map.of("meta", Map.of("schema_version", "1")));
+        assertThat(derived.operationId()).isEqualTo(second.operationId());
+        assertThat(derived.searchRevision()).isEqualTo(second.searchRevision());
+        assertThat(derived.trafficRouteKey()).isEqualTo("proxy");
+        var action = tools.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(ExportLineCodec.bulkNdjsonLines(derived).getFirst()).path("index");
+        assertThat(action.path("_id").asString()).isEqualTo("capture-a");
+        assertThat(action.path("version").asLong()).isEqualTo(2);
+        assertThat(action.path("version_type").asString()).isEqualTo("external");
+        assertThat(derived.document().toString()).doesNotContain("capture-a");
+    }
+
+    @Test
+    void replacementMetadataRejectsBlankIdentityAndNonpositiveVersions() {
+        assertThatThrownBy(() -> new SearchDocumentRevision("", 1)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SearchDocumentRevision("capture", 0)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new SearchDocumentRevision("capture", -1)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void prepare_withBlankLogicalKey_rejectsCustomPhysicalIndexName() {
         assertThatThrownBy(() -> ExportDocumentIdentity.prepare(
                 "custom-prefix-traffic", "", Map.of("message", "x")))

@@ -30,6 +30,28 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
 class TrafficSpillFileQueueTest {
 
+    @Test
+    void preparedSpillRetainsTrustedStreamRevisionAndOperationId() throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-stream-revision");
+        try {
+            var revision = new ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision("stream", 3);
+            var prepared = ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity.prepareStreaming(
+                    "tool-burp-traffic", "traffic", Map.of("meta", Map.of("schema_version", "1")),
+                    "proxy", revision);
+            var queue = new TrafficSpillFileQueue(dir, 10, 1024 * 1024);
+            assertThat(queue.offerDetailed(TrafficQueueEntry.fromPrepared(prepared)))
+                    .isEqualTo(TrafficSpillFileQueue.OfferResult.QUEUED);
+            TrafficQueueEntry recovered = queue.pollEntry();
+            assertThat(recovered).isNotNull();
+            assertThat(recovered.prepared().searchRevision()).isEqualTo(revision);
+            assertThat(recovered.prepared().operationId()).isEqualTo(prepared.operationId());
+            assertThat(recovered.prepared().bulkNdjsonBytes()).isEqualTo(prepared.bulkNdjsonBytes());
+            assertThat(queue.size()).isZero();
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
+
     @ParameterizedTest
     @ValueSource(booleans = {false, true})
     void poll_preservesLargeBase64BodiesBeyondDefaultParserLimit(boolean preparedPoll)

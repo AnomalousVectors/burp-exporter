@@ -113,7 +113,7 @@ public final class ExportFieldTooltips {
                     "Distinguishes live HTTP observations from History-backed live stream recovery. Both observations may describe the same exchange.",
                     "live_proxy_callback (native Proxy), live_http_callback (general HTTP), or proxy_history_stream. Explicit Proxy History snapshots do not use this capture label.");
             case "meta.capture.revision" -> Tooltips.textWithSource(
-                    "Increasing snapshot number within one capture ID. Snapshots are retained separately, not overwritten.",
+                    "Increasing snapshot number within one capture ID. Search destinations retain the latest admitted revision; Files append snapshots.",
                     "StreamingProxyRecovery increments after queue admission; retries preserve the prepared snapshot identity.");
             case "meta.capture.observed_at" -> Tooltips.textWithSource(
                     "Time this response snapshot was observed, not the connection completion time.",

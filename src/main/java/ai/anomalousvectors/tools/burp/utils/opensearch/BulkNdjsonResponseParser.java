@@ -12,6 +12,7 @@ import tools.jackson.databind.node.ArrayNode;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
+import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
@@ -37,17 +38,38 @@ public final class BulkNdjsonResponseParser {
      * @param failedItems per-item failures aligned to request order
      * @param responseErrors top-level {@code errors} value, or {@code null} when absent/non-boolean
      * @param responseItemCount number of item outcomes present in the response
+     * @param responseHasItemErrors whether raw item statuses contain errors, before recognizing
+     *                              already-present or superseded streaming revisions
+     * @param noopIndexes exact request positions acknowledged without another indexed write
      */
     public record ParsedBulk(
             BulkOutcomeBreakdown breakdown,
             List<OpenSearchClientWrapper.FailedItem> failedItems,
             Boolean responseErrors,
-            int responseItemCount) {
+            int responseItemCount,
+            boolean responseHasItemErrors,
+            List<Integer> noopIndexes) {
+
+        /**
+         * Creates an outcome without request-aware streaming acknowledgments.
+         *
+         * @param breakdown classified outcomes
+         * @param failedItems raw item failures
+         * @param responseErrors raw top-level flag
+         * @param responseItemCount raw item count
+         */
+        public ParsedBulk(BulkOutcomeBreakdown breakdown,
+                List<OpenSearchClientWrapper.FailedItem> failedItems,
+                Boolean responseErrors, int responseItemCount) {
+            this(breakdown, failedItems, responseErrors, responseItemCount,
+                    failedItems != null && !failedItems.isEmpty(), List.of());
+        }
 
         public ParsedBulk {
             breakdown = breakdown != null ? breakdown : BulkOutcomeBreakdown.empty();
             failedItems = failedItems != null ? List.copyOf(failedItems) : List.of();
             responseItemCount = Math.max(0, responseItemCount);
+            noopIndexes = List.copyOf(noopIndexes);
         }
 
         /**
@@ -60,13 +82,13 @@ public final class BulkNdjsonResponseParser {
         }
 
         /**
-         * Returns whether the top-level {@code errors} flag disagrees with item statuses.
+         * Returns whether the top-level {@code errors} flag disagrees with raw item statuses.
          *
-         * @return {@code true} when an explicit summary flag contradicts parsed failures
+         * @return {@code true} when an explicit summary flag contradicts raw item errors
          */
         public boolean hasOutcomeFlagMismatch() {
             return responseErrors != null
-                    && responseErrors.booleanValue() != !failedItems.isEmpty();
+                    && responseErrors.booleanValue() != responseHasItemErrors;
         }
     }
 
@@ -80,6 +102,13 @@ public final class BulkNdjsonResponseParser {
      * <p>Logs at most three item failure reasons plus one aggregate summary.</p>
      */
     public static ParsedBulk parse(String responseBody, String indexName) {
+        return parse(responseBody, indexName, null);
+    }
+
+    // Only prepared requests can prove that a conflict belongs to an owned versioned capture.
+    // Exact item count and returned ID are mandatory; ordinary conflicts remain real failures.
+    static ParsedBulk parse(String responseBody, String indexName,
+            List<PreparedExportDocument> documents) {
         if (responseBody == null || responseBody.isBlank()) {
             return new ParsedBulk(BulkOutcomeBreakdown.empty(), List.of(), null, 0);
         }
@@ -89,7 +118,7 @@ public final class BulkNdjsonResponseParser {
             if (items == null || !items.isArray()) {
                 return new ParsedBulk(BulkOutcomeBreakdown.empty(), List.of(), responseErrors(root), 0);
             }
-            return parseItems((ArrayNode) items, indexName, responseErrors(root));
+            return parseItems((ArrayNode) items, indexName, responseErrors(root), documents);
         } catch (RuntimeException e) {
             Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
                     + " BulkNdjsonResponseParser parse failed: "
@@ -121,13 +150,16 @@ public final class BulkNdjsonResponseParser {
                 + " responseItems=" + parsed.responseItemCount() + ".");
     }
 
-    private static ParsedBulk parseItems(ArrayNode items, String indexName, Boolean responseErrors) {
+    private static ParsedBulk parseItems(ArrayNode items, String indexName, Boolean responseErrors,
+            List<PreparedExportDocument> documents) {
         int created = 0;
         int updated = 0;
         int noop = 0;
         int failed = 0;
         List<OpenSearchClientWrapper.FailedItem> failedItems = new ArrayList<>();
         int logged = 0;
+        List<Integer> noopIndexes = new ArrayList<>();
+        boolean responseHasItemErrors = false;
         String effectiveIndex = SearchDiagnosticText.singleLine(indexName, 256);
         if (effectiveIndex.isBlank()) {
             effectiveIndex = "unknown";
@@ -143,13 +175,23 @@ public final class BulkNdjsonResponseParser {
                 op = item.get("update");
             }
             int status = (op != null && op.has("status")) ? op.get("status").asInt() : 0;
+            responseHasItemErrors |= status < 200 || status >= 300;
             if (status >= 200 && status < 300) {
                 switch (classifyResult(op)) {
                     case "created" -> created++;
                     case "updated" -> updated++;
-                    case "noop" -> noop++;
+                    case "noop" -> {
+                        noop++;
+                        noopIndexes.add(i);
+                    }
                     default -> updated++;
                 }
+            } else if (isSupersededRevision(items.size(), documents, i, op, status)
+                    && item.has("index")) {
+                // The database already holds this revision or a newer one. Acknowledge without
+                // counting another write, emitting a failure log, or retrying obsolete bytes.
+                noop++;
+                noopIndexes.add(i);
             } else {
                 failed++;
                 JsonNode err = op != null ? op.get("error") : null;
@@ -174,7 +216,18 @@ public final class BulkNdjsonResponseParser {
                 new BulkOutcomeBreakdown(created, updated, noop, failed),
                 failedItems,
                 responseErrors,
-                items.size());
+                items.size(), responseHasItemErrors, noopIndexes);
+    }
+
+    private static boolean isSupersededRevision(int itemCount,
+            List<PreparedExportDocument> documents, int position, JsonNode op, int status) {
+        if (status != 409 || op == null || documents == null || documents.size() != itemCount) {
+            return false;
+        }
+        PreparedExportDocument document = documents.get(position);
+        return document != null && document.searchRevision() != null
+                && document.searchRevision().documentId().equals(op.path("_id").asString())
+                && "version_conflict_engine_exception".equals(op.path("error").path("type").asString());
     }
 
     private static Boolean responseErrors(JsonNode root) {

@@ -17,6 +17,8 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
+import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
+import ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
 import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
 import ai.anomalousvectors.tools.burp.utils.opensearch.ChunkedBulkSender;
@@ -330,9 +332,13 @@ public final class TrafficExportQueue {
 
     /** Admits a bounded final streaming snapshot only for the exact run being stopped. */
     static boolean offerStreamingObservationForRun(Map<String, Object> document,
-            RuntimeConfig.ExportRunToken token, java.util.function.BooleanSupplier ownerActive) {
+            RuntimeConfig.ExportRunToken token, java.util.function.BooleanSupplier ownerActive,
+            SearchDocumentRevision revision) {
         TrafficRouteBucket.Route route = TrafficRouteBucket.fromToolType("PROXY");
-        TrafficQueueEntry entry = TrafficQueueEntry.from(document, route);
+        TrafficQueueEntry entry = TrafficQueueEntry.fromPrepared(
+                ExportDocumentIdentity.prepareStreaming(
+                        TrafficRouteBucket.trafficIndexName(), TrafficRouteBucket.INDEX_KEY,
+                        document, route.key(), revision));
         synchronized (RUN_ADMISSION) {
             boolean stoppingOwner = token != null && token.isValid()
                     && RuntimeConfig.isExportStopping()

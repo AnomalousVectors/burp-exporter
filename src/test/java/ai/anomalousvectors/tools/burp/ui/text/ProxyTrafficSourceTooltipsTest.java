@@ -25,7 +25,7 @@ class ProxyTrafficSourceTooltipsTest {
         assertThat(ExportFieldTooltips.tooltipFor("traffic", "meta.capture.id"))
                 .contains("does not join independently captured live traffic");
         assertThat(ExportFieldTooltips.tooltipFor("traffic", "meta.capture.revision"))
-                .contains("retained separately, not overwritten");
+                .contains("Search destinations retain the latest admitted revision", "Files append snapshots");
         assertThat(ExportFieldTooltips.tooltipFor("traffic", "meta.capture.response_state"))
                 .contains("silence is not completion");
         assertThat(ExportFieldTooltipsTraffic.trafficTooltip("burp.proxy.listener_port"))

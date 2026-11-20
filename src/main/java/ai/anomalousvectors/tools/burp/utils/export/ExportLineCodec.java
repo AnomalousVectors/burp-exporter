@@ -42,7 +42,7 @@ public final class ExportLineCodec {
      */
     public static List<String> bulkNdjsonLines(PreparedExportDocument document) throws JacksonException {
         return List.of(
-                bulkIndexActionLine(document.operationId()),
+                bulkIndexActionLine(document.operationId(), document.searchRevision()),
                 jsonDocumentLine(document.document())
         );
     }
@@ -58,7 +58,7 @@ public final class ExportLineCodec {
      */
     public static void writeBulkNdjson(OutputStream output, PreparedExportDocument document) throws IOException {
         try {
-            output.write(bulkIndexActionBytes(document.operationId()));
+            output.write(bulkIndexActionBytes(document.operationId(), document.searchRevision()));
             JSON.writeValue(output, document.document());
             output.write('\n');
         } catch (JacksonException e) {
@@ -77,9 +77,24 @@ public final class ExportLineCodec {
      * @throws IllegalArgumentException if {@code operationId} is null or blank
      */
     public static byte[] bulkNdjsonBytes(String operationId, Map<String, Object> document) throws IOException {
+        return bulkNdjsonBytes(operationId, document, null);
+    }
+
+    /**
+     * Serializes an operation with optional trusted streaming replacement metadata.
+     *
+     * @param operationId non-blank per-snapshot operation ID
+     * @param document source document
+     * @param revision trusted database identity/version, or null for an ordinary operation
+     * @return complete action/source pair
+     * @throws IOException if serialization fails
+     * @throws IllegalArgumentException if the operation ID is blank
+     */
+    public static byte[] bulkNdjsonBytes(String operationId, Map<String, Object> document,
+            SearchDocumentRevision revision) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream(256);
         try {
-            output.write(bulkIndexActionBytes(operationId));
+            output.write(bulkIndexActionBytes(operationId, revision));
             JSON.writeValue(output, document);
             output.write('\n');
         } catch (JacksonException e) {
@@ -88,12 +103,19 @@ public final class ExportLineCodec {
         return output.toByteArray();
     }
 
-    private static String bulkIndexActionLine(String operationId) throws JacksonException {
-        return JSON.writeValueAsString(Map.of("index", Map.of("_id", requireOperationId(operationId)))) + "\n";
+    private static String bulkIndexActionLine(String operationId, SearchDocumentRevision revision)
+            throws JacksonException {
+        requireOperationId(operationId);
+        Map<String, Object> action = revision == null
+                ? Map.of("_id", operationId)
+                : Map.of("_id", revision.documentId(), "version", revision.version(),
+                        "version_type", "external");
+        return JSON.writeValueAsString(Map.of("index", action)) + "\n";
     }
 
-    private static byte[] bulkIndexActionBytes(String operationId) throws JacksonException {
-        return bulkIndexActionLine(operationId).getBytes(StandardCharsets.UTF_8);
+    private static byte[] bulkIndexActionBytes(String operationId, SearchDocumentRevision revision)
+            throws JacksonException {
+        return bulkIndexActionLine(operationId, revision).getBytes(StandardCharsets.UTF_8);
     }
 
     private static String requireOperationId(String operationId) {

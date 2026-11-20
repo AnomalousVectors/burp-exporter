@@ -577,6 +577,7 @@ public class OpenSearchClientWrapper {
     static final class BulkResult {
         final BulkOutcomeBreakdown breakdown;
         final List<FailedItem> failedItems;
+        final List<Integer> noopIndexes;
         private final long maxSuccessfulRequestBytes;
 
         BulkResult(BulkOutcomeBreakdown breakdown, List<FailedItem> failedItems) {
@@ -587,6 +588,11 @@ public class OpenSearchClientWrapper {
                 BulkOutcomeBreakdown breakdown,
                 List<FailedItem> failedItems,
                 long maxSuccessfulRequestBytes) {
+            this(breakdown, failedItems, maxSuccessfulRequestBytes, List.of());
+        }
+
+        BulkResult(BulkOutcomeBreakdown breakdown, List<FailedItem> failedItems,
+                long maxSuccessfulRequestBytes, List<Integer> noopIndexes) {
             BulkOutcomeBreakdown resolved =
                     breakdown != null ? breakdown : BulkOutcomeBreakdown.empty();
             List<FailedItem> resolvedFailures =
@@ -612,6 +618,8 @@ public class OpenSearchClientWrapper {
             }
             this.maxSuccessfulRequestBytes =
                     this.breakdown.successTotal() > 0 ? Math.max(0L, maxSuccessfulRequestBytes) : 0L;
+            this.noopIndexes = this.breakdown.noop() == resolved.noop()
+                    ? List.copyOf(noopIndexes) : List.of();
         }
 
         int successCount() {

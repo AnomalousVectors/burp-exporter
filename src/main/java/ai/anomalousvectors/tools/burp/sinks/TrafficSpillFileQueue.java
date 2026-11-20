@@ -34,6 +34,7 @@ import ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths;
 import ai.anomalousvectors.tools.burp.utils.ManagedStorageQuota;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
+import ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision;
 
 /**
  * File-backed FIFO queue used when in-memory traffic queue is full.
@@ -587,6 +588,10 @@ final class TrafficSpillFileQueue {
         Map<String, Object> envelope = buildSpillEnvelope(prepared.document());
         Map<String, Object> preparedFields = new HashMap<>();
         preparedFields.put("operation_id", prepared.operationId());
+        if (prepared.searchRevision() != null) {
+            preparedFields.put("search_document_id", prepared.searchRevision().documentId());
+            preparedFields.put("search_version", prepared.searchRevision().version());
+        }
         preparedFields.put("index_name", prepared.indexName());
         preparedFields.put("index_key", prepared.indexKey());
         preparedFields.put("estimated_bulk_bytes", prepared.estimatedBulkBytes());
@@ -620,6 +625,7 @@ final class TrafficSpillFileQueue {
                                         indexName, indexKey, document, trafficRouteKey));
                     }
                     long estimatedBytes = preparedNode.path("estimated_bulk_bytes").asLong(bulkBytes.length);
+                    var searchRevision = readSearchRevision(preparedNode);
                     return TrafficQueueEntry.fromPrepared(new PreparedExportDocument(
                             operationId,
                             indexName,
@@ -627,7 +633,7 @@ final class TrafficSpillFileQueue {
                             document,
                             estimatedBytes,
                             bulkBytes,
-                            trafficRouteKey));
+                            trafficRouteKey, searchRevision));
                 }
             }
         }
@@ -640,6 +646,18 @@ final class TrafficSpillFileQueue {
         }
         String value = node.asString();
         return value == null || value.isBlank() ? null : value;
+    }
+
+    private static SearchDocumentRevision readSearchRevision(
+            JsonNode prepared) throws IOException {
+        if (!prepared.has("search_document_id") && !prepared.has("search_version")) return null;
+        String id = textValue(prepared.get("search_document_id"));
+        JsonNode version = prepared.get("search_version");
+        if (id == null || version == null || !version.isIntegralNumber() || !version.canConvertToLong()
+                || version.asLong() <= 0L) {
+            throw new IOException("Invalid streaming replacement metadata in spill");
+        }
+        return new SearchDocumentRevision(id, version.asLong());
     }
 
     private Map<String, Object> extractDocument(byte[] payload) throws IOException {

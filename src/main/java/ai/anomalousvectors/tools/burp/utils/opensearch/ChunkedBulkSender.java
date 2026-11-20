@@ -295,7 +295,8 @@ public final class ChunkedBulkSender {
         try (ticket) {
             try {
                 result = executeRequest(
-                        baseUrl, body, attemptedRef, attemptedBytesRef, indexName, attemptedTrafficRoutes);
+                        baseUrl, body, attemptedRef, attemptedBytesRef, indexName, attemptedTrafficRoutes,
+                        ndjsonStream.acceptedDocumentsForFileEmit());
             } catch (OpenSearchBulkHttpExecutor.LiveBudgetChangedException e) {
                 ticket.close();
                 OpenSearchClientWrapper.BulkResult refitted = PreparedBulkSender.push(
@@ -355,9 +356,9 @@ public final class ChunkedBulkSender {
                 resolved.breakdown(),
                 attemptedCount,
                 attemptedTrafficRoutes,
-                resolved.failedItems);
-        long successBytes = attributed.successCount > 0 && attemptedCount > 0
-                ? Math.round((double) attemptedBytes * attributed.successCount / attemptedCount)
+                resolved.failedItems, resolved.noopIndexes);
+        long successBytes = attributed.breakdown.exportedCount() > 0 && attemptedCount > 0
+                ? Math.round((double) attemptedBytes * attributed.breakdown.exportedCount() / attemptedCount)
                 : 0L;
         return new Result(
                 attributed.successCount,
@@ -465,7 +466,8 @@ public final class ChunkedBulkSender {
             AtomicInteger attemptedRef,
             AtomicLong attemptedBytesRef,
             String indexName,
-            List<TrafficRouteBucket.Route> attemptedTrafficRoutes) throws IOException {
+            List<TrafficRouteBucket.Route> attemptedTrafficRoutes,
+            List<PreparedExportDocument> documents) throws IOException {
         long liveBudget = Math.max(1L, BulkByteBudget.currentMaxBytes());
         if (body.length > liveBudget) {
             String type = body.length > BulkByteBudget.ADAPTIVE_MAX_BYTES
@@ -529,9 +531,9 @@ public final class ChunkedBulkSender {
                 return failed;
             }
             Result parsed = parseBulkResponse(
-                    responseBody, attempted, attemptedTrafficRoutes, indexName, requestId);
-            long successBytes = parsed.successCount > 0 && attempted > 0
-                    ? Math.round((double) attemptedBytes * parsed.successCount / attempted)
+                    responseBody, attempted, attemptedTrafficRoutes, indexName, requestId, documents);
+            long successBytes = parsed.breakdown.exportedCount() > 0 && attempted > 0
+                    ? Math.round((double) attemptedBytes * parsed.breakdown.exportedCount() / attempted)
                     : 0;
             return new Result(
                     parsed.successCount,
@@ -606,7 +608,7 @@ public final class ChunkedBulkSender {
             List<TrafficRouteBucket.Route> attemptedTrafficRoutes,
             String indexName) {
         return parseBulkResponse(
-                responseBody, attemptedCount, attemptedTrafficRoutes, indexName, -1L);
+                responseBody, attemptedCount, attemptedTrafficRoutes, indexName, -1L, null);
     }
 
     private static Result parseBulkResponse(
@@ -614,7 +616,8 @@ public final class ChunkedBulkSender {
             int attemptedCount,
             List<TrafficRouteBucket.Route> attemptedTrafficRoutes,
             String indexName,
-            long requestId) {
+            long requestId,
+            List<PreparedExportDocument> documents) {
         if (responseBody == null || responseBody.isBlank()) {
             return failedResult(
                     attemptedCount,
@@ -623,7 +626,8 @@ public final class ChunkedBulkSender {
                     "bulk_response_parse_exception",
                     "Bulk response body was blank");
         }
-        BulkNdjsonResponseParser.ParsedBulk parsed = BulkNdjsonResponseParser.parse(responseBody, indexName);
+        BulkNdjsonResponseParser.ParsedBulk parsed =
+                BulkNdjsonResponseParser.parse(responseBody, indexName, documents);
         if (parsed.responseItemCount() > attemptedCount) {
             // An overlong response cannot establish request-order identity. Keep every attempted
             // document retryable instead of trusting surplus successes or permanent rejections.
@@ -664,14 +668,13 @@ public final class ChunkedBulkSender {
                     BulkOutcomeBreakdown.classified(0, attemptedCount - observed));
         }
         return routeAttributedResult(
-                completedBreakdown, attemptedCount, attemptedTrafficRoutes, completedFailures);
+                completedBreakdown, attemptedCount, attemptedTrafficRoutes, completedFailures,
+                parsed.noopIndexes());
     }
 
-    private static Result routeAttributedResult(
-            BulkOutcomeBreakdown breakdown,
-            int attemptedCount,
+    private static Result routeAttributedResult(BulkOutcomeBreakdown breakdown, int attemptedCount,
             List<TrafficRouteBucket.Route> attemptedTrafficRoutes,
-            List<OpenSearchClientWrapper.FailedItem> failedItems) {
+            List<OpenSearchClientWrapper.FailedItem> failedItems, List<Integer> noopIndexes) {
         int successCount = breakdown.successTotal();
         Map<Integer, OpenSearchClientWrapper.FailedItem> failedByIndex = new LinkedHashMap<>();
         for (OpenSearchClientWrapper.FailedItem failedItem : failedItems) {
@@ -681,10 +684,11 @@ public final class ChunkedBulkSender {
         Map<String, Integer> toolTypeFailureCounts = new LinkedHashMap<>();
         Map<String, Integer> sourceSuccessCounts = new LinkedHashMap<>();
         Map<String, Integer> sourceFailureCounts = new LinkedHashMap<>();
+        var noopPositions = new java.util.HashSet<>(noopIndexes);
         for (int i = 0; i < attemptedCount; i++) {
             if (failedByIndex.containsKey(i)) {
                 recordRouteCount(attemptedTrafficRoutes, i, toolTypeFailureCounts, sourceFailureCounts);
-            } else {
+            } else if (!noopPositions.contains(i)) {
                 recordRouteCount(attemptedTrafficRoutes, i, toolTypeSuccessCounts, sourceSuccessCounts);
             }
         }

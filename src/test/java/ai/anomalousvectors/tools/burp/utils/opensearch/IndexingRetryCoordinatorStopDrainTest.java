@@ -80,6 +80,20 @@ class IndexingRetryCoordinatorStopDrainTest {
     }
 
     @Test
+    void supersededRetryResolvesRecoveryWithoutAddingExportedRouteWrite() {
+        var result = new OpenSearchClientWrapper.BulkResult(
+                new ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown(1, 0, 1, 0),
+                List.of(), 0L, List.of(0));
+        ai.anomalousvectors.tools.burp.testutils.Reflect.callStatic(IndexingRetryCoordinator.class,
+                "recordRetryRecovery", "traffic",
+                List.of(trafficDocument("Proxy History"), trafficDocument("Repeater")), result);
+        assertThat(ExportStats.getTrafficSourceRecoveryCount("proxy_history_snapshot")).isEqualTo(1);
+        assertThat(ExportStats.getTrafficSourceSuccessCount("proxy_history_snapshot")).isZero();
+        assertThat(ExportStats.getTrafficToolTypeRecoveryCount("REPEATER")).isEqualTo(1);
+        assertThat(ExportStats.getTrafficToolTypeSuccessCount("REPEATER")).isEqualTo(1);
+    }
+
+    @Test
     void filterTransientFailures_circuitBreaking_setsSharedCapacityCooldown() {
         PreparedExportDocument doc = trafficDocument("Proxy History");
         List<PreparedExportDocument> retry = IndexingRetryCoordinator.filterTransientFailures(

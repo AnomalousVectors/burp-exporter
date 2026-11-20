@@ -96,6 +96,17 @@ class ChunkedBulkSenderTest {
     }
 
     @Test
+    void noopAcknowledgmentDoesNotCountAsAnotherTrafficWrite() {
+        var route = ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket.fromToolType("PROXY");
+        var result = ChunkedBulkSender.parseBulkResponse(
+                "{\"errors\":false,\"items\":[{\"index\":{\"status\":200,\"result\":\"noop\"}}]}",
+                1, java.util.List.of(route), "traffic");
+        assertThat(result.successCount).isEqualTo(1);
+        assertThat(result.breakdown.exportedCount()).isZero();
+        assertThat(result.trafficToolTypeSuccessCounts).isEmpty();
+    }
+
+    @Test
     void parseBulkResponse_oneFailure_countsCorrectly() {
         String body = "{\"took\":1,\"errors\":true,\"items\":["
                 + "{\"index\":{\"_index\":\"t\",\"status\":201}},"

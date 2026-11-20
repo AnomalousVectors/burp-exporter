@@ -174,7 +174,7 @@ class PreparedBulkSenderTest {
             int request = requestCount.incrementAndGet();
             int itemCount = countBulkItems(exchange);
             requestItemCounts.add(itemCount);
-            respondWithBulkItems(exchange, itemCount, request == 2 ? 0 : -1);
+            respondWithBulkItems(exchange, itemCount, request == 2 ? 0 : -1, request == 2 ? 1 : -1);
         });
         try {
             server.start();
@@ -210,12 +210,14 @@ class PreparedBulkSenderTest {
             RuntimeConfig.setExportRunning(true);
             BulkByteBudget.resetForStart();
             List<PreparedExportDocument> documents = java.util.stream.IntStream.range(0, 4)
-                    .mapToObj(index -> ExportDocumentIdentity.prepare(
+                    .mapToObj(index -> ExportDocumentIdentity.prepareStreaming(
                             "tool-burp-settings",
                             "settings",
                             Map.of("project", Map.of(
                                     "ordinal", index,
-                                    "payload", "x".repeat(400_000)))))
+                                    "payload", "x".repeat(400_000))), null,
+                            new ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision(
+                                    index == 3 ? "split-stream" : "stream-" + index, 1)))
                     .toList();
             long liveBudget = BulkByteBudget.currentMaxBytes();
             long firstTwoBytes =
@@ -232,6 +234,8 @@ class PreparedBulkSenderTest {
             assertThat(requestCount.get()).isEqualTo(2);
             assertThat(requestItemCounts).containsExactly(2, 2);
             assertThat(result.successCount()).isEqualTo(3);
+            assertThat(result.noopIndexes).containsExactly(3);
+            assertThat(result.breakdown().exportedCount()).isEqualTo(2);
             assertThat(result.failedItems).singleElement().satisfies(item -> {
                 assertThat(item.index()).isEqualTo(2);
                 assertThat(item.type()).isEqualTo("mapper_parsing_exception");
@@ -255,7 +259,7 @@ class PreparedBulkSenderTest {
     private static void respondWithBulkItems(
             HttpExchange exchange,
             int itemCount,
-            int failedItemIndex) throws IOException {
+            int failedItemIndex, int noopIndex) throws IOException {
         StringBuilder body = new StringBuilder("{\"errors\":")
                 .append(failedItemIndex >= 0)
                 .append(",\"items\":[");
@@ -267,6 +271,9 @@ class PreparedBulkSenderTest {
                 body.append("{\"index\":{\"status\":400,\"error\":{")
                         .append("\"type\":\"mapper_parsing_exception\",")
                         .append("\"reason\":\"test failure\"}}}");
+            } else if (index == noopIndex) {
+                body.append("{\"index\":{\"_id\":\"split-stream\",\"status\":409,\"error\":{")
+                        .append("\"type\":\"version_conflict_engine_exception\",\"reason\":\"already present\"}}}");
             } else {
                 body.append("{\"index\":{\"status\":201,\"result\":\"created\"}}");
             }

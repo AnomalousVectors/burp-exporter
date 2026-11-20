@@ -105,6 +105,7 @@ public final class PreparedBulkSender {
         List<List<PreparedExportDocument>> parts = splitByByteBudget(sendable);
         BulkOutcomeBreakdown breakdown = BulkOutcomeBreakdown.classified(0, localFailures.size());
         List<OpenSearchClientWrapper.FailedItem> failedItems = new ArrayList<>(localFailures);
+        List<Integer> noopIndexes = new ArrayList<>();
         long maxSuccessfulRequestBytes = 0L;
         int sendableOffset = 0;
         for (List<PreparedExportDocument> part : parts) {
@@ -126,9 +127,13 @@ public final class PreparedBulkSender {
                         originalIndex, item.type(), item.reason()));
             }
             sendableOffset += part.size();
+            int partStart = sendableOffset - part.size();
+            for (int position : partResult.noopIndexes) {
+                noopIndexes.add(sendableOriginalIndex.get(partStart + position));
+            }
         }
         return new OpenSearchClientWrapper.BulkResult(
-                breakdown, failedItems, maxSuccessfulRequestBytes);
+                breakdown, failedItems, maxSuccessfulRequestBytes, noopIndexes);
     }
 
     private static void logSearchTruncations(String indexName, int count, long maxBytes) {
@@ -197,6 +202,7 @@ public final class PreparedBulkSender {
         if (body.length > maxBytes && fitted.size() > 1) {
             BulkOutcomeBreakdown breakdown = BulkOutcomeBreakdown.empty();
             List<OpenSearchClientWrapper.FailedItem> failedItems = new ArrayList<>();
+            List<Integer> noopIndexes = new ArrayList<>();
             long maxSuccessfulRequestBytes = 0L;
             int offset = 0;
             for (List<PreparedExportDocument> part : splitByByteBudget(fitted)) {
@@ -212,10 +218,11 @@ public final class PreparedBulkSender {
                     failedItems.add(new OpenSearchClientWrapper.FailedItem(
                             offset + local, item.type(), item.reason()));
                 }
+                for (int position : partResult.noopIndexes) noopIndexes.add(offset + position);
                 offset += part.size();
             }
             return new OpenSearchClientWrapper.BulkResult(
-                    breakdown, failedItems, maxSuccessfulRequestBytes);
+                    breakdown, failedItems, maxSuccessfulRequestBytes, noopIndexes);
         }
         if (body.length > maxBytes) {
             String type = body.length > BulkByteBudget.ADAPTIVE_MAX_BYTES
@@ -244,10 +251,10 @@ public final class PreparedBulkSender {
                     indexName,
                     body,
                     (response, requestId) ->
-                            handleBulkResponse(response, indexName, fitted.size(), requestId));
+                            handleBulkResponse(response, indexName, fitted, requestId));
             long successfulRequestBytes = result.successCount() > 0 ? body.length : 0L;
             return new OpenSearchClientWrapper.BulkResult(
-                    result.breakdown(), result.failedItems, successfulRequestBytes);
+                    result.breakdown(), result.failedItems, successfulRequestBytes, result.noopIndexes);
         } catch (OpenSearchBulkHttpExecutor.LiveBudgetChangedException e) {
             if (postWaitRefits < MAX_POST_WAIT_REFITS) {
                 return pushOne(baseUrl, indexName, documents, postWaitRefits + 1);
@@ -303,8 +310,9 @@ public final class PreparedBulkSender {
     private static OpenSearchClientWrapper.BulkResult handleBulkResponse(
             ClassicHttpResponse response,
             String indexName,
-            int attemptedCount,
+            List<PreparedExportDocument> documents,
             long requestId) throws IOException {
+        int attemptedCount = documents.size();
         int status = response.getCode();
         String responseBody;
         try {
@@ -316,7 +324,7 @@ public final class PreparedBulkSender {
             return new OpenSearchClientWrapper.BulkResult(BulkOutcomeBreakdown.empty(), List.of());
         }
         if (status >= 200 && status < 300) {
-            return parseBulkResponse(responseBody, attemptedCount, indexName, requestId);
+            return parseBulkResponse(responseBody, attemptedCount, indexName, requestId, documents);
         }
         Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
                 + " PreparedBulkSender bulk request failed: "
@@ -358,19 +366,21 @@ public final class PreparedBulkSender {
             String responseBody,
             int attemptedCount,
             String indexName) {
-        return parseBulkResponse(responseBody, attemptedCount, indexName, -1L);
+        return parseBulkResponse(responseBody, attemptedCount, indexName, -1L, null);
     }
 
     private static OpenSearchClientWrapper.BulkResult parseBulkResponse(
             String responseBody,
             int attemptedCount,
             String indexName,
-            long requestId) {
+            long requestId,
+            List<PreparedExportDocument> documents) {
         if (responseBody == null || responseBody.isBlank()) {
             return failedBulkResult(
                     attemptedCount, "bulk_response_parse_exception", "Bulk response body was blank");
         }
-        BulkNdjsonResponseParser.ParsedBulk parsed = BulkNdjsonResponseParser.parse(responseBody, indexName);
+        BulkNdjsonResponseParser.ParsedBulk parsed =
+                BulkNdjsonResponseParser.parse(responseBody, indexName, documents);
         if (parsed.responseItemCount() > attemptedCount) {
             // An overlong response cannot prove which acknowledgments belong to this batch.
             // Retry its stable operation IDs rather than inventing successes or permanent drops.
@@ -394,7 +404,8 @@ public final class PreparedBulkSender {
         }
         int observed = parsed.breakdown().successTotal() + parsed.breakdown().failed();
         if (observed == attemptedCount) {
-            return new OpenSearchClientWrapper.BulkResult(parsed.breakdown(), parsed.failedItems());
+            return new OpenSearchClientWrapper.BulkResult(parsed.breakdown(), parsed.failedItems(),
+                    0L, parsed.noopIndexes());
         }
         List<OpenSearchClientWrapper.FailedItem> completedFailures =
                 new ArrayList<>(parsed.failedItems());
@@ -406,7 +417,8 @@ public final class PreparedBulkSender {
         }
         BulkOutcomeBreakdown completedBreakdown = parsed.breakdown().plus(
                 BulkOutcomeBreakdown.classified(0, attemptedCount - observed));
-        return new OpenSearchClientWrapper.BulkResult(completedBreakdown, completedFailures);
+        return new OpenSearchClientWrapper.BulkResult(completedBreakdown, completedFailures,
+                0L, parsed.noopIndexes());
     }
 
     private static OpenSearchClientWrapper.BulkResult failedBulkResult(

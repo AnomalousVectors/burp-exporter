@@ -12,8 +12,9 @@ import ai.anomalousvectors.tools.burp.utils.config.ExportFieldFilter;
  * Filters and serializes export documents shared across sinks.
  *
  * <p>Each prepared operation receives one client-generated identifier. The identifier is carried in
- * bulk action metadata, never in {@code _source}, and remains stable when that prepared operation is
- * retried, fitted to a smaller search budget, or persisted through spill storage.</p>
+ * bulk action metadata for ordinary exports and remains stable across retry, fitting and spill.
+ * Streaming revisions retain that per-operation identity internally but use a separate capture ID
+ * and strict external version in bulk metadata to replace only their own database document.</p>
  */
 public final class ExportDocumentIdentity {
 
@@ -58,6 +59,29 @@ public final class ExportDocumentIdentity {
             String trafficRouteKey) {
         return preparePreservingOperationId(
                 UUID.randomUUID().toString(), indexName, indexKey, document, trafficRouteKey);
+    }
+
+    /**
+     * Prepares a streaming snapshot with producer-owned replacement metadata before field selection.
+     *
+     * <p>Safe for concurrent callers. Each call receives a distinct operation ID for bookkeeping,
+     * while database writes share the capture's document ID and enforce increasing revisions.</p>
+     *
+     * @param indexName target search index
+     * @param indexKey logical index key
+     * @param document unfiltered source
+     * @param trafficRouteKey internal traffic attribution
+     * @param revision non-null trusted capture identity and revision
+     * @return immutable prepared snapshot metadata with a field-filtered source
+     * @throws IllegalArgumentException if revision is null or the index key is invalid
+     * @throws UncheckedIOException if serialization fails
+     */
+    public static PreparedExportDocument prepareStreaming(String indexName, String indexKey,
+            Map<String, Object> document, String trafficRouteKey, SearchDocumentRevision revision) {
+        if (revision == null) throw new IllegalArgumentException("revision must not be null");
+        String key = normalizeIndexKey(indexName, indexKey);
+        return serialize(UUID.randomUUID().toString(), indexName, key,
+                ExportFieldFilter.filterDocument(document, key), trafficRouteKey, revision);
     }
 
     /**
@@ -121,7 +145,7 @@ public final class ExportDocumentIdentity {
                 original.indexName(),
                 normalizedIndexKey,
                 derivedDocument == null ? Map.of() : derivedDocument,
-                original.trafficRouteKey());
+                original.trafficRouteKey(), original.searchRevision());
     }
 
     private static String normalizeIndexKey(String indexName, String indexKey) {
@@ -136,12 +160,18 @@ public final class ExportDocumentIdentity {
             String normalizedIndexKey,
             Map<String, Object> document,
             String trafficRouteKey) {
+        return serialize(operationId, indexName, normalizedIndexKey, document, trafficRouteKey, null);
+    }
+
+    private static PreparedExportDocument serialize(String operationId, String indexName,
+            String normalizedIndexKey, Map<String, Object> document, String trafficRouteKey,
+            SearchDocumentRevision revision) {
         if (operationId == null || operationId.isBlank()) {
             throw new IllegalArgumentException("operationId must not be blank");
         }
         byte[] bulkNdjsonBytes;
         try {
-            bulkNdjsonBytes = ExportLineCodec.bulkNdjsonBytes(operationId, document);
+            bulkNdjsonBytes = ExportLineCodec.bulkNdjsonBytes(operationId, document, revision);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -152,6 +182,6 @@ public final class ExportDocumentIdentity {
                 document,
                 bulkNdjsonBytes.length,
                 bulkNdjsonBytes,
-                trafficRouteKey == null || trafficRouteKey.isBlank() ? null : trafficRouteKey);
+                trafficRouteKey == null || trafficRouteKey.isBlank() ? null : trafficRouteKey, revision);
     }
 }
