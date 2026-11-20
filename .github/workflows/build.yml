@@ -3,11 +3,9 @@ name: Build & Release Burp Extension
 on:
   push:
     branches: [master]
+  pull_request:
+    branches: [master]
   workflow_dispatch:
-
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,6 +14,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    concurrency:
+      group: build-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     outputs:
       version: ${{ steps.props.outputs.version }}
       filename: ${{ steps.props.outputs.filename }}
@@ -43,16 +44,22 @@ jobs:
           # Keep the existing GitHub-backed cache rather than enabling enhanced caching.
           cache-provider: basic
           # Master builds own the shared cache; other workflows and refs only read it.
-          cache-read-only: ${{ github.ref != 'refs/heads/master' }}
+          cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/master' }}
           validate-wrappers: true
 
       - name: Grant Gradle execute permission
         run: chmod +x gradlew
 
+      - name: Verify release workflow regressions
+        run: python3 -B -m unittest discover -s .github/tests -v
+
       - name: Verify Java quality gates
         run: |
           ./gradlew --no-daemon compileJava compileTestJava spotlessCheck spotbugsMain spotbugsTest
-          git diff-tree --check --no-commit-id -r HEAD
+          git diff --check HEAD^ HEAD
+
+      - name: Verify Javadoc before packaging
+        run: ./gradlew --no-daemon --stacktrace clean javadoc
 
       - name: Build extension (CI/unit lane)
         run: |
@@ -148,8 +155,13 @@ jobs:
 
   release:
     needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # A newer build may queue publication, but must never interrupt an active handoff.
+    concurrency:
+      group: release-master
+      cancel-in-progress: false
     permissions:
       contents: write
     # No checkout or build scripts run with the release job's write-capable token.
@@ -187,49 +199,85 @@ jobs:
           print(f'Verified {filename}: sha256:{digest}; source {os.environ["SOURCE_SHA"]}')
           PY
 
-      - name: Delete existing development release and tag
+      - name: Stage, verify and publish a new build release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: v${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
+          FILENAME: ${{ needs.build.outputs.filename }}
+          EXPECTED_SHA256: ${{ needs.build.outputs.sha256 }}
+          SOURCE_SHA: ${{ needs.build.outputs.source-sha }}
         run: |
           python3 <<'PY'
+          import hashlib
           import json
           import os
-          import urllib.error
-          import urllib.parse
-          import urllib.request
+          import re
+          import subprocess
+          from pathlib import Path
 
-          # Preserve development-release replacement, but ignore only genuine not-found responses.
-          base = f'{os.environ["GITHUB_API_URL"]}/repos/{os.environ["GITHUB_REPOSITORY"]}'
-          tag = urllib.parse.quote(os.environ['RELEASE_TAG'], safe='')
-          headers = {'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
-                     'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
-          def request(method, path):
-              try:
-                  with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers, method=method), timeout=30) as response:
-                      body = response.read()
-                      return json.loads(body) if body else None
-              except urllib.error.HTTPError as error:
-                  if error.code != 404:
-                      raise
-                  return None
+          repo = os.environ['GITHUB_REPOSITORY']
+          source = os.environ['SOURCE_SHA']
+          version = os.environ['VERSION']
+          filename = os.environ['FILENAME']
+          run_id, attempt = os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT']
+          if (os.environ['GITHUB_REF'] != 'refs/heads/master'
+                  or os.environ['GITHUB_EVENT_NAME'] not in ('push', 'workflow_dispatch')
+                  or source != os.environ['GITHUB_SHA']
+                  or not re.fullmatch(r'[0-9a-f]{40}', source)
+                  or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', version)
+                  or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*\.jar', filename)
+                  or not run_id.isdecimal() or not attempt.isdecimal()):
+              raise SystemExit('Unsafe publication identity; existing releases were not modified')
+          artifact = Path('verified') / filename
+          if artifact.is_symlink() or not artifact.is_file():
+              raise SystemExit('Verified distributable is missing or is a symlink')
+          with artifact.open('rb') as stream:
+              digest = hashlib.file_digest(stream, 'sha256').hexdigest()
+          if digest != os.environ['EXPECTED_SHA256']:
+              raise SystemExit('Distributable digest mismatch; existing releases were not modified')
 
-          release = request('GET', f'/releases/tags/{tag}')
-          if release is not None:
-              request('DELETE', f'/releases/{release["id"]}')
-          request('DELETE', f'/git/refs/tags/{tag}')
+          def api(method, path, payload=None):
+              command = ['gh', 'api', '--method', method, f'repos/{repo}/{path}',
+                         '-H', 'Accept: application/vnd.github+json',
+                         '-H', 'X-GitHub-Api-Version: 2022-11-28']
+              if payload is not None:
+                  command.extend(['--input', '-'])
+              result = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
+                                      text=True, stdout=subprocess.PIPE, check=True, timeout=120)
+              return json.loads(result.stdout)
+
+          def is_current():
+              return api('GET', 'git/ref/heads/master')['object']['sha'] == source
+
+          if not is_current():
+              print('Superseded build; Latest and existing downloads remain unchanged.')
+              raise SystemExit(0)
+
+          # Drafts are not Latest. Never delete or replace any published release or asset.
+          tag = f'v{version}-build.{run_id}.{attempt}'
+          release = api('POST', 'releases', {
+              'tag_name': tag, 'target_commitish': source,
+              'name': f'v{version} (build {run_id}.{attempt})',
+              'draft': True, 'prerelease': False, 'make_latest': 'false',
+              'body': f'Always use the latest.\n\nSource: {source}\nSHA-256: {digest}'})
+          release_id = release['id']
+          if not release['draft'] or release['tag_name'] != tag or release['target_commitish'] != source:
+              raise SystemExit('Draft identity mismatch; existing downloads remain unchanged')
+          subprocess.run(['gh', 'release', 'upload', tag, str(artifact), '--repo', repo],
+                         check=True, timeout=300)
+          staged = api('GET', f'releases/{release_id}')
+          assets = staged['assets']
+          if (not staged['draft'] or staged['tag_name'] != tag or staged['target_commitish'] != source
+                  or len(assets) != 1 or assets[0]['name'] != filename
+                  or assets[0]['state'] != 'uploaded' or assets[0]['size'] != artifact.stat().st_size
+                  or assets[0].get('digest') != f'sha256:{digest}'):
+              raise SystemExit('Uploaded draft verification failed; existing downloads remain unchanged')
+          # Publication jobs are serialized; repeat the branch check after the upload as well.
+          if not is_current():
+              print(f'Superseded during upload; {tag} remains a draft and Latest is unchanged.')
+              raise SystemExit(0)
+          published = api('PATCH', f'releases/{release_id}', {'draft': False, 'make_latest': 'true'})
+          if published['draft'] or published['tag_name'] != tag:
+              raise SystemExit('Publication response did not confirm the expected release')
+          print(f'Published {tag}; previous downloads retained. {published["html_url"]}')
           PY
-
-      - name: Create or update GitHub Release
-        uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
-        with:
-          tag: v${{ needs.build.outputs.version }}
-          name: v${{ needs.build.outputs.version }}
-          commit: ${{ needs.build.outputs.source-sha }}
-          allowUpdates: true
-          replacesArtifacts: true
-          artifactErrorsFailBuild: true
-          artifacts: verified/${{ needs.build.outputs.filename }}
-          token: ${{ github.token }}
-          body: |
-            Always use the latest.
