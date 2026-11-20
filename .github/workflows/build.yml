@@ -199,7 +199,7 @@ jobs:
           print(f'Verified {filename}: sha256:{digest}; source {os.environ["SOURCE_SHA"]}')
           PY
 
-      - name: Stage, verify and publish a new build release
+      - name: Stage, verify and replace the single release asset
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
@@ -244,7 +244,7 @@ jobs:
                   command.extend(['--input', '-'])
               result = subprocess.run(command, input=json.dumps(payload) if payload is not None else None,
                                       text=True, stdout=subprocess.PIPE, check=True, timeout=120)
-              return json.loads(result.stdout)
+              return json.loads(result.stdout) if result.stdout.strip() else None
 
           def is_current():
               return api('GET', 'git/ref/heads/master')['object']['sha'] == source
@@ -253,31 +253,104 @@ jobs:
               print('Superseded build; Latest and existing downloads remain unchanged.')
               raise SystemExit(0)
 
-          # Drafts are not Latest. Never delete or replace any published release or asset.
-          tag = f'v{version}-build.{run_id}.{attempt}'
-          release = api('POST', 'releases', {
-              'tag_name': tag, 'target_commitish': source,
-              'name': f'v{version} (build {run_id}.{attempt})',
-              'draft': True, 'prerelease': False, 'make_latest': 'false',
-              'body': f'Always use the latest.\n\nSource: {source}\nSHA-256: {digest}'})
+          # Reuse the published version. Temporary asset names are not release versions or tags.
+          tag = f'v{version}'
+          release = api('GET', f'releases/tags/{tag}')
           release_id = release['id']
-          if not release['draft'] or release['tag_name'] != tag or release['target_commitish'] != source:
-              raise SystemExit('Draft identity mismatch; existing downloads remain unchanged')
-          subprocess.run(['gh', 'release', 'upload', tag, str(artifact), '--repo', repo],
-                         check=True, timeout=300)
-          staged = api('GET', f'releases/{release_id}')
-          assets = staged['assets']
-          if (not staged['draft'] or staged['tag_name'] != tag or staged['target_commitish'] != source
-                  or len(assets) != 1 or assets[0]['name'] != filename
-                  or assets[0]['state'] != 'uploaded' or assets[0]['size'] != artifact.stat().st_size
-                  or assets[0].get('digest') != f'sha256:{digest}'):
-              raise SystemExit('Uploaded draft verification failed; existing downloads remain unchanged')
-          # Publication jobs are serialized; repeat the branch check after the upload as well.
+          if release['draft'] or release['prerelease'] or release['tag_name'] != tag:
+              raise SystemExit('Expected published development release is unavailable')
+          temporary_pattern = re.compile(re.escape(artifact.stem) + r'\.(staging|previous)-[0-9]+\.[0-9]+\.jar')
+          stage_name = f'{artifact.stem}.staging-{run_id}.{attempt}.jar'
+          previous_name = f'{artifact.stem}.previous-{run_id}.{attempt}.jar'
+
+          def assets():
+              result = api('GET', f'releases/{release_id}/assets?per_page=100')
+              if len(result) >= 100:
+                  raise RuntimeError('Unexpected asset inventory size; no broad cleanup performed')
+              return result
+
+          def matching_asset(items, name):
+              matches = [item for item in items if item['name'] == name]
+              if len(matches) > 1:
+                  raise RuntimeError('Ambiguous release asset identity')
+              return matches[0] if matches else None
+
+          def verified_asset(item, name):
+              return (item is not None and item['name'] == name and item['state'] == 'uploaded'
+                      and item['size'] == artifact.stat().st_size
+                      and item.get('digest') == f'sha256:{digest}')
+
+          initial = assets()
+          if any(item['name'] != filename and not temporary_pattern.fullmatch(item['name']) for item in initial):
+              raise SystemExit('Unexpected release asset; no user-owned asset was removed')
+          if matching_asset(initial, stage_name) or matching_asset(initial, previous_name):
+              raise SystemExit('This publication attempt already has temporary assets; rerun with a new attempt')
+          previous = matching_asset(initial, filename)
+          upload_url = release['upload_url'].split('{', 1)[0]
+          if upload_url != f'https://uploads.github.com/repos/{repo}/releases/{release_id}/assets':
+              raise SystemExit('Unexpected upload endpoint')
+          # Upload every byte before touching the canonical filename. No extra local JAR is made.
+          uploaded = subprocess.run(
+              ['gh', 'api', '--method', 'POST', f'{upload_url}?name={stage_name}',
+               '-H', 'Content-Type: application/java-archive', '--input', str(artifact)],
+              text=True, stdout=subprocess.PIPE, check=True, timeout=300)
+          stage_id = json.loads(uploaded.stdout)['id']
+          staged = api('GET', f'releases/assets/{stage_id}')
+          if not verified_asset(staged, stage_name):
+              # Retain the canonical download, and remove only this attempt's named upload.
+              if previous and staged['name'] == stage_name:
+                  api('DELETE', f'releases/assets/{stage_id}')
+              raise SystemExit('Staged upload verification failed; canonical download was not replaced')
           if not is_current():
-              print(f'Superseded during upload; {tag} remains a draft and Latest is unchanged.')
+              if previous:
+                  api('DELETE', f'releases/assets/{stage_id}')
+              print('Superseded during upload; canonical asset was not replaced.')
               raise SystemExit(0)
-          published = api('PATCH', f'releases/{release_id}', {'draft': False, 'make_latest': 'true'})
-          if published['draft'] or published['tag_name'] != tag:
-              raise SystemExit('Publication response did not confirm the expected release')
-          print(f'Published {tag}; previous downloads retained. {published["html_url"]}')
+
+          # Only two metadata renames span the filename gap; the old bytes remain recoverable.
+          try:
+              if previous:
+                  api('PATCH', f'releases/assets/{previous["id"]}', {'name': previous_name})
+              for rename_attempt in range(3):
+                  try:
+                      api('PATCH', f'releases/assets/{stage_id}', {'name': filename})
+                      break
+                  except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                      if rename_attempt == 2:
+                          raise
+              if not verified_asset(api('GET', f'releases/assets/{stage_id}'), filename):
+                  raise RuntimeError('Canonical asset verification failed')
+          except (subprocess.CalledProcessError, subprocess.TimeoutExpired, RuntimeError):
+              # Re-read after uncertain API outcomes; roll back names, never upload the old JAR again.
+              current = assets()
+              old = matching_asset(current, previous_name)
+              canonical = matching_asset(current, filename)
+              if old and previous and old['id'] == previous['id']:
+                  if canonical and canonical['id'] == stage_id:
+                      api('PATCH', f'releases/assets/{stage_id}', {'name': stage_name})
+                      canonical = None
+                  if canonical is None:
+                      api('PATCH', f'releases/assets/{old["id"]}', {'name': filename})
+              raise
+
+          # Advance only the existing development tag, without forcing a non-fast-forward move.
+          moved = api('PATCH', f'git/refs/tags/{tag}', {'sha': source, 'force': False})
+          if moved['object']['sha'] != source:
+              raise SystemExit('Development tag did not confirm the verified source')
+          published = api('PATCH', f'releases/{release_id}', {
+              'name': tag, 'body': 'Always use the latest.', 'target_commitish': source,
+              'make_latest': 'true'})
+          if published['draft'] or published['tag_name'] != tag or published['name'] != tag:
+              raise SystemExit('Single-release publication was not confirmed')
+          if api('GET', f'git/ref/tags/{tag}')['object']['sha'] != source:
+              raise SystemExit('Published source tag mismatch; temporary recovery copies retained')
+          # Delete only reserved temporary assets, after the replacement and source are verified.
+          for item in assets():
+              if item['id'] != stage_id and temporary_pattern.fullmatch(item['name']):
+                  api('DELETE', f'releases/assets/{item["id"]}')
+          final_assets = assets()
+          if (len(final_assets) != 1 or final_assets[0]['id'] != stage_id
+                  or not verified_asset(final_assets[0], filename)):
+              raise SystemExit('Final single-asset layout was not confirmed')
+          print(f'Published {tag}; one normal JAR, temporary assets removed. {published["html_url"]}')
           PY
