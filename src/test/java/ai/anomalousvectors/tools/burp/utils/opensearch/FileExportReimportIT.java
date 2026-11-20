@@ -133,7 +133,7 @@ class FileExportReimportIT {
         client.execute(post, response -> {
             String body;
             try {
-                body = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                body = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse bulk response body", e);
             }

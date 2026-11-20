@@ -291,7 +291,7 @@ public class OpenSearchSink {
                 try {
                     responseBody = response.getEntity() == null
                             ? ""
-                            : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                            : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
                 } catch (ParseException e) {
                     throw new IOException("Failed to parse index creation response.", e);
                 }
@@ -355,7 +355,7 @@ public class OpenSearchSink {
             try {
                 responseBody = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse index-list response.", e);
             }
@@ -403,7 +403,7 @@ public class OpenSearchSink {
             try {
                 body = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse existing index settings response.", e);
             }
@@ -444,7 +444,7 @@ public class OpenSearchSink {
             try {
                 body = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse existing index mapping response.", e);
             }

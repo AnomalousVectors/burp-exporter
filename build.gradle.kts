@@ -84,6 +84,20 @@ dependencies {
     // runtimeOnly
     runtimeOnly(libs.logbackClassic)
     runtimeOnly(libs.parsson)
+
+    // Keep shared transitive libraries on reviewed releases without adding unused modules.
+    // Byte Buddy's implementation and agent stay aligned only on the test classpath.
+    constraints {
+        implementation(libs.commonsCodec)
+        implementation(libs.commonsIo)
+        implementation(libs.commonsLang)
+        implementation(libs.commonsLogging)
+        implementation(libs.httpCore5)
+        implementation(libs.httpCore5H2)
+        testImplementation(libs.byteBuddy)
+        testImplementation(libs.byteBuddyAgent)
+        testImplementation(libs.jspecify)
+    }
 }
 
 // Profile credentials use synchronous STS/SSO clients; retain their Apache5 transport.

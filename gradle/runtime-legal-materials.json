@@ -2,34 +2,34 @@
     "schemaVersion": 1,
     "components": [
         {
-            "coordinate": "ch.qos.logback:logback-classic:1.6.5",
-            "binarySha256": "2e8c73aadad525e854af1ac95793af3dc75ecedd53c010ea2389de44c08e729b",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-classic/1.6.5/logback-classic-1.6.5-sources.jar"
+            "coordinate": "ch.qos.logback:logback-classic:1.6.8",
+            "binarySha256": "3fb623a3dd20bcc00790616165a0d53b40b3a7407d78e56d985ad3a7bd1d2ef0",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-classic/1.6.8/logback-classic-1.6.8-sources.jar"
         },
         {
-            "coordinate": "ch.qos.logback:logback-core:1.6.5",
-            "binarySha256": "03dcbf053b40166849b8eb0a30cbde40c04a448820e9a7589c4b0a2ec3a9db63",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-core/1.6.5/logback-core-1.6.5-sources.jar"
+            "coordinate": "ch.qos.logback:logback-core:1.6.8",
+            "binarySha256": "dc59a732c3fcb60b9a5df01c459a705fccf7dbe3b4858267265ffc72706685fa",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-core/1.6.8/logback-core-1.6.8-sources.jar"
         },
         {
-            "coordinate": "com.fasterxml.jackson.core:jackson-annotations:2.22",
-            "binarySha256": "21ddb598807d3a51a876704eb979d9296e1c6a6f47ab1826ff88c6d6a127a2d0",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.22/jackson-annotations-2.22-sources.jar"
+            "coordinate": "com.fasterxml.jackson.core:jackson-annotations:2.23",
+            "binarySha256": "e5b60c3088e0887b290ff9226394354589a1dad583743944b7f5538661056b4c",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.23/jackson-annotations-2.23-sources.jar"
         },
         {
-            "coordinate": "com.fasterxml.jackson.core:jackson-core:2.22.3",
-            "binarySha256": "8a501126a385b25841915d839508f8a66e2a0dbc8a6709d055ef3b3e852b094c",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.22.3/jackson-core-2.22.3-sources.jar"
+            "coordinate": "com.fasterxml.jackson.core:jackson-core:2.23.0",
+            "binarySha256": "449798beb4c4ec26de9cc25b39ca2198036883fb905ca968cbef7136d19a25d9",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.23.0/jackson-core-2.23.0-sources.jar"
         },
         {
-            "coordinate": "com.fasterxml.jackson.core:jackson-databind:2.22.3",
-            "binarySha256": "556db5439e206114346043f68d200497dc96a0bca62a360a81784092ebd0e0a9",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.22.3/jackson-databind-2.22.3-sources.jar"
+            "coordinate": "com.fasterxml.jackson.core:jackson-databind:2.23.0",
+            "binarySha256": "abd1edd2736c764da03fe6cb7a9de70d48dd0a198aed131604c564bff62f9cc1",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.23.0/jackson-databind-2.23.0-sources.jar"
         },
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
-            "binarySha256": "efa8c6fb2fc4255d70346bd2eadedf68a8605d797c96c1f8d36096f4b6dc1af4",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/github/luben/zstd-jni/1.5.7-21/zstd-jni-1.5.7-21-sources.jar"
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
+            "binarySha256": "95506ee277e830852658b65713b714262a6171121c7e45f09300eb109f44a038",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/github/luben/zstd-jni/1.5.7-28/zstd-jni-1.5.7-28-sources.jar"
         },
         {
             "coordinate": "com.google.code.findbugs:jsr305:3.0.2",
@@ -37,29 +37,29 @@
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2-sources.jar"
         },
         {
-            "coordinate": "com.miglayout:miglayout-core:11.5.0",
-            "binarySha256": "dadbdb533aae82ab89337fca1a84e14b588e481a74fb2938201daf7eecd8a0c2",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-core/11.5.0/miglayout-core-11.5.0-sources.jar"
+            "coordinate": "com.miglayout:miglayout-core:11.5.2",
+            "binarySha256": "c2cfbbd26d08de283183af4ebfbb1e629c284e72e8cd577014672ab8e6e43756",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-core/11.5.2/miglayout-core-11.5.2-sources.jar"
         },
         {
-            "coordinate": "com.miglayout:miglayout-swing:11.5.0",
-            "binarySha256": "23f86a4b9ff15758e80ca0956c34f146cfb4df89e2b6a7fd5ff43713aaeb28d8",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-swing/11.5.0/miglayout-swing-11.5.0-sources.jar"
+            "coordinate": "com.miglayout:miglayout-swing:11.5.2",
+            "binarySha256": "f7e1f78da60b5a2abc4f7d00cdb5eaaa7a7425cf46a4c5d6ad7922d298f626db",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-swing/11.5.2/miglayout-swing-11.5.2-sources.jar"
         },
         {
-            "coordinate": "commons-codec:commons-codec:1.19.0",
-            "binarySha256": "5c3881e4f556855e9c532927ee0c9dfde94cc66760d5805c031a59887070af5f",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/commons-codec/commons-codec/1.19.0/commons-codec-1.19.0-sources.jar"
+            "coordinate": "commons-codec:commons-codec:1.23.0",
+            "binarySha256": "47504a3ce71d73a1b0af07675546b8d8c5af87f82ef12b6381f9eb3c17dd5a5b",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/commons-codec/commons-codec/1.23.0/commons-codec-1.23.0-sources.jar"
         },
         {
-            "coordinate": "commons-io:commons-io:2.20.0",
-            "binarySha256": "df90bba0fe3cb586b7f164e78fe8f8f4da3f2dd5c27fa645f888100ccc25dd72",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/commons-io/commons-io/2.20.0/commons-io-2.20.0-sources.jar"
+            "coordinate": "commons-io:commons-io:2.22.0",
+            "binarySha256": "2b9a7b1f726fb86216dbd2c8321eabe0221dbd5b1be81c18e1cb53811b104758",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/commons-io/commons-io/2.22.0/commons-io-2.22.0-sources.jar"
         },
         {
-            "coordinate": "commons-logging:commons-logging:1.3.6",
-            "binarySha256": "f8ead8943401081dea0aa824b5b1ba40a0e4ed297a572a0f02258150a0b62357",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/commons-logging/commons-logging/1.3.6/commons-logging-1.3.6-sources.jar"
+            "coordinate": "commons-logging:commons-logging:1.4.0",
+            "binarySha256": "d175dbd751dd782a63bde28c7a039520e971f25e84b79c19b8435edc3603e0dc",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/commons-logging/commons-logging/1.4.0/commons-logging-1.4.0-sources.jar"
         },
         {
             "coordinate": "jakarta.annotation:jakarta.annotation-api:1.3.5",
@@ -77,9 +77,24 @@
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/commons/commons-compress/1.28.0/commons-compress-1.28.0-sources.jar"
         },
         {
-            "coordinate": "org.apache.commons:commons-lang3:3.18.0",
-            "binarySha256": "4eeeae8d20c078abb64b015ec158add383ac581571cddc45c68f0c9ae0230720",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/commons/commons-lang3/3.18.0/commons-lang3-3.18.0-sources.jar"
+            "coordinate": "org.apache.commons:commons-lang3:3.22.0",
+            "binarySha256": "2ea88052c8662bf51874f4159467ba24b040b22dfd54d2596e11936896c76192",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/commons/commons-lang3/3.22.0/commons-lang3-3.22.0-sources.jar"
+        },
+        {
+            "coordinate": "org.apache.httpcomponents.client5:httpclient5:5.6.5",
+            "binarySha256": "a10b555f7c85a720d1011a086d679d854b155816cde91a40198cc98c2b0867e8",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/client5/httpclient5/5.6.5/httpclient5-5.6.5-sources.jar"
+        },
+        {
+            "coordinate": "org.apache.httpcomponents.core5:httpcore5-h2:5.5",
+            "binarySha256": "129ba087557420b311740652757f4265a83e91feb013e7bacab47db1ac1305f2",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/core5/httpcore5-h2/5.5/httpcore5-h2-5.5-sources.jar"
+        },
+        {
+            "coordinate": "org.apache.httpcomponents.core5:httpcore5:5.5",
+            "binarySha256": "6431b7cf03143d02926588434f1b5ad6762d7b276a0bdffd615be4f79063bfa9",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/core5/httpcore5/5.5/httpcore5-5.5-sources.jar"
         },
         {
             "coordinate": "org.apache.httpcomponents:httpasyncclient:4.1.5",
@@ -102,21 +117,6 @@
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/httpcore/4.4.16/httpcore-4.4.16-sources.jar"
         },
         {
-            "coordinate": "org.apache.httpcomponents.client5:httpclient5:5.6.4",
-            "binarySha256": "bdef5f8841145cd76c4c605ff301bc840eea0d5292332b7b892a93316c0d8ee1",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/client5/httpclient5/5.6.4/httpclient5-5.6.4-sources.jar"
-        },
-        {
-            "coordinate": "org.apache.httpcomponents.core5:httpcore5-h2:5.4.3",
-            "binarySha256": "c7db7026b8e2dea39132b04a6069f6671e2858309b20a146ec5c7dd6ed73a0b6",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/core5/httpcore5-h2/5.4.3/httpcore5-h2-5.4.3-sources.jar"
-        },
-        {
-            "coordinate": "org.apache.httpcomponents.core5:httpcore5:5.4.3",
-            "binarySha256": "18bfbbabb478dfb67f31aeaf428c387f3c3df654582e1309f708ee1f3086830a",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/apache/httpcomponents/core5/httpcore5/5.4.3/httpcore5-5.4.3-sources.jar"
-        },
-        {
             "coordinate": "org.brotli:dec:0.1.2",
             "binarySha256": "615c0c3efef990d77831104475fba6a1f7971388691d4bad1471ad84101f6d52",
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/brotli/dec/0.1.2/dec-0.1.2-sources.jar"
@@ -127,9 +127,9 @@
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/eclipse/parsson/parsson/1.1.9/parsson-1.1.9-sources.jar"
         },
         {
-            "coordinate": "org.elasticsearch.client:elasticsearch-rest-client:9.5.4",
-            "binarySha256": "9bfbaad0854ccafdb0a8ea0a322af4b55167bf23db07f136216e63f7e807f218",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/elasticsearch/client/elasticsearch-rest-client/9.5.4/elasticsearch-rest-client-9.5.4-sources.jar"
+            "coordinate": "org.elasticsearch.client:elasticsearch-rest-client:9.5.6",
+            "binarySha256": "3f1a4f9fc8dbb4267d22cb9899afa28f8aff5a9c6d87295d25b42290585f8ee4",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/elasticsearch/client/elasticsearch-rest-client/9.5.6/elasticsearch-rest-client-9.5.6-sources.jar"
         },
         {
             "coordinate": "org.jfree:jfreechart:1.5.6",
@@ -137,9 +137,9 @@
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/jfree/jfreechart/1.5.6/jfreechart-1.5.6-sources.jar"
         },
         {
-            "coordinate": "org.opensearch.client:opensearch-java:3.10.0",
-            "binarySha256": "6732f392c9180033451ed044baf39a8844eab3a014a3f361c0d665f98d687b6c",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/opensearch/client/opensearch-java/3.10.0/opensearch-java-3.10.0-sources.jar"
+            "coordinate": "org.opensearch.client:opensearch-java:3.11.0",
+            "binarySha256": "335cebbd36c883fa130094867f03384e7b281348caed35dc6d395933bd138fa6",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/opensearch/client/opensearch-java/3.11.0/opensearch-java-3.11.0-sources.jar"
         },
         {
             "coordinate": "org.reactivestreams:reactive-streams:1.0.4",
@@ -152,154 +152,154 @@
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/org/slf4j/slf4j-api/2.0.20/slf4j-api-2.0.20-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:annotations:2.55.11",
-            "binarySha256": "b20060c87bf2072df7ac211e689537df35073967305a65ff48f21e9e6085c6df",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/annotations/2.55.11/annotations-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:annotations:2.59.5",
+            "binarySha256": "fb32c6ae0894dd06eb53188a6f232186c3b314deb856d98d0dc45d32d2fdd2b6",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/annotations/2.59.5/annotations-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:apache5-client:2.55.11",
-            "binarySha256": "674dce235b3e4e728ab88e5b4378c793d70d0d9b5d66dc1b8b7cc28faa872c41",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/apache5-client/2.55.11/apache5-client-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:apache5-client:2.59.5",
+            "binarySha256": "05ef48f315ecb9424b12a3f3e8d930f84943bdcc93869b1972174c49c756bbff",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/apache5-client/2.59.5/apache5-client-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:auth:2.55.11",
-            "binarySha256": "d6bfefffed55a1125b98982a6212d347d14313491e759b869ae91c05b4c3e5e1",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/auth/2.55.11/auth-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:auth:2.59.5",
+            "binarySha256": "558bf4cd2346a3ad65791f0a6b1116ff70d2f6f6210a8a2dd98033f5318def0d",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/auth/2.59.5/auth-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:aws-core:2.55.11",
-            "binarySha256": "8afeb31129d5861123852a9ee1aa74733818d1b7c16f739cd7d2dd4fb26930e0",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/aws-core/2.55.11/aws-core-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:aws-core:2.59.5",
+            "binarySha256": "578b8356dd6e9bce1203d9b2a4a91b3af995ec824f2f02486df99b51e080600d",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/aws-core/2.59.5/aws-core-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:aws-json-protocol:2.55.11",
-            "binarySha256": "76943649e9b68d1ad6e27c2bfcfc50732cf5de02e77bd5d470db9774c6d333e7",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/aws-json-protocol/2.55.11/aws-json-protocol-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:aws-json-protocol:2.59.5",
+            "binarySha256": "78ffe368b4bb64b9a4994f943d14221f83e579003b3d16464ab9bc19893daf17",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/aws-json-protocol/2.59.5/aws-json-protocol-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:aws-query-protocol:2.55.11",
-            "binarySha256": "3c94a5dc3de77c2f1cac282d725bbcf74a635f9e3c600f5563953c9d3eea7232",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/aws-query-protocol/2.55.11/aws-query-protocol-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:aws-query-protocol:2.59.5",
+            "binarySha256": "27da9a98e94b311c6c676495d34dcb366bbc4f6bbdb62b6009be508724d78d1c",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/aws-query-protocol/2.59.5/aws-query-protocol-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:checksums-spi:2.55.11",
-            "binarySha256": "e561b6cba469a6e28018bda29f5cba585c22fac1c6f44aaea716b4fc100ea7d0",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/checksums-spi/2.55.11/checksums-spi-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:checksums-spi:2.59.5",
+            "binarySha256": "11313c20864ab10a35cbf26573d328dfd4fb0308719f96263c761771fcfb84e3",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/checksums-spi/2.59.5/checksums-spi-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:checksums:2.55.11",
-            "binarySha256": "e9c83b554d66fc0d0e5c852cbd1e0fb83d435ac4b8ee9f972c9aeb7a8b058836",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/checksums/2.55.11/checksums-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:checksums:2.59.5",
+            "binarySha256": "cdc87fd3797def3f43e5b04383ec30439ddc864e7ea7f9481f784fd073648c0d",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/checksums/2.59.5/checksums-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:endpoints-spi:2.55.11",
-            "binarySha256": "1edaac051e4a240de05bd01f10efae2ff5280b25b074ee4d22e162fc5204d17e",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/endpoints-spi/2.55.11/endpoints-spi-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:endpoints-spi:2.59.5",
+            "binarySha256": "c469fa29cd11fe98df32a503abdc127654df11fb1a965194dd0a0f159f69f511",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/endpoints-spi/2.59.5/endpoints-spi-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:http-auth-aws-eventstream:2.55.11",
-            "binarySha256": "d9148a8a9ca96f9bbd8114bdc46be67126c156509fedd1ff1c230c5e944ddb99",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth-aws-eventstream/2.55.11/http-auth-aws-eventstream-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:eventstream:2.59.5",
+            "binarySha256": "ccb8b51c002cfd904c8c20d3e97d139d3f33d225cec62a7a12687572073ec91c",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/eventstream/2.59.5/eventstream-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:http-auth-aws:2.55.11",
-            "binarySha256": "53e3a503205f8d0b605713263330baba0b9d224da1575fb7037f3a0eb1d00609",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth-aws/2.55.11/http-auth-aws-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:http-auth-aws-eventstream:2.59.5",
+            "binarySha256": "8ec0c9b0066a46e506ecdd78d2415053eadd861d0e14739f71b9907773a340b4",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth-aws-eventstream/2.59.5/http-auth-aws-eventstream-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:http-auth-spi:2.55.11",
-            "binarySha256": "18b5f74f43e4eed040a12ad127482185d85792a87f9140de23603b34dc3c2abc",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth-spi/2.55.11/http-auth-spi-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:http-auth-aws:2.59.5",
+            "binarySha256": "91fb1b577d047c02fc77b65a31c575ff19efae031ae4e5343f6129fd8256ee59",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth-aws/2.59.5/http-auth-aws-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:http-auth:2.55.11",
-            "binarySha256": "e96fb26f670cd1a5b4b8f250ce1e4fea23f1731a568540cb01c90f4347fa971b",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth/2.55.11/http-auth-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:http-auth-spi:2.59.5",
+            "binarySha256": "c5402f967899b0ceb4c4f4d07c3b7de04fbafd1f440df7d105a9e68b5185c613",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth-spi/2.59.5/http-auth-spi-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:http-client-spi:2.55.11",
-            "binarySha256": "a115552088749ada4b036110ac61be288bcb4a5fc5bd286dd75190dc25458779",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-client-spi/2.55.11/http-client-spi-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:http-auth:2.59.5",
+            "binarySha256": "fefbe400b631bb1c8a0a15ed82266f0e5ed2d60869489a50416be812cd33c2ae",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-auth/2.59.5/http-auth-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:identity-spi:2.55.11",
-            "binarySha256": "9b3390d6d2fc5b8e6d9a4cf07c549b99999598c3ffd7f754b8393aed4dd38fff",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/identity-spi/2.55.11/identity-spi-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:http-client-spi:2.59.5",
+            "binarySha256": "24d1327ab7e50929bf2faa3b363c51952c3ad5f387def53c756db2cf2799dcf5",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/http-client-spi/2.59.5/http-client-spi-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:json-utils:2.55.11",
-            "binarySha256": "948bc7918cb25cac185b86248a683504a25a9b1bcd429cdcdb656bf312f9d501",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/json-utils/2.55.11/json-utils-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:identity-spi:2.59.5",
+            "binarySha256": "41cc2b7c3de32e01d57a2276f259e9d04452211f5ac639dcf22374aadd6e3a27",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/identity-spi/2.59.5/identity-spi-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:metrics-spi:2.55.11",
-            "binarySha256": "892cbb32c88bf39374b401fd6f1cad46b87f0be05d2b4ab2bd240babfc984d8f",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/metrics-spi/2.55.11/metrics-spi-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:json-utils:2.59.5",
+            "binarySha256": "941e5ff6bd79aa0d6b928dc66d7d73b62ac3654248f657ae58a10f97014eed8b",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/json-utils/2.59.5/json-utils-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:profiles:2.55.11",
-            "binarySha256": "db3808a7cb195505f4c65db13148deeea893b1b76ba0edbd151afaf96c896b37",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/profiles/2.55.11/profiles-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:metrics-spi:2.59.5",
+            "binarySha256": "41b1cddd6458fd3d76fce59d74cb032fd889c386fee973ee966f339407deba1e",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/metrics-spi/2.59.5/metrics-spi-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:protocol-core:2.55.11",
-            "binarySha256": "efa22e92ecb42f89a1f50eda57692019979a5f899768be40f0179bf82d7829c1",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/protocol-core/2.55.11/protocol-core-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:profiles:2.59.5",
+            "binarySha256": "f4579b393261308bd6d63d7c6f101d06b58a8b5a95086909d49f0eda6ed9f113",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/profiles/2.59.5/profiles-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:regions:2.55.11",
-            "binarySha256": "d6f6cb48bee24acfdb6fcabe64982f406cf1cd726d0b739b9527226856eba75d",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/regions/2.55.11/regions-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:protocol-core:2.59.5",
+            "binarySha256": "dd4ef9a6dd55e5a1f193b2b4b2fea8381e9e0a1548cd3c3522ea799cf2964081",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/protocol-core/2.59.5/protocol-core-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:retries-spi:2.55.11",
-            "binarySha256": "59c58a12fc292d43ad20c020184c2b749fb5c7dedf8ca8062854d5abdbab5739",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/retries-spi/2.55.11/retries-spi-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:regions:2.59.5",
+            "binarySha256": "a28363045a8045756625f8172d53b4615a567a29791cb750883b3bb1c3f6a339",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/regions/2.59.5/regions-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:retries:2.55.11",
-            "binarySha256": "b006c8f7cd96723de4e423fd3de6cfbb965657b08f612b74db3ff2d287907d45",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/retries/2.55.11/retries-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:retries-spi:2.59.5",
+            "binarySha256": "68dd583c7b2f5491ec7dc5c04355f3795ea20ab5c2bbc8a4056cc86b87d1fbb7",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/retries-spi/2.59.5/retries-spi-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:sdk-core:2.55.11",
-            "binarySha256": "518b50737bb48ad364da31a0a90e45ec8e4519093a678b6a1d36eea6a93e650c",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/sdk-core/2.55.11/sdk-core-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:retries:2.59.5",
+            "binarySha256": "713a4d6398ee4712af030ccaf418fd21659526237fae9362a62106ae555309f5",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/retries/2.59.5/retries-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:sso:2.55.11",
-            "binarySha256": "462f65e54710ef193570586cc99b2d66259e9651922d299fc1c34e8df80af91c",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/sso/2.55.11/sso-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:sdk-core:2.59.5",
+            "binarySha256": "78a0848c61ff916c573fbbf493403bb235e0b59aabe422a58295742bb44445dd",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/sdk-core/2.59.5/sdk-core-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:ssooidc:2.55.11",
-            "binarySha256": "cb29188d1603a6a223c1aff6e750bb5d112d8bf9d08c05de48f62be6c5a4fe8b",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/ssooidc/2.55.11/ssooidc-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:sso:2.59.5",
+            "binarySha256": "6686d41a10ec4d7492739bc78ed10895a79c8ef7e317a9fa4843789b29d37d4c",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/sso/2.59.5/sso-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:sts:2.55.11",
-            "binarySha256": "0703770a6b4418d99c3498186e23bed9ce226ef53fd8e3a1a4c60d6e822e994c",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/sts/2.55.11/sts-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:ssooidc:2.59.5",
+            "binarySha256": "ff6b784e1c2dbe1494e6f01fc09b18f73d2dc85f93731ab35781cea08359df2b",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/ssooidc/2.59.5/ssooidc-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:third-party-jackson-core:2.55.11",
-            "binarySha256": "416bce03f07b4da230154eea9a8f35453d7888eb850d82e4a30f0bf587d87c47",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/third-party-jackson-core/2.55.11/third-party-jackson-core-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:sts:2.59.5",
+            "binarySha256": "57a8be0e269c1c60aa4989ce98e355cb14f54ca22167159a3da1b94b8f4ef4f6",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/sts/2.59.5/sts-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:utils-lite:2.55.11",
-            "binarySha256": "c73273c22b51dc1effaefe21c197a03dd38821817c21afb86ef9e8e020fe59f0",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/utils-lite/2.55.11/utils-lite-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:third-party-jackson-core:2.59.5",
+            "binarySha256": "cd03a6b1ce87b38c83d62f165ef5bc8b27c79a501839f18c7dc37169ef95338a",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/third-party-jackson-core/2.59.5/third-party-jackson-core-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.awssdk:utils:2.55.11",
-            "binarySha256": "f4471c410ee07adaccec23a6fcc519a2b0d272e6c93c9f0dbf463909b4bf7c5e",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/utils/2.55.11/utils-2.55.11-sources.jar"
+            "coordinate": "software.amazon.awssdk:utils-lite:2.59.5",
+            "binarySha256": "3ccf50fb9a19635c0ba94507275b6b57ba8d25fc3e2563ed449ecda49de8a3f3",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/utils-lite/2.59.5/utils-lite-2.59.5-sources.jar"
         },
         {
-            "coordinate": "software.amazon.eventstream:eventstream:1.0.1",
-            "binarySha256": "0c37d8e696117f02c302191b8110b0d0eb20fa412fce34c3a269ec73c16ce822",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/eventstream/eventstream/1.0.1/eventstream-1.0.1-sources.jar"
+            "coordinate": "software.amazon.awssdk:utils:2.59.5",
+            "binarySha256": "a6521ae69af90769472767586825cdd6ef03ff14898b9fba591f71582e45b754",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/software/amazon/awssdk/utils/2.59.5/utils-2.59.5-sources.jar"
         }
     ],
     "materials": [
@@ -322,18 +322,18 @@
         {
             "id": "maven-7",
             "role": "published-sources",
-            "url": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-core/11.5.0/miglayout-core-11.5.0-sources.jar",
-            "sha256": "504e29efb5a4b017ba35b5f7ecb42c53c3f033cead201a14dcf6be17ed2e7f09",
-            "bytes": 113050,
-            "path": "maven/com.miglayout/miglayout-core/11.5.0/sources.jar"
+            "url": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-core/11.5.2/miglayout-core-11.5.2-sources.jar",
+            "sha256": "f2283ff2b0ce55bb10eacd85aa8077cd648a2ef45368e753ca9dbe80e07f0dee",
+            "bytes": 113553,
+            "path": "maven/com.miglayout/miglayout-core/11.5.2/sources.jar"
         },
         {
             "id": "maven-8",
             "role": "published-sources",
-            "url": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-swing/11.5.0/miglayout-swing-11.5.0-sources.jar",
-            "sha256": "66dbae798614e729cc6a914d50b133c66aaac2d565b040694466b7dcfe07fb5a",
-            "bytes": 18375,
-            "path": "maven/com.miglayout/miglayout-swing/11.5.0/sources.jar"
+            "url": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-swing/11.5.2/miglayout-swing-11.5.2-sources.jar",
+            "sha256": "27e16ecc2697da44e5cfa230db5392c62f00f603db332c369c78a982848286ab",
+            "bytes": 18681,
+            "path": "maven/com.miglayout/miglayout-swing/11.5.2/sources.jar"
         },
         {
             "id": "maven-23",
@@ -362,18 +362,18 @@
         {
             "id": "logback-parent",
             "role": "published-parent-pom",
-            "url": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-parent/1.6.5/logback-parent-1.6.5.pom",
-            "sha256": "a0338a816ed312062517969dad0b1e55a6ecc0ad2b56f57491a260a6d456fc15",
-            "bytes": 18817,
-            "path": "parents/logback-parent.pom"
+            "url": "https://repo.maven.apache.org/maven2/ch/qos/logback/logback-parent/1.6.8/logback-parent-1.6.8.pom",
+            "sha256": "1cab698421db70127f7f4366e38ff0bfd0c7395d8ae08a782a291a5161a532d2",
+            "bytes": 19493,
+            "path": "parents/logback-parent-1.6.8.pom"
         },
         {
             "id": "miglayout-parent",
             "role": "published-parent-pom",
-            "url": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-parent/11.5.0/miglayout-parent-11.5.0.pom",
-            "sha256": "4ffd13999a76ca81ab8d0091430db65a13ddfe561de041e5b416084065de613f",
-            "bytes": 14170,
-            "path": "parents/miglayout-parent.pom"
+            "url": "https://repo.maven.apache.org/maven2/com/miglayout/miglayout-parent/11.5.2/miglayout-parent-11.5.2.pom",
+            "sha256": "1b3f764d3c55bdf3a8e51aedce808daf52984b87d69002522aef0a5913838552",
+            "bytes": 14694,
+            "path": "parents/miglayout-parent-11.5.2.pom"
         },
         {
             "id": "brotli-parent",
@@ -386,42 +386,42 @@
         {
             "id": "legal-1",
             "role": "upstream-header-source",
-            "url": "https://raw.githubusercontent.com/luben/zstd-jni/5e919742d292b6c8257c822c14155098f5abd208/src/main/native/common/xxhash.h",
+            "url": "https://raw.githubusercontent.com/luben/zstd-jni/032b96a65bcac481466d9ea04b5580dcac780f53/src/main/native/common/xxhash.h",
             "sha256": "8cb837b21a8fe9a6b9dbcd0961ab16e733bfcbfa9e003f3a496ce07ae80aa8ee",
             "bytes": 262488,
-            "path": "legal/1-xxhash-notice.txt"
+            "path": "legal/zstd-jni-1.5.7-28/1-xxhash-notice.txt"
         },
         {
             "id": "legal-2",
             "role": "upstream-header-source",
-            "url": "https://raw.githubusercontent.com/luben/zstd-jni/5e919742d292b6c8257c822c14155098f5abd208/src/main/native/common/threading.c",
+            "url": "https://raw.githubusercontent.com/luben/zstd-jni/032b96a65bcac481466d9ea04b5580dcac780f53/src/main/native/common/threading.c",
             "sha256": "50448323b46a8e1bde042ee88ec44fcfc646f3d4aeba8a06be54d26a710ed78d",
             "bytes": 4886,
-            "path": "legal/2-threading-notice.txt"
+            "path": "legal/zstd-jni-1.5.7-28/2-threading-notice.txt"
         },
         {
             "id": "legal-3",
             "role": "upstream-header-source",
-            "url": "https://raw.githubusercontent.com/luben/zstd-jni/5e919742d292b6c8257c822c14155098f5abd208/src/main/native/dictBuilder/divsufsort.c",
+            "url": "https://raw.githubusercontent.com/luben/zstd-jni/032b96a65bcac481466d9ea04b5580dcac780f53/src/main/native/dictBuilder/divsufsort.c",
             "sha256": "2081acb08865f623857d2c0dcb0e79fce9489f01416528c30cfee7097915c616",
             "bytes": 54649,
-            "path": "legal/3-MIT-divsufsort.txt"
+            "path": "legal/zstd-jni-1.5.7-28/3-MIT-divsufsort.txt"
         },
         {
             "id": "legal-4",
             "role": "upstream-header-source",
-            "url": "https://raw.githubusercontent.com/luben/zstd-jni/5e919742d292b6c8257c822c14155098f5abd208/src/main/native/common/zstd_common.c",
+            "url": "https://raw.githubusercontent.com/luben/zstd-jni/032b96a65bcac481466d9ea04b5580dcac780f53/src/main/native/common/zstd_common.c",
             "sha256": "f49eb8023a90d3de925373bd9ee0d36ed46b26c529840b64220397446cd73795",
             "bytes": 1683,
-            "path": "legal/4-native-meta-notice.txt"
+            "path": "legal/zstd-jni-1.5.7-28/4-native-meta-notice.txt"
         },
         {
             "id": "legal-5",
             "role": "upstream-legal-text",
-            "url": "https://raw.githubusercontent.com/qos-ch/logback/d1b829dcdb9fd98511c64401beb1419a9c9384aa/logback-classic/LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/qos-ch/logback/2f625e4c587b6bd33aa3e97576c040cb03140c8d/logback-classic/LICENSE.txt",
             "sha256": "9224b901579a551596e2a6f0b3488ce833f557bd1c83179858081a0f16a19209",
             "bytes": 471,
-            "path": "legal/5-LICENSE.txt"
+            "path": "legal/logback-1.6.8/5-LICENSE.txt"
         },
         {
             "id": "legal-6",
@@ -434,26 +434,26 @@
         {
             "id": "legal-7",
             "role": "upstream-legal-text",
-            "url": "https://raw.githubusercontent.com/qos-ch/logback/d1b829dcdb9fd98511c64401beb1419a9c9384aa/logback-core/LICENSE.txt",
+            "url": "https://raw.githubusercontent.com/qos-ch/logback/2f625e4c587b6bd33aa3e97576c040cb03140c8d/logback-core/LICENSE.txt",
             "sha256": "9224b901579a551596e2a6f0b3488ce833f557bd1c83179858081a0f16a19209",
             "bytes": 471,
-            "path": "legal/7-LICENSE.txt"
+            "path": "legal/logback-1.6.8/7-LICENSE.txt"
         },
         {
             "id": "legal-8",
             "role": "upstream-legal-text",
-            "url": "https://raw.githubusercontent.com/luben/zstd-jni/5e919742d292b6c8257c822c14155098f5abd208/LICENSE",
+            "url": "https://raw.githubusercontent.com/luben/zstd-jni/032b96a65bcac481466d9ea04b5580dcac780f53/LICENSE",
             "sha256": "289a6adada5726047b9e68bf607cc44fbbac953bbb4fd29f53ffe75b5cb3e7b1",
             "bytes": 1373,
-            "path": "legal/8-LICENSE-wrapper.txt"
+            "path": "legal/zstd-jni-1.5.7-28/8-LICENSE-wrapper.txt"
         },
         {
             "id": "legal-9",
             "role": "upstream-legal-text",
-            "url": "https://raw.githubusercontent.com/luben/zstd-jni/5e919742d292b6c8257c822c14155098f5abd208/src/main/native/LICENSE",
+            "url": "https://raw.githubusercontent.com/luben/zstd-jni/032b96a65bcac481466d9ea04b5580dcac780f53/src/main/native/LICENSE",
             "sha256": "2c1a7fa704df8f3a606f6fc010b8b5aaebf403f3aeec339a12048f1ba7331a0b",
             "bytes": 1530,
-            "path": "legal/9-LICENSE-native.txt"
+            "path": "legal/zstd-jni-1.5.7-28/9-LICENSE-native.txt"
         },
         {
             "id": "legal-10",
@@ -486,53 +486,45 @@
             "sha256": "96a3b2d45af72054d0676e8eb9a944a096812a7f8ff1b71bd82dadbc60ce0444",
             "bytes": 911,
             "path": "legal/13-MIT-0.txt"
-        },
-        {
-            "id": "legal-14",
-            "role": "upstream-legal-text",
-            "url": "https://raw.githubusercontent.com/awslabs/aws-eventstream-java/7be2dd80e12f8835674c8ffb0f4a2efb64c7b585/NOTICE",
-            "sha256": "8429c8479d27bcb47184cf72e8481ba59135524669cf321c3ae941cf1f405c5a",
-            "bytes": 98,
-            "path": "legal/14-NOTICE.txt"
         }
     ],
     "supplements": [
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
             "material": "legal-1",
             "name": "xxhash-notice.txt",
             "leadingComment": true
         },
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
             "material": "legal-2",
             "name": "threading-notice.txt",
             "leadingComment": true
         },
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
             "material": "legal-3",
             "name": "MIT-divsufsort.txt",
             "leadingComment": true
         },
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
             "material": "legal-4",
             "name": "native-meta-notice.txt",
             "leadingComment": true
         },
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
             "material": "GPL-2.0",
             "name": "GPL-2.0.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-classic:1.6.5",
+            "coordinate": "ch.qos.logback:logback-classic:1.6.8",
             "material": "GPL-2.0",
             "name": "GPL-2.0.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-core:1.6.5",
+            "coordinate": "ch.qos.logback:logback-core:1.6.8",
             "material": "GPL-2.0",
             "name": "GPL-2.0.txt"
         },
@@ -542,52 +534,52 @@
             "name": "GPL-2.0.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-classic:1.6.5",
+            "coordinate": "ch.qos.logback:logback-classic:1.6.8",
             "material": "legal-5",
             "name": "LICENSE.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-classic:1.6.5",
+            "coordinate": "ch.qos.logback:logback-classic:1.6.8",
             "material": "EPL-2.0",
             "name": "EPL-2.0.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-classic:1.6.5",
+            "coordinate": "ch.qos.logback:logback-classic:1.6.8",
             "material": "legal-6",
             "name": "LGPL-2.1.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-classic:1.6.5",
+            "coordinate": "ch.qos.logback:logback-classic:1.6.8",
             "material": "logback-parent",
             "name": "parent-pom.xml"
         },
         {
-            "coordinate": "ch.qos.logback:logback-core:1.6.5",
+            "coordinate": "ch.qos.logback:logback-core:1.6.8",
             "material": "legal-7",
             "name": "LICENSE.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-core:1.6.5",
+            "coordinate": "ch.qos.logback:logback-core:1.6.8",
             "material": "EPL-2.0",
             "name": "EPL-2.0.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-core:1.6.5",
+            "coordinate": "ch.qos.logback:logback-core:1.6.8",
             "material": "legal-6",
             "name": "LGPL-2.1.txt"
         },
         {
-            "coordinate": "ch.qos.logback:logback-core:1.6.5",
+            "coordinate": "ch.qos.logback:logback-core:1.6.8",
             "material": "logback-parent",
             "name": "parent-pom.xml"
         },
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
             "material": "legal-8",
             "name": "LICENSE-wrapper.txt"
         },
         {
-            "coordinate": "com.github.luben:zstd-jni:1.5.7-21",
+            "coordinate": "com.github.luben:zstd-jni:1.5.7-28",
             "material": "legal-9",
             "name": "LICENSE-native.txt"
         },
@@ -609,26 +601,26 @@
             "name": "Apache-2.0.txt"
         },
         {
-            "coordinate": "com.miglayout:miglayout-core:11.5.0",
+            "coordinate": "com.miglayout:miglayout-core:11.5.2",
             "material": "maven-7",
             "name": "BSD-notice.txt",
             "entry": "module-info.java",
             "leadingComment": true
         },
         {
-            "coordinate": "com.miglayout:miglayout-core:11.5.0",
+            "coordinate": "com.miglayout:miglayout-core:11.5.2",
             "material": "miglayout-parent",
             "name": "parent-pom.xml"
         },
         {
-            "coordinate": "com.miglayout:miglayout-swing:11.5.0",
+            "coordinate": "com.miglayout:miglayout-swing:11.5.2",
             "material": "maven-8",
             "name": "BSD-notice.txt",
             "entry": "module-info.java",
             "leadingComment": true
         },
         {
-            "coordinate": "com.miglayout:miglayout-swing:11.5.0",
+            "coordinate": "com.miglayout:miglayout-swing:11.5.2",
             "material": "miglayout-parent",
             "name": "parent-pom.xml"
         },
@@ -664,16 +656,6 @@
             "coordinate": "org.reactivestreams:reactive-streams:1.0.4",
             "material": "legal-13",
             "name": "MIT-0.txt"
-        },
-        {
-            "coordinate": "software.amazon.eventstream:eventstream:1.0.1",
-            "material": "legal-10",
-            "name": "Apache-2.0.txt"
-        },
-        {
-            "coordinate": "software.amazon.eventstream:eventstream:1.0.1",
-            "material": "legal-14",
-            "name": "NOTICE.txt"
         }
     ]
 }

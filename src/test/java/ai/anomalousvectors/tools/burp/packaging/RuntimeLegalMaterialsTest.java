@@ -62,15 +62,15 @@ class RuntimeLegalMaterialsTest {
                     }
                 }
             }
-            assertThat(count).isEqualTo(33);
-            assertThat(owners).hasSize(10);
+            assertThat(count).isEqualTo(31);
+            assertThat(owners).hasSize(9);
             JsonNode jsr305 = find(inventory.path("components"), "coordinate", "com.google.code.findbugs:jsr305:3.0.2");
             String prefix = jsr305.path("pom").asText().replace("/pom.xml", "/supplemental/");
             try (InputStream notice = open(jar, prefix + "concurrent-attribution.txt")) {
                 assertThat(new String(notice.readAllBytes(), StandardCharsets.UTF_8))
                         .contains("Brian Goetz", "Creative Commons Attribution", "by/2.5");
             }
-            JsonNode zstd = find(inventory.path("components"), "coordinate", "com.github.luben:zstd-jni:1.5.7-21");
+            JsonNode zstd = find(inventory.path("components"), "coordinate", "com.github.luben:zstd-jni:1.5.7-28");
             String nativePrefix = zstd.path("pom").asText().replace("/pom.xml", "/supplemental/");
             try (InputStream notice = open(jar, nativePrefix + "MIT-divsufsort.txt")) {
                 assertThat(new String(notice.readAllBytes(), StandardCharsets.UTF_8))

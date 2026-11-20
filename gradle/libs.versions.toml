@@ -1,27 +1,34 @@
 [versions]
 assertj = "3.27.7"
-awsSdk = "2.55.11"
-brotli4j = "1.23.0"
+awsSdk = "2.59.5"
+brotli4j = "1.24.0"
 brotliDec = "0.1.2"
+byteBuddy = "1.18.17"
+commonsCodec = "1.23.0"
 commonsCompress = "1.28.0"
-elasticsearchRestClient = "9.5.4"
-gradleVersionsPlugin = "0.64.0"
-jackson = "2.22.3"
-jacoco = "0.8.15"
+commonsIo = "2.22.0"
+commonsLang = "3.22.0"
+commonsLogging = "1.4.0"
+elasticsearchRestClient = "9.5.6"
+gradleVersionsPlugin = "0.67.0"
+httpCore5 = "5.5"
+jackson = "2.23.0"
+jacoco = "0.8.16"
 jakartaJsonApi = "2.1.3"
 jfreechart = "1.5.6"
+jspecify = "1.0.1"
 junit = "6.1.3"
-logback = "1.6.5"
-miglayout = "11.5.0"
+logback = "1.6.8"
+miglayout = "11.5.2"
 mockito = "5.24.0"
 montoya = "2026.7"
-opensearchJava = "3.10.0"
+opensearchJava = "3.11.0"
 parsson = "1.1.9"
 slf4j = "2.0.20"
-spotbugs = "4.10.4"
-spotbugsPlugin = "6.5.12"
-spotless = "8.10.3"
-zstdJni = "1.5.7-21"
+spotbugs = "4.10.5"
+spotbugsPlugin = "6.5.13"
+spotless = "8.11.0"
+zstdJni = "1.5.7-28"
 
 [libraries]
 assertjCore = { group = "org.assertj", name = "assertj-core", version.ref = "assertj" }
@@ -34,12 +41,21 @@ brotli4j = { group = "com.aayushatharva.brotli4j", name = "brotli4j", version.re
 brotli4jNativeLinux = { group = "com.aayushatharva.brotli4j", name = "native-linux-x86_64", version.ref = "brotli4j" }
 brotli4jNativeWindows = { group = "com.aayushatharva.brotli4j", name = "native-windows-x86_64", version.ref = "brotli4j" }
 brotliDec = { group = "org.brotli", name = "dec", version.ref = "brotliDec" }
+byteBuddy = { group = "net.bytebuddy", name = "byte-buddy", version.ref = "byteBuddy" }
+byteBuddyAgent = { group = "net.bytebuddy", name = "byte-buddy-agent", version.ref = "byteBuddy" }
+commonsCodec = { group = "commons-codec", name = "commons-codec", version.ref = "commonsCodec" }
 commonsCompress = { group = "org.apache.commons", name = "commons-compress", version.ref = "commonsCompress" }
+commonsIo = { group = "commons-io", name = "commons-io", version.ref = "commonsIo" }
+commonsLang = { group = "org.apache.commons", name = "commons-lang3", version.ref = "commonsLang" }
+commonsLogging = { group = "commons-logging", name = "commons-logging", version.ref = "commonsLogging" }
 elasticsearchRestClient = { group = "org.elasticsearch.client", name = "elasticsearch-rest-client", version.ref = "elasticsearchRestClient" }
+httpCore5 = { group = "org.apache.httpcomponents.core5", name = "httpcore5", version.ref = "httpCore5" }
+httpCore5H2 = { group = "org.apache.httpcomponents.core5", name = "httpcore5-h2", version.ref = "httpCore5" }
 jacksonCore = { group = "com.fasterxml.jackson.core", name = "jackson-core", version.ref = "jackson" }
 jacksonDatabind = { group = "com.fasterxml.jackson.core", name = "jackson-databind", version.ref = "jackson" }
 jakartaJsonApi = { group = "jakarta.json", name = "jakarta.json-api", version.ref = "jakartaJsonApi" }
 jfreechart = { group = "org.jfree", name = "jfreechart", version.ref = "jfreechart" }
+jspecify = { group = "org.jspecify", name = "jspecify", version.ref = "jspecify" }
 junitBom = { group = "org.junit", name = "junit-bom", version.ref = "junit" }
 junitJupiter = { group = "org.junit.jupiter", name = "junit-jupiter" }
 junitJupiterEngine = { group = "org.junit.jupiter", name = "junit-jupiter-engine" }

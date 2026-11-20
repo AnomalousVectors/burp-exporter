@@ -393,7 +393,7 @@ public final class SearchConnectionTester {
             try {
                 body = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
+                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse Amazon OpenSearch response.", e);
             }
