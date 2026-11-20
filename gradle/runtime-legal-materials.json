@@ -17,14 +17,14 @@
             "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-annotations/2.23/jackson-annotations-2.23-sources.jar"
         },
         {
-            "coordinate": "com.fasterxml.jackson.core:jackson-core:2.23.0",
-            "binarySha256": "449798beb4c4ec26de9cc25b39ca2198036883fb905ca968cbef7136d19a25d9",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-core/2.23.0/jackson-core-2.23.0-sources.jar"
+            "coordinate": "tools.jackson.core:jackson-core:3.3.0",
+            "binarySha256": "1496eda4c353276416bd4f672fb3f98be95fb4c86707e8ffcebe04425d63aa63",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/tools/jackson/core/jackson-core/3.3.0/jackson-core-3.3.0-sources.jar"
         },
         {
-            "coordinate": "com.fasterxml.jackson.core:jackson-databind:2.23.0",
-            "binarySha256": "abd1edd2736c764da03fe6cb7a9de70d48dd0a198aed131604c564bff62f9cc1",
-            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/com/fasterxml/jackson/core/jackson-databind/2.23.0/jackson-databind-2.23.0-sources.jar"
+            "coordinate": "tools.jackson.core:jackson-databind:3.3.0",
+            "binarySha256": "856b7348bd08efe5791cf617cc3bed21f5f4a02569507c61e946666d13c33ba4",
+            "publishedSourcesUrl": "https://repo.maven.apache.org/maven2/tools/jackson/core/jackson-databind/3.3.0/jackson-databind-3.3.0-sources.jar"
         },
         {
             "coordinate": "com.github.luben:zstd-jni:1.5.7-28",

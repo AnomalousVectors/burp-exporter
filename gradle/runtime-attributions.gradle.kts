@@ -173,6 +173,14 @@ tasks.named<Jar>("fatJar") {
         exclude("ch/qos/logback/classic/servlet/**")
         exclude("META-INF/services/software.amazon.awssdk.core.warmup.SdkWarmUpProvider")
         exclude { isAttributionResource(it.relativePath.pathString) }
+        // This adapter exists only in the upstream Java 21 view. Our minimum runtime is 21;
+        // promote just that package rather than enabling unrelated multi-release overrides.
+        eachFile {
+            val adapterPrefix = "META-INF/versions/21/org/opensearch/client/json/jackson3/"
+            if (path.startsWith(adapterPrefix)) {
+                path = path.removePrefix("META-INF/versions/21/")
+            }
+        }
     }
 }
 

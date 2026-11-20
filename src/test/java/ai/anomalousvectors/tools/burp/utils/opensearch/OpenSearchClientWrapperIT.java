@@ -9,7 +9,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.parallel.ResourceLock;
 import org.junit.jupiter.api.Test;
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.opensearch.core.GetRequest;
 import org.opensearch.client.opensearch.core.GetResponse;
@@ -102,7 +102,7 @@ class OpenSearchClientWrapperIT {
             assertThat(getResp.found()).isTrue();
 
             JsonNode source = java.util.Objects.requireNonNull(getResp.source(), "indexed document source");
-            assertThat(source.get("field").asText()).isEqualTo("value");
+            assertThat(source.get("field").asString()).isEqualTo("value");
         }
     }
 }

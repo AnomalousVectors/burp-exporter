@@ -14,8 +14,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipFile;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.Test;
 
@@ -23,7 +24,7 @@ import org.junit.jupiter.api.Test;
 class RuntimeLegalMaterialsTest {
 
     private static final String ROOT = "META-INF/burp-exporter/";
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     @Test
     void legalSupplements_preservePinnedWholeFilesOrExactLeadingComments() throws Exception {
@@ -37,15 +38,15 @@ class RuntimeLegalMaterialsTest {
             }
             for (JsonNode component : inventory.path("components")) {
                 for (JsonNode supplement : component.path("supplementalNotices")) {
-                    owners.add(component.path("coordinate").asText());
+                    owners.add(component.path("coordinate").asString());
                     count++;
-                    JsonNode material = find(manifest.path("materials"), "id", supplement.path("material").asText());
+                    JsonNode material = find(manifest.path("materials"), "id", supplement.path("material").asString());
                     Path cached = Path.of(System.getProperty("burp.exporter.legalMaterialCache"))
-                            .resolve(material.path("path").asText());
+                            .resolve(material.path("path").asString());
                     byte[] expected;
-                    if (supplement.path("sourceEntry").isTextual()) {
+                    if (supplement.path("sourceEntry").isString()) {
                         try (ZipFile upstream = new ZipFile(cached.toFile());
-                                InputStream source = open(upstream, supplement.path("sourceEntry").asText())) {
+                                InputStream source = open(upstream, supplement.path("sourceEntry").asString())) {
                             expected = source.readAllBytes();
                         }
                     } else {
@@ -57,7 +58,7 @@ class RuntimeLegalMaterialsTest {
                         // These pinned headers are ASCII. Preserve original CRLF/LF bytes as supplied.
                         expected = java.util.Arrays.copyOf(expected, end);
                     }
-                    try (InputStream copy = open(jar, supplement.path("resourcePath").asText())) {
+                    try (InputStream copy = open(jar, supplement.path("resourcePath").asString())) {
                         assertThat(copy.readAllBytes()).isEqualTo(expected);
                     }
                 }
@@ -65,13 +66,13 @@ class RuntimeLegalMaterialsTest {
             assertThat(count).isEqualTo(31);
             assertThat(owners).hasSize(9);
             JsonNode jsr305 = find(inventory.path("components"), "coordinate", "com.google.code.findbugs:jsr305:3.0.2");
-            String prefix = jsr305.path("pom").asText().replace("/pom.xml", "/supplemental/");
+            String prefix = jsr305.path("pom").asString().replace("/pom.xml", "/supplemental/");
             try (InputStream notice = open(jar, prefix + "concurrent-attribution.txt")) {
                 assertThat(new String(notice.readAllBytes(), StandardCharsets.UTF_8))
                         .contains("Brian Goetz", "Creative Commons Attribution", "by/2.5");
             }
             JsonNode zstd = find(inventory.path("components"), "coordinate", "com.github.luben:zstd-jni:1.5.7-28");
-            String nativePrefix = zstd.path("pom").asText().replace("/pom.xml", "/supplemental/");
+            String nativePrefix = zstd.path("pom").asString().replace("/pom.xml", "/supplemental/");
             try (InputStream notice = open(jar, nativePrefix + "MIT-divsufsort.txt")) {
                 assertThat(new String(notice.readAllBytes(), StandardCharsets.UTF_8))
                         .contains("Yuta Mori", "Permission is hereby granted", "THE SOFTWARE IS PROVIDED");
@@ -84,14 +85,14 @@ class RuntimeLegalMaterialsTest {
         JsonNode manifest = manifest();
         Path cache = Path.of(System.getProperty("burp.exporter.legalMaterialCache"));
         Set<String> used = new HashSet<>();
-        manifest.path("supplements").forEach(item -> used.add(item.path("material").asText()));
+        manifest.path("supplements").forEach(item -> used.add(item.path("material").asString()));
         assertThat(manifest.path("materials")).hasSize(used.size());
         for (JsonNode material : manifest.path("materials")) {
-            assertThat(used).contains(material.path("id").asText());
-            Path file = cache.resolve(material.path("path").asText());
+            assertThat(used).contains(material.path("id").asString());
+            Path file = cache.resolve(material.path("path").asString());
             assertThat(Files.size(file)).isEqualTo(material.path("bytes").asLong());
             try (InputStream bytes = Files.newInputStream(file)) {
-                assertThat(digest(bytes)).as(material.path("id").asText()).isEqualTo(material.path("sha256").asText());
+                assertThat(digest(bytes)).as(material.path("id").asString()).isEqualTo(material.path("sha256").asString());
             }
         }
         try (ZipFile jar = packaged(); InputStream provenance = open(jar, ROOT + "LEGAL-MATERIALS.json");
@@ -101,18 +102,18 @@ class RuntimeLegalMaterialsTest {
             JsonNode inventory = JSON.readTree(inventoryBytes);
             Set<String> expected = new HashSet<>();
             for (JsonNode component : inventory.path("components")) {
-                String coordinate = component.path("coordinate").asText();
+                String coordinate = component.path("coordinate").asString();
                 expected.add(coordinate);
                 JsonNode pin = find(manifest.path("components"), "coordinate", coordinate);
-                assertThat(pin.path("binarySha256").asText()).isEqualTo(component.path("sha256").asText());
+                assertThat(pin.path("binarySha256").asString()).isEqualTo(component.path("sha256").asString());
                 String[] parts = coordinate.split(":");
-                assertThat(pin.path("publishedSourcesUrl").asText()).isEqualTo("https://repo.maven.apache.org/maven2/"
+                assertThat(pin.path("publishedSourcesUrl").asString()).isEqualTo("https://repo.maven.apache.org/maven2/"
                         + parts[0].replace('.', '/') + "/" + parts[1] + "/" + parts[2] + "/"
                         + parts[1] + "-" + parts[2] + "-sources.jar");
             }
             assertThat(manifest.path("components")).hasSize(expected.size());
             for (JsonNode pin : manifest.path("components")) {
-                assertThat(expected).contains(pin.path("coordinate").asText());
+                assertThat(expected).contains(pin.path("coordinate").asString());
             }
         }
     }
@@ -124,7 +125,7 @@ class RuntimeLegalMaterialsTest {
     private static JsonNode find(JsonNode array, String key, String value) {
         List<JsonNode> matches = new ArrayList<>();
         array.forEach(item -> {
-            if (item.path(key).asText().equals(value)) {
+            if (item.path(key).asString().equals(value)) {
                 matches.add(item);
             }
         });

@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 /**
  * Canonical allowlists for configuration import: known object keys and enumerated values.
@@ -205,7 +205,7 @@ public final class ConfigImportCatalog {
             return;
         }
         String prefix = path == null || path.isBlank() ? "" : path + ".";
-        for (var it = node.fieldNames(); it.hasNext(); ) {
+        for (var it = node.propertyNames().iterator(); it.hasNext(); ) {
             String field = it.next();
             if (!allowedKeys.contains(field)) {
                 report.add(ConfigImportReport.Kind.UNKNOWN_KEY, prefix + field, field);

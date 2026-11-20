@@ -103,7 +103,7 @@ class PackagedJarTest {
         try (JarFile packaged = new JarFile(packagedJar().toFile())) {
             assertThat(classes.keySet().stream()
                     .filter(name -> !name.startsWith("ch/qos/logback/classic/servlet/"))
-                    .filter(name -> packaged.getJarEntry(name) == null).toList())
+                    .filter(name -> packaged.getJarEntry(packagedRuntimePath(name)) == null).toList())
                     .as("Every retained runtime class must survive packaging").isEmpty();
             for (var service : services.entrySet()) {
                 assertThat(providers(packaged, service.getKey())).isEqualTo(service.getValue());
@@ -128,8 +128,33 @@ class PackagedJarTest {
     }
 
     @Test
+    void java21Jackson3Adapter_isPromotedWithoutChangingClassBytes() throws Exception {
+        int checked = 0;
+        try (JarFile packaged = new JarFile(packagedJar().toFile())) {
+            for (Path dependency : runtimeJars()) {
+                try (JarFile upstream = new JarFile(dependency.toFile())) {
+                    for (var entry : upstream.stream().filter(item -> !item.isDirectory()
+                            && item.getName().endsWith(".class")
+                            && !packagedRuntimePath(item.getName()).equals(item.getName())).toList()) {
+                        String path = packagedRuntimePath(entry.getName());
+                        assertThat(packaged.getJarEntry(path)).as(path).isNotNull();
+                        assertThat(packaged.getJarEntry(entry.getName())).isNull();
+                        try (var original = upstream.getInputStream(entry);
+                                var copy = packaged.getInputStream(packaged.getJarEntry(path))) {
+                            assertThat(copy.readAllBytes()).as(path).isEqualTo(original.readAllBytes());
+                        }
+                        checked++;
+                    }
+                }
+            }
+        }
+        assertThat(checked).as("Versioned adapter classes were actually inspected").isPositive();
+    }
+
+    @Test
     void distributable_excludesUnusedBranchesAndTestOrHostApiClasses() throws Exception {
-        List<String> forbidden = List.of("co/elastic/", "tools/jackson/", "io/opentelemetry/", "io/netty/",
+        List<String> forbidden = List.of("co/elastic/", "com/fasterxml/jackson/core/",
+                "com/fasterxml/jackson/databind/", "io/opentelemetry/", "io/netty/",
                 "org/eclipse/yasson/", "org/glassfish/json/", "jakarta/json/bind/",
                 "ch/qos/logback/classic/servlet/", "org/junit/", "org/mockito/", "org/assertj/",
                 "burp/api/montoya/", "ai/anomalousvectors/tools/burp/packaging/",
@@ -140,6 +165,9 @@ class PackagedJarTest {
             assertThat(jar.getJarEntry(SERVLET_SERVICE)).isNull();
             assertThat(jar.getJarEntry("org/eclipse/parsson/JsonProviderImpl.class")).isNotNull();
             assertThat(jar.getJarEntry("org/elasticsearch/client/RestClient.class")).isNotNull();
+            assertThat(jar.getJarEntry("tools/jackson/databind/json/JsonMapper.class")).isNotNull();
+            assertThat(jar.getJarEntry("org/opensearch/client/json/jackson3/JacksonJsonpMapper.class")).isNotNull();
+            assertThat(jar.getManifest().getMainAttributes().getValue("Multi-Release")).isNull();
             // Keep native encodings portable; the BApp is not a Windows-only artifact.
             assertThat(jar.stream().anyMatch(item -> item.getName().endsWith(".dll"))).isTrue();
             assertThat(jar.stream().anyMatch(item -> item.getName().endsWith(".so"))).isTrue();
@@ -161,6 +189,11 @@ class PackagedJarTest {
     @Timeout(45)
     void isolatedRuntime_resolvesStaticRoleAndSsoCredentialsWithSynchronousTransport() throws Throwable {
         runProbe("awsProfilesAndTransport");
+    }
+
+    private static String packagedRuntimePath(String name) {
+        return name.startsWith("META-INF/versions/21/org/opensearch/client/json/jackson3/")
+                ? name.substring("META-INF/versions/21/".length()) : name;
     }
 
     private static void runProbe(String method) throws Throwable {

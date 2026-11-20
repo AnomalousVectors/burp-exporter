@@ -1,9 +1,10 @@
 package ai.anomalousvectors.tools.burp.utils.search;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 
@@ -18,7 +19,7 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
  */
 public final class SearchIndexMappingAdapter {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final String AMAZON_SERVERLESS_REFRESH_INTERVAL = "10s";
 
     private SearchIndexMappingAdapter() {
@@ -56,7 +57,7 @@ public final class SearchIndexMappingAdapter {
                 settings.put("refresh_interval", AMAZON_SERVERLESS_REFRESH_INTERVAL);
             }
             return JSON.writeValueAsString(root);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new IllegalArgumentException(
                     "Mapping JSON could not be adapted for Serverless.", e);
         }

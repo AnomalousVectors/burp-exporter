@@ -1,13 +1,13 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -25,7 +25,7 @@ import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
  */
 public final class BulkNdjsonResponseParser {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final int MAX_LOGGED_FAILURES = 3;
 
     private BulkNdjsonResponseParser() { }
@@ -90,7 +90,7 @@ public final class BulkNdjsonResponseParser {
                 return new ParsedBulk(BulkOutcomeBreakdown.empty(), List.of(), responseErrors(root), 0);
             }
             return parseItems((ArrayNode) items, indexName, responseErrors(root));
-        } catch (IOException | RuntimeException e) {
+        } catch (RuntimeException e) {
             Logger.logDebug(RuntimeConfig.searchDestinationLogPrefix()
                     + " BulkNdjsonResponseParser parse failed: "
                     + SearchDiagnosticText.singleLine(e.getMessage(), 512));
@@ -153,8 +153,8 @@ public final class BulkNdjsonResponseParser {
             } else {
                 failed++;
                 JsonNode err = op != null ? op.get("error") : null;
-                String type = err != null && err.has("type") ? err.get("type").asText() : "unknown";
-                String reason = err != null && err.has("reason") ? err.get("reason").asText() : "unknown";
+                String type = err != null && err.has("type") ? err.get("type").asString() : "unknown";
+                String reason = err != null && err.has("reason") ? err.get("reason").asString() : "unknown";
                 failedItems.add(new OpenSearchClientWrapper.FailedItem(i, type, reason));
                 if (logged < MAX_LOGGED_FAILURES) {
                     Logger.logDebug(OpenSearchClientWrapper.formatBulkItemFailure(effectiveIndex, i, type, reason));
@@ -189,6 +189,6 @@ public final class BulkNdjsonResponseParser {
         if (op == null || !op.has("result")) {
             return "updated";
         }
-        return op.get("result").asText("updated").trim().toLowerCase(Locale.ROOT);
+        return op.get("result").asString("updated").trim().toLowerCase(Locale.ROOT);
     }
 }

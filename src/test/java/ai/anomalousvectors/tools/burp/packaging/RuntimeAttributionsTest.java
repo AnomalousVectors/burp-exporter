@@ -16,8 +16,8 @@ import java.util.Set;
 import java.util.jar.JarFile;
 import java.util.regex.Pattern;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import org.junit.jupiter.api.Test;
 
@@ -35,22 +35,22 @@ class RuntimeAttributionsTest {
         try (JarFile packaged = packagedJar()) {
             JsonNode inventory = inventory(packaged);
             assertThat(inventory.path("schemaVersion").asInt()).isEqualTo(2);
-            assertThat(inventory.path("applicationVersion").asText())
+            assertThat(inventory.path("applicationVersion").asString())
                     .isEqualTo(System.getProperty("burp.exporter.version"));
             Map<String, Path> expected = runtimeArtifacts();
             Set<String> actual = new HashSet<>();
             for (JsonNode component : inventory.path("components")) {
-                String key = component.path("coordinate").asText() + "/" + component.path("artifact").asText();
+                String key = component.path("coordinate").asString() + "/" + component.path("artifact").asString();
                 assertThat(actual.add(key)).as("Unique inventory component: %s", key).isTrue();
                 Path input = expected.get(key);
                 assertThat(input).as("Only resolved runtime artifacts belong in the inventory: %s", key).isNotNull();
                 try (InputStream stream = Files.newInputStream(input)) {
-                    assertThat(component.path("sha256").asText()).isEqualTo(sha256(stream));
+                    assertThat(component.path("sha256").asString()).isEqualTo(sha256(stream));
                 }
-                String pom = component.path("pom").asText();
+                String pom = component.path("pom").asString();
                 assertThat(pom).startsWith(ROOT + "third-party/").endsWith("/pom.xml");
                 try (InputStream stream = resource(packaged, pom)) {
-                    assertThat(sha256(stream)).isEqualTo(component.path("pomSha256").asText());
+                    assertThat(sha256(stream)).isEqualTo(component.path("pomSha256").asString());
                 }
             }
             assertThat(actual).containsExactlyInAnyOrderElementsOf(expected.keySet());
@@ -63,15 +63,15 @@ class RuntimeAttributionsTest {
             Map<String, Path> artifacts = runtimeArtifacts();
             Set<String> destinations = new HashSet<>();
             for (JsonNode component : inventory(packaged).path("components")) {
-                String key = component.path("coordinate").asText() + "/" + component.path("artifact").asText();
+                String key = component.path("coordinate").asString() + "/" + component.path("artifact").asString();
                 Set<String> originalNames = new HashSet<>();
                 try (JarFile original = new JarFile(artifacts.get(key).toFile())) {
                     Set<String> expected = new HashSet<>();
                     original.stream().filter(entry -> !entry.isDirectory() && isLegal(entry.getName()))
                             .forEach(entry -> expected.add(entry.getName()));
                     for (JsonNode notice : component.path("notices")) {
-                        String sourcePath = notice.path("sourcePath").asText();
-                        String destination = notice.path("resourcePath").asText();
+                        String sourcePath = notice.path("sourcePath").asString();
+                        String destination = notice.path("resourcePath").asString();
                         assertThat(originalNames.add(sourcePath)).isTrue();
                         assertThat(destinations.add(destination)).as("Collision-free legal resource: %s", destination).isTrue();
                         assertThat(destination).startsWith(ROOT + "third-party/")
@@ -80,7 +80,7 @@ class RuntimeAttributionsTest {
                                 InputStream output = resource(packaged, destination)) {
                             String digest = sha256(source);
                             assertThat(sha256(output)).as(destination).isEqualTo(digest);
-                            assertThat(notice.path("sha256").asText()).isEqualTo(digest);
+                            assertThat(notice.path("sha256").asString()).isEqualTo(digest);
                         }
                     }
                     assertThat(originalNames).containsExactlyInAnyOrderElementsOf(expected);
@@ -96,9 +96,9 @@ class RuntimeAttributionsTest {
             for (JsonNode component : inventory(packaged).path("components")) {
                 if (component.path("notices").isEmpty()) {
                     assertThat(component.path("supplementalNotices")).isNotEmpty();
-                    assertThat(component.path("noticeCoverage").asText()).isEqualTo("UPSTREAM_TEXTS_SUPPLEMENTED");
+                    assertThat(component.path("noticeCoverage").asString()).isEqualTo("UPSTREAM_TEXTS_SUPPLEMENTED");
                 } else {
-                    assertThat(component.path("noticeCoverage").asText()).isEqualTo("BUNDLED_TEXTS_PRESERVED");
+                    assertThat(component.path("noticeCoverage").asString()).isEqualTo("BUNDLED_TEXTS_PRESERVED");
                 }
             }
             try (InputStream stream = resource(packaged, ROOT + "THIRD-PARTY.txt")) {
@@ -124,7 +124,7 @@ class RuntimeAttributionsTest {
 
     private static JsonNode inventory(JarFile jar) throws IOException {
         try (InputStream stream = resource(jar, ROOT + "THIRD-PARTY.json")) {
-            return new ObjectMapper().readTree(stream);
+            return JsonMapper.builderWithJackson2Defaults().build().readTree(stream);
         }
     }
 

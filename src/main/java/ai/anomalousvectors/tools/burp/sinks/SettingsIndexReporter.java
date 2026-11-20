@@ -10,8 +10,9 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -46,7 +47,7 @@ public final class SettingsIndexReporter {
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-settings-reporter");
     private static volatile String lastPushedHash;
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final AtomicBoolean projectOptionsFailureLogged = new AtomicBoolean();
     private static final AtomicBoolean userOptionsFailureLogged = new AtomicBoolean();
     private static final AtomicBoolean projectIdFallbackLogged = new AtomicBoolean();
@@ -287,7 +288,7 @@ public final class SettingsIndexReporter {
         try {
             Map<String, Object> map = JSON.readValue(json, MAP_TYPE);
             return map != null ? map : Map.of();
-        } catch (java.io.IOException | RuntimeException e) {
+        } catch (RuntimeException e) {
             return Map.of();
         }
     }

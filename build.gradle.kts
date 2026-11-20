@@ -50,6 +50,9 @@ dependencies {
     implementation(libs.jakartaJsonApi)
     // Index/mapping operations use Jackson JSON-P, not the optional JSON-B mapper.
     implementation(libs.opensearchJava) {
+        // The optional Jackson 3 adapter replaces the client's default Jackson 2 integration.
+        exclude(group = "com.fasterxml.jackson.core", module = "jackson-core")
+        exclude(group = "com.fasterxml.jackson.core", module = "jackson-databind")
         exclude(group = "jakarta.json.bind", module = "jakarta.json.bind-api")
         exclude(group = "org.eclipse", module = "yasson")
         exclude(group = "org.eclipse.parsson", module = "parsson")

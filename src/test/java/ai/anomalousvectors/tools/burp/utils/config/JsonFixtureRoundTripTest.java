@@ -15,7 +15,7 @@ class JsonFixtureRoundTripTest {
 
         ConfigState.State parsed = ConfigJsonMapper.parseState(fixture);
         String rebuilt = normalizeLineEndings(ConfigJsonMapper.build(parsed)).stripTrailing();
-        String expected = fixture.replace("${VERSION}", Json.MAPPER.readTree(rebuilt).path("version").asText())
+        String expected = fixture.replace("${VERSION}", Json.MAPPER.readTree(rebuilt).path("version").asString())
                 .stripTrailing();
 
         assertThat(parsed.sinks().filesPath()).isEqualTo("C:/Burp/exports");

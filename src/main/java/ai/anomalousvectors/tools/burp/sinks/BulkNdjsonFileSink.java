@@ -3,7 +3,7 @@ package ai.anomalousvectors.tools.burp.sinks;
 import java.nio.file.Path;
 import java.util.List;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
+import tools.jackson.core.JacksonException;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.export.ExportLineCodec;
@@ -65,7 +65,7 @@ final class BulkNdjsonFileSink extends RotatingLineFileSink {
     protected List<String> linesFor(PreparedExportDocument document) {
         try {
             return ExportLineCodec.bulkNdjsonLines(document);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             Logger.logError("[Files] Bulk NDJSON serialize failed for " + document.indexName() + ": " + e.getMessage());
             return List.of();
         }

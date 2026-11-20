@@ -5,8 +5,10 @@ import java.math.BigDecimal;
 import java.util.Iterator;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Compares bundled mapping requirements with an existing search index mapping.
@@ -17,7 +19,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 final class SearchIndexMappingCompatibility {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     private SearchIndexMappingCompatibility() {
     }
@@ -36,11 +38,11 @@ final class SearchIndexMappingCompatibility {
             String expectedIndexJson,
             String liveMappingJson,
             String fullIndexName) throws IOException {
-        JsonNode expected = JSON.readTree(expectedIndexJson).path("mappings");
-        JsonNode liveRoot = JSON.readTree(liveMappingJson);
+        JsonNode expected = readMapping(expectedIndexJson).path("mappings");
+        JsonNode liveRoot = readMapping(liveMappingJson);
         JsonNode liveIndex = liveRoot.path(fullIndexName);
         if (liveIndex.isMissingNode() && liveRoot.size() == 1) {
-            liveIndex = liveRoot.elements().next();
+            liveIndex = liveRoot.values().iterator().next();
         }
         JsonNode live = liveIndex.path("mappings");
         if (expected.isMissingNode() || !expected.isObject()) {
@@ -50,6 +52,14 @@ final class SearchIndexMappingCompatibility {
             return "Existing index mapping response is missing mappings for " + fullIndexName + ".";
         }
         return compareRequiredNode(expected, live, "mappings");
+    }
+
+    private static JsonNode readMapping(String json) throws IOException {
+        try {
+            return JSON.readTree(json);
+        } catch (JacksonException e) {
+            throw new IOException("Invalid mapping JSON.", e);
+        }
     }
 
     private static String compareRequiredNode(JsonNode expected, JsonNode live, String path) {
@@ -84,7 +94,7 @@ final class SearchIndexMappingCompatibility {
 
     private static boolean isOmittedEngineDefault(String fieldName, JsonNode expected) {
         if ("type".equals(fieldName)) {
-            return expected.isTextual() && "object".equals(expected.textValue());
+            return expected.isString() && "object".equals(expected.stringValue());
         }
         if ("enabled".equals(fieldName) || "index".equals(fieldName)) {
             return expected.isBoolean() && expected.booleanValue();
@@ -99,17 +109,17 @@ final class SearchIndexMappingCompatibility {
         if (expected.equals(live)) {
             return true;
         }
-        if (expected.isBoolean() && live.isTextual()) {
-            return Boolean.toString(expected.booleanValue()).equalsIgnoreCase(live.textValue());
+        if (expected.isBoolean() && live.isString()) {
+            return Boolean.toString(expected.booleanValue()).equalsIgnoreCase(live.stringValue());
         }
-        if (expected.isTextual() && live.isBoolean()) {
-            return expected.textValue().equalsIgnoreCase(Boolean.toString(live.booleanValue()));
+        if (expected.isString() && live.isBoolean()) {
+            return expected.stringValue().equalsIgnoreCase(Boolean.toString(live.booleanValue()));
         }
-        if (expected.isNumber() && live.isTextual()) {
-            return equivalentNumber(expected.asText(), live.textValue());
+        if (expected.isNumber() && live.isString()) {
+            return equivalentNumber(expected.asString(), live.stringValue());
         }
-        if (expected.isTextual() && live.isNumber()) {
-            return equivalentNumber(expected.textValue(), live.asText());
+        if (expected.isString() && live.isNumber()) {
+            return equivalentNumber(expected.stringValue(), live.asString());
         }
         return false;
     }

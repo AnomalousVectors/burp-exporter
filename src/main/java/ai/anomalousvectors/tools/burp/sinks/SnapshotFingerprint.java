@@ -8,11 +8,13 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Hashes an exported snapshot without retaining a second serialized payload in memory. */
 final class SnapshotFingerprint {
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     private SnapshotFingerprint() { }
 
@@ -36,6 +38,8 @@ final class SnapshotFingerprint {
             throw new IllegalStateException("SHA-256 unavailable", e);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
+        } catch (JacksonException e) {
+            throw new UncheckedIOException(new IOException("Snapshot serialization failed.", e));
         }
     }
 }

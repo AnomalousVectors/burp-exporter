@@ -20,8 +20,9 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.sinks.FileExportService;
 import ai.anomalousvectors.tools.burp.sinks.OpenSearchCleanupIT;
@@ -43,7 +44,7 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 @Tag("integration")
 class FileExportReimportIT {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     private final ConfigState.State previous = RuntimeConfig.getState();
 

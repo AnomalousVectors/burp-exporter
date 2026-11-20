@@ -1,7 +1,8 @@
 package ai.anomalousvectors.tools.burp.utils.config;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -11,7 +12,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class JsonKeyOrderTest {
 
-    private static final ObjectMapper M = new ObjectMapper();
+    private static final ObjectMapper M = JsonMapper.builderWithJackson2Defaults().build();
 
     @Test
     void top_level_keys_are_in_deterministic_order() throws Exception {
@@ -32,7 +33,7 @@ class JsonKeyOrderTest {
 
         JsonNode root = M.readTree(json);
         List<String> keys = new ArrayList<>();
-        root.fieldNames().forEachRemaining(keys::add);
+        root.propertyNames().iterator().forEachRemaining(keys::add);
 
         assertThat(keys).containsExactly("version", "dataSources", "scope", "sinks", "indexNames", "ui");
     }
@@ -56,7 +57,7 @@ class JsonKeyOrderTest {
 
         JsonNode custom = M.readTree(json).path("scope").path("custom");
         List<String> keys = new ArrayList<>();
-        custom.fieldNames().forEachRemaining(keys::add);
+        custom.propertyNames().iterator().forEachRemaining(keys::add);
 
         // Keys reflect insertion order with counters applied at build time.
         assertThat(keys).containsExactly("regex1", "string1", "regex2");

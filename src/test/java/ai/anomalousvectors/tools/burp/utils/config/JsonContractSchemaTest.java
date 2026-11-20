@@ -10,7 +10,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 class JsonContractSchemaTest {
 
@@ -32,7 +32,7 @@ class JsonContractSchemaTest {
             String json = ConfigJsonMapper.build(stateForAuthType(authType));
             JsonNode root = Json.MAPPER.readTree(json);
             assertConformsToContract(root, contract);
-            assertThat(root.path("sinks").path("database").path("openSearch").path("auth").path("type").asText())
+            assertThat(root.path("sinks").path("database").path("openSearch").path("auth").path("type").asString())
                     .isEqualTo(authType);
         }
     }
@@ -55,7 +55,7 @@ class JsonContractSchemaTest {
         JsonNode database = sinks.path("database");
         JsonNode databaseContract = contract.path("sinks").path("database");
         assertAllowedKeys(database, stringList(databaseContract.path("allowedKeys")));
-        assertThat(stringList(databaseContract.path("allowedTypes"))).contains(database.path("type").asText());
+        assertThat(stringList(databaseContract.path("allowedTypes"))).contains(database.path("type").asString());
 
         JsonNode openSearch = database.path("openSearch");
         JsonNode openSearchContract = databaseContract.path("openSearch");
@@ -75,7 +75,7 @@ class JsonContractSchemaTest {
         JsonNode auth = destination.path("auth");
         assertAllowedKeys(auth, stringList(destinationContract.path("auth").path("allowedKeys")));
 
-        String authType = auth.path("type").asText(ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE);
+        String authType = auth.path("type").asString(ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE);
         assertThat(stringList(destinationContract.path("auth").path("allowedTypes"))).contains(authType);
 
         JsonNode allowedFieldsByType = destinationContract.path("auth").path("allowedFieldsByType");
@@ -101,7 +101,7 @@ class JsonContractSchemaTest {
 
     private static List<String> fieldNames(JsonNode node) {
         List<String> names = new ArrayList<>();
-        for (Iterator<String> it = node.fieldNames(); it.hasNext(); ) {
+        for (Iterator<String> it = node.propertyNames().iterator(); it.hasNext(); ) {
             names.add(it.next());
         }
         return names;
@@ -113,8 +113,8 @@ class JsonContractSchemaTest {
             return values;
         }
         for (JsonNode node : arrayNode) {
-            if (node.isTextual()) {
-                values.add(node.asText());
+            if (node.isString()) {
+                values.add(node.asString());
             }
         }
         return values;

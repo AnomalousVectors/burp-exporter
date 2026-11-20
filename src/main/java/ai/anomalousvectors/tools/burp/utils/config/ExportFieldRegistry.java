@@ -97,7 +97,7 @@ public final class ExportFieldRegistry {
         }
         Map<String, Integer> order = new HashMap<>();
         int i = 0;
-        for (var it = properties.fieldNames(); it.hasNext(); ) {
+        for (var it = properties.propertyNames().iterator(); it.hasNext(); ) {
             order.put(it.next(), i++);
         }
         return order;

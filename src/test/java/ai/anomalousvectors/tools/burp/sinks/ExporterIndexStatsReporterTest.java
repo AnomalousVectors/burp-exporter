@@ -12,7 +12,7 @@ import java.util.concurrent.ScheduledExecutorService;
 
 import org.junit.jupiter.api.Test;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
@@ -89,7 +89,7 @@ class ExporterIndexStatsReporterTest {
             Path jsonlPath = root.resolve(IndexNaming.indexNameForShortName("exporter") + ".jsonl");
             assertThat(jsonlPath).exists();
             String jsonl = Files.readString(jsonlPath);
-            assertThat(new ObjectMapper().readTree(jsonl.lines().findFirst().orElseThrow())
+            assertThat(JsonMapper.builderWithJackson2Defaults().build().readTree(jsonl.lines().findFirst().orElseThrow())
                     .path("event").path("data").path("traffic").has("proxy_correlation")).isFalse();
             assertThat(jsonl).contains("stats_snapshot");
             assertThat(jsonl).contains("\"running\":false");

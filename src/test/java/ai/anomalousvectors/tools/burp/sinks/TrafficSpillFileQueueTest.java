@@ -113,6 +113,14 @@ class TrafficSpillFileQueueTest {
     }
 
     @Test
+    void pollEntry_skipsInvalidPreparedBase64AndPreservesNextIdentity() throws IOException {
+        assertMalformedSpillDoesNotBlockNext("""
+                {"prepared":{"operation_id":"damaged","index_name":"tool-burp-traffic",
+                "index_key":"traffic","bulk_ndjson_bytes":"!invalid-base64!"},"document":{}}
+                """, true);
+    }
+
+    @Test
     void offer_rejectsWhenFileLimitReached() throws IOException {
         Path dir = TestPathSupport.createDirectory("traffic-spill-limit");
         try {

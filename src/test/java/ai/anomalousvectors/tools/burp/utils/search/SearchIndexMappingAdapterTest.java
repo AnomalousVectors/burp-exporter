@@ -4,14 +4,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 
 class SearchIndexMappingAdapterTest {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final String MAPPING = """
             {
               "settings": {
@@ -82,15 +83,15 @@ class SearchIndexMappingAdapterTest {
         JsonNode settings = root.path("settings");
         assertThat(settings.has("number_of_shards")).isFalse();
         assertThat(settings.has("auto_expand_replicas")).isFalse();
-        assertThat(settings.path("refresh_interval").asText()).isEqualTo(expectedRefreshInterval);
+        assertThat(settings.path("refresh_interval").asString()).isEqualTo(expectedRefreshInterval);
         assertThat(root.path("mappings").path("dynamic").asBoolean()).isTrue();
     }
 
     private static void assertHostedSettings(JsonNode root) {
         JsonNode settings = root.path("settings");
         assertThat(settings.path("number_of_shards").asInt()).isEqualTo(1);
-        assertThat(settings.path("auto_expand_replicas").asText()).isEqualTo("0-1");
-        assertThat(settings.path("refresh_interval").asText()).isEqualTo("5s");
+        assertThat(settings.path("auto_expand_replicas").asString()).isEqualTo("0-1");
+        assertThat(settings.path("refresh_interval").asString()).isEqualTo("5s");
         assertThat(root.path("mappings").path("dynamic").asBoolean()).isTrue();
     }
 }

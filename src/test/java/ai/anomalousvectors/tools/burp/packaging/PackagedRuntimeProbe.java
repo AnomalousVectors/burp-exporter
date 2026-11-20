@@ -9,11 +9,12 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 import java.util.ServiceLoader;
 
 import javax.net.ssl.SSLContext;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.github.luben.zstd.Zstd;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -71,7 +72,7 @@ public final class PackagedRuntimeProbe {
         try (var reader = Json.createReader(new java.io.StringReader("{\"ok\":true}"))) {
             check(reader.readObject().getBoolean("ok"), "JSON-P read failed");
         }
-        check(new ObjectMapper().readTree("{\"ok\":true}").get("ok").asBoolean(), "Jackson read failed");
+        check(JsonMapper.builderWithJackson2Defaults().build().readTree("{\"ok\":true}").get("ok").asBoolean(), "Jackson read failed");
         check(LoggerFactory.getILoggerFactory().getClass().getName().equals("ch.qos.logback.classic.LoggerContext"),
                 "Logback SLF4J provider was not selected");
         SSLContext context = SSLContext.getInstance("TLS");
@@ -86,6 +87,18 @@ public final class PackagedRuntimeProbe {
             check(client.indices().create(request -> request.index("packaging-probe")
                     .mappings(mapping -> mapping.properties("marker", property -> property.keyword(k -> k))))
                     .acknowledged(), "OpenSearch index/mapping JSON-P path failed");
+            var indexed = client.index(request -> request.index("packaging-probe")
+                    .id("stable-id").document(Map.of("marker", "packaged")));
+            check(indexed.id().equals("stable-id"), "Jackson 3 request serialization failed");
+            var found = client.get(request -> request.index("packaging-probe").id("stable-id"), Map.class);
+            var foundSource = found.source();
+            check(found.found() && foundSource != null && "packaged".equals(foundSource.get("marker")),
+                    "Jackson 3 embedded _source parsing failed");
+            var search = client.search(request -> request.index("packaging-probe"), Map.class);
+            check(search.hits().hits().size() == 1, "Jackson 3 search result missing");
+            var searchSource = search.hits().hits().getFirst().source();
+            check(searchSource != null && "packaged".equals(searchSource.get("marker")),
+                    "Jackson 3 nested search _source parsing failed");
             var http = OpenSearchConnector.getClassicHttpClient(endpoint, OpenSearchAuth.none());
             HttpPost post = new HttpPost("/_bulk");
             post.setEntity(new StringEntity("{\"index\":{}}\n{\"marker\":\"packaged\"}\n",
@@ -266,6 +279,25 @@ public final class PackagedRuntimeProbe {
                         """;
             } else if (exchange.getRequestURI().getPath().contains("client/register")) {
                 body = "{\"clientId\":\"loopback-client\",\"clientSecret\":\"fixture\"}";
+            } else if (exchange.getRequestURI().getPath().endsWith("/_search")) {
+                body = """
+                        {"took":1,"timed_out":false,"_shards":{"total":1,"successful":1,"failed":0},
+                        "hits":{"total":{"value":1,"relation":"eq"},"hits":[{"_index":"packaging-probe",
+                        "_id":"stable-id","_source":{"marker":"packaged"},"_score":1.0}]}}
+                        """;
+            } else if (exchange.getRequestURI().getPath().contains("/_doc/")) {
+                if (exchange.getRequestMethod().equals("GET")) {
+                    body = """
+                            {"_index":"packaging-probe","_id":"stable-id","_version":1,
+                            "_source":{"marker":"packaged"},"found":true}
+                            """;
+                } else {
+                    check(request.contains("\"marker\":\"packaged\""), "Serialized document body missing");
+                    body = """
+                            {"_index":"packaging-probe","_id":"stable-id","_version":1,"result":"created",
+                            "_shards":{"total":1,"successful":1,"failed":0},"_seq_no":0,"_primary_term":1}
+                            """;
+                }
             } else if (exchange.getRequestMethod().equals("PUT")) {
                 body = "{\"acknowledged\":true,\"shards_acknowledged\":true,\"index\":\"packaging-probe\"}";
             } else {

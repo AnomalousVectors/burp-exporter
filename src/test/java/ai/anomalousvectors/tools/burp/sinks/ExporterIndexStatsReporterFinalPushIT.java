@@ -20,7 +20,7 @@ import org.opensearch.client.opensearch.core.SearchRequest;
 import org.opensearch.client.opensearch.core.SearchResponse;
 import org.opensearch.client.opensearch.indices.RefreshRequest;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 
 import ai.anomalousvectors.tools.burp.testutils.OpenSearchReachable;
 import ai.anomalousvectors.tools.burp.testutils.OpenSearchTestConfig;

@@ -8,7 +8,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
@@ -153,9 +153,9 @@ class TrafficMalformedTypedHelpersOpenSearchIT {
 
         JsonNode source = sourceForIgnoredField(client, indexName, "response.cookies.expires");
         JsonNode cookie = source.path("response").path("cookies").get(0);
-        assertThat(cookie.path("expires").asText()).isEqualTo("not a valid cookie date");
-        assertThat(cookie.path("max_age").asText()).isEqualTo("not an integer");
-        assertThat(source.path("response").path("header_attributes").path("date").asText())
+        assertThat(cookie.path("expires").asString()).isEqualTo("not a valid cookie date");
+        assertThat(cookie.path("max_age").asString()).isEqualTo("not an integer");
+        assertThat(source.path("response").path("header_attributes").path("date").asString())
                 .isEqualTo("not a valid date");
 
     }

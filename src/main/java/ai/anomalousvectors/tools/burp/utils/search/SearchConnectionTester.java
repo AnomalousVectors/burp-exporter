@@ -20,8 +20,9 @@ import org.apache.hc.core5.http.ParseException;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.ssl.SSLContextBuilder;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -42,7 +43,7 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchTlsSupport;
  * although they read the current session credentials and runtime destination options.</p>
  */
 public final class SearchConnectionTester {
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     private SearchConnectionTester() {
         throw new AssertionError("No instances");
@@ -526,8 +527,8 @@ public final class SearchConnectionTester {
         }
         try {
             JsonNode root = JSON.readTree(body);
-            return root.path("version").path("number").asText("");
-        } catch (IOException | RuntimeException ignored) {
+            return root.path("version").path("number").asString("");
+        } catch (RuntimeException ignored) {
             return "";
         }
     }
@@ -544,8 +545,8 @@ public final class SearchConnectionTester {
         }
         try {
             JsonNode root = JSON.readTree(body);
-            return root.path("cluster_uuid").asText("");
-        } catch (IOException | RuntimeException ignored) {
+            return root.path("cluster_uuid").asString("");
+        } catch (RuntimeException ignored) {
             return "";
         }
     }

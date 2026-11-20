@@ -5,8 +5,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import burp.api.montoya.MontoyaApi;
@@ -39,30 +40,30 @@ final class StreamingResponseRules {
 
     static StreamingResponseRules parse(String json) {
         try {
-            JsonNode root = new ObjectMapper().readTree(json);
+            JsonNode root = JsonMapper.builderWithJackson2Defaults().build().readTree(json);
             JsonNode settings = root.path("project_options").path("http").path("streaming_responses");
             if (settings.isMissingNode()) throw new IllegalArgumentException("Streaming settings unavailable");
             List<Rule> rules = new ArrayList<>();
             for (JsonNode entry : settings.path("urls")) {
                 if (!entry.path("enabled").asBoolean(true)) continue;
-                if (entry.isTextual()) {
-                    rules.add(new Rule(Pattern.compile(entry.asText()), null, null, null, null));
+                if (entry.isString()) {
+                    rules.add(new Rule(Pattern.compile(entry.asString()), null, null, null, null));
                 } else if (entry.has("prefix")) {
-                    rules.add(new Rule(prefixPattern(entry.path("prefix").asText(),
+                    rules.add(new Rule(prefixPattern(entry.path("prefix").asString(),
                             entry.path("include_subdomains").asBoolean(false)),
                             null, null, null, null));
                 } else if (entry.has("url")) {
-                    rules.add(new Rule(Pattern.compile(entry.path("url").asText()), null, null, null, null));
+                    rules.add(new Rule(Pattern.compile(entry.path("url").asString()), null, null, null, null));
                 } else if (entry.has("host") || entry.has("protocol")
                         || entry.has("port") || entry.has("file")) {
-                    String host = entry.path("host").asText();
+                    String host = entry.path("host").asString();
                     if (host.matches("[0-9.:/-]+") && (host.contains("/") || host.contains("-"))) {
                         throw new IllegalArgumentException("IP-range streaming rules are unsupported");
                     }
-                    rules.add(new Rule(null, Pattern.compile(entry.path("host").asText(".*")),
-                            Pattern.compile(entry.path("file").asText(".*")),
-                            Pattern.compile(entry.path("port").asText(".*")),
-                            entry.path("protocol").asText("any")));
+                    rules.add(new Rule(null, Pattern.compile(entry.path("host").asString(".*")),
+                            Pattern.compile(entry.path("file").asString(".*")),
+                            Pattern.compile(entry.path("port").asString(".*")),
+                            entry.path("protocol").asString("any")));
                 } else {
                     throw new IllegalArgumentException("Unsupported streaming URL rule");
                 }
@@ -73,7 +74,7 @@ final class StreamingResponseRules {
                         + "History-backed response recovery may be unavailable.");
             }
             return new StreamingResponseRules(rules);
-        } catch (java.io.IOException e) {
+        } catch (JacksonException e) {
             throw new IllegalArgumentException("Invalid streaming settings", e);
         }
     }

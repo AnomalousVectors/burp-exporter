@@ -3,8 +3,9 @@ package ai.anomalousvectors.tools.burp.ui;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
@@ -29,7 +30,7 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
  */
 public final class StatsClipboardSnapshot {
 
-    private static final ObjectMapper COMPACT_JSON = new ObjectMapper();
+    private static final ObjectMapper COMPACT_JSON = JsonMapper.builderWithJackson2Defaults().build();
     private StatsClipboardSnapshot() {}
 
     /**
@@ -80,7 +81,7 @@ public final class StatsClipboardSnapshot {
         root.putAll(payload);
         try {
             Logger.logInfoPanelOnly("[Stats] Session stop " + COMPACT_JSON.writeValueAsString(root));
-        } catch (JsonProcessingException ex) {
+        } catch (JacksonException ex) {
             Logger.logWarnPanelOnly("[Stats] Session stop " + kind + " JSON encode failed: " + ex.getMessage());
         }
     }

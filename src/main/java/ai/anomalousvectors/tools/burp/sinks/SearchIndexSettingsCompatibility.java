@@ -4,9 +4,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Compares an existing search index with the settings bundled for a new index.
@@ -17,7 +17,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  */
 final class SearchIndexSettingsCompatibility {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     private SearchIndexSettingsCompatibility() {
         throw new AssertionError("No instances");
@@ -67,7 +67,7 @@ final class SearchIndexSettingsCompatibility {
             return "Existing index settings are incompatible: "
                     + String.join(", ", mismatches)
                     + ". Delete/recreate the index or correct its settings before Start.";
-        } catch (JsonProcessingException | RuntimeException e) {
+        } catch (RuntimeException e) {
             String message = e.getMessage();
             return "Existing index settings compatibility check failed: "
                     + (message == null || message.isBlank() ? e.getClass().getSimpleName() : message);
@@ -75,6 +75,6 @@ final class SearchIndexSettingsCompatibility {
     }
 
     private static String scalarText(JsonNode value) {
-        return value != null && value.isTextual() ? value.textValue() : String.valueOf(value);
+        return value != null && value.isString() ? value.stringValue() : String.valueOf(value);
     }
 }

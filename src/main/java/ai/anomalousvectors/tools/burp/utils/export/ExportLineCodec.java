@@ -7,15 +7,16 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Serializes prepared export documents into line-oriented sink formats.
  */
 public final class ExportLineCodec {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     private ExportLineCodec() { }
 
@@ -24,9 +25,9 @@ public final class ExportLineCodec {
      *
      * @param document document source
      * @return newline-terminated JSON source line
-     * @throws JsonProcessingException when the source cannot be serialized
+     * @throws JacksonException when the source cannot be serialized
      */
-    public static String jsonDocumentLine(Map<String, Object> document) throws JsonProcessingException {
+    public static String jsonDocumentLine(Map<String, Object> document) throws JacksonException {
         return JSON.writeValueAsString(document) + "\n";
     }
 
@@ -35,11 +36,11 @@ public final class ExportLineCodec {
      *
      * @param document prepared operation
      * @return action and source lines, each newline-terminated
-     * @throws JsonProcessingException when action metadata or source cannot be serialized
+     * @throws JacksonException when action metadata or source cannot be serialized
      * @throws IllegalArgumentException if the operation identifier is null or blank
      * @throws NullPointerException if {@code document} is null
      */
-    public static List<String> bulkNdjsonLines(PreparedExportDocument document) throws JsonProcessingException {
+    public static List<String> bulkNdjsonLines(PreparedExportDocument document) throws JacksonException {
         return List.of(
                 bulkIndexActionLine(document.operationId()),
                 jsonDocumentLine(document.document())
@@ -56,9 +57,14 @@ public final class ExportLineCodec {
      * @throws NullPointerException if {@code output} or {@code document} is null
      */
     public static void writeBulkNdjson(OutputStream output, PreparedExportDocument document) throws IOException {
-        output.write(bulkIndexActionBytes(document.operationId()));
-        JSON.writeValue(output, document.document());
-        output.write('\n');
+        try {
+            output.write(bulkIndexActionBytes(document.operationId()));
+            JSON.writeValue(output, document.document());
+            output.write('\n');
+        } catch (JacksonException e) {
+            // File/retry owners handle serialization failures through their checked-I/O path.
+            throw new IOException("Bulk NDJSON serialization failed.", e);
+        }
     }
 
     /**
@@ -72,17 +78,21 @@ public final class ExportLineCodec {
      */
     public static byte[] bulkNdjsonBytes(String operationId, Map<String, Object> document) throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream(256);
-        output.write(bulkIndexActionBytes(operationId));
-        JSON.writeValue(output, document);
-        output.write('\n');
+        try {
+            output.write(bulkIndexActionBytes(operationId));
+            JSON.writeValue(output, document);
+            output.write('\n');
+        } catch (JacksonException e) {
+            throw new IOException("Bulk NDJSON serialization failed.", e);
+        }
         return output.toByteArray();
     }
 
-    private static String bulkIndexActionLine(String operationId) throws JsonProcessingException {
+    private static String bulkIndexActionLine(String operationId) throws JacksonException {
         return JSON.writeValueAsString(Map.of("index", Map.of("_id", requireOperationId(operationId)))) + "\n";
     }
 
-    private static byte[] bulkIndexActionBytes(String operationId) throws JsonProcessingException {
+    private static byte[] bulkIndexActionBytes(String operationId) throws JacksonException {
         return bulkIndexActionLine(operationId).getBytes(StandardCharsets.UTF_8);
     }
 

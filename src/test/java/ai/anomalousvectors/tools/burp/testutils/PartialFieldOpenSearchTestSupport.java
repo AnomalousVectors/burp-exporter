@@ -19,9 +19,10 @@ import org.opensearch.client.opensearch.core.SearchResponse;
 import org.opensearch.client.opensearch.indices.DeleteIndexRequest;
 import org.opensearch.client.opensearch.indices.RefreshRequest;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.sinks.OpenSearchSink;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
@@ -38,7 +39,7 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
  */
 public final class PartialFieldOpenSearchTestSupport {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final Object TRAFFIC_INDEX_IT_LOCK = new Object();
     private static final int AWAIT_INDEX_ATTEMPTS = 120;
     private static final long AWAIT_INDEX_SLEEP_MS = 250L;

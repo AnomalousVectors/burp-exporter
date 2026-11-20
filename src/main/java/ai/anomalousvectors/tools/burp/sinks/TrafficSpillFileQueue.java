@@ -17,11 +17,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.core.json.JsonFactory;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.ObjectReadContext;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.Version;
@@ -42,7 +44,7 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
  */
 final class TrafficSpillFileQueue {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final JsonMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final String SCHEMA_VERSION = "1";
     /**
      * Outcome of attempting to spill one traffic document.
@@ -263,7 +265,7 @@ final class TrafficSpillFileQueue {
     private byte[] buildPayload(Map<String, Object> envelope) {
         try {
             return JSON.writeValueAsBytes(envelope);
-        } catch (IOException e) {
+        } catch (JacksonException e) {
             Logger.logError("[TrafficSpill] Serialize failed: " + e.getMessage());
             return null;
         }
@@ -284,7 +286,7 @@ final class TrafficSpillFileQueue {
                 }
                 try {
                     return extractDocument(payload);
-                } catch (IOException e) {
+                } catch (IOException | JacksonException e) {
                     recordParseDrop();
                     Logger.logError("[TrafficSpill] Parse failed: " + e.getMessage());
                 }
@@ -305,7 +307,7 @@ final class TrafficSpillFileQueue {
                 }
                 try {
                     return extractEntry(payload);
-                } catch (IOException e) {
+                } catch (IOException | JacksonException e) {
                     recordParseDrop();
                     Logger.logError("[TrafficSpill] Parse failed: " + e.getMessage());
                 }
@@ -513,7 +515,7 @@ final class TrafficSpillFileQueue {
     private TrafficQueueEntry readEntryForPurge(Path file) {
         try {
             return extractEntry(Files.readAllBytes(file));
-        } catch (IOException e) {
+        } catch (IOException | JacksonException e) {
             Logger.logError("[TrafficSpill] Purge read failed: " + e.getMessage());
             return null;
         }
@@ -636,7 +638,7 @@ final class TrafficSpillFileQueue {
         if (node == null || node.isNull()) {
             return null;
         }
-        String value = node.asText();
+        String value = node.asString();
         return value == null || value.isBlank() ? null : value;
     }
 
@@ -645,7 +647,7 @@ final class TrafficSpillFileQueue {
     }
 
     private static JsonNode readSpillObject(byte[] payload) throws IOException {
-        JsonFactory factory = JSON.getFactory();
+        JsonFactory factory = JSON.tokenStreamFactory();
         if (payload.length > factory.streamReadConstraints().getMaxStringLength()) {
             // Admitted bodies and prepared NDJSON are Base64 strings that may exceed Jackson's
             // default. Bound this private reader by the already allocated spill payload instead;
@@ -654,7 +656,7 @@ final class TrafficSpillFileQueue {
                     .rebuild().maxStringLength(payload.length).build()).build();
         }
         JsonNode root;
-        try (JsonParser parser = factory.createParser(payload)) {
+        try (JsonParser parser = factory.createParser(ObjectReadContext.empty(), payload)) {
             root = JSON.readTree(parser);
         }
         // Valid non-object JSON must use the same skip-and-continue path as broken JSON syntax.

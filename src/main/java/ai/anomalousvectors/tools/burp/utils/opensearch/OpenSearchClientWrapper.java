@@ -1,6 +1,5 @@
 package ai.anomalousvectors.tools.burp.utils.opensearch;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -8,8 +7,9 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.RejectedExecutionException;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
@@ -46,7 +46,7 @@ public class OpenSearchClientWrapper {
         return testConnection(baseUrl, null, null);
     }
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
 
     /**
      * Tests connectivity with optional basic auth. Performs a raw GET / so logs show the actual
@@ -102,10 +102,10 @@ public class OpenSearchClientWrapper {
                 try {
                     JsonNode root = JSON.readTree(result.body());
                     JsonNode ver = root.path("version");
-                    version = ver.path("number").asText("");
-                    distribution = ver.path("distribution").asText("");
-                    clusterUuid = root.path("cluster_uuid").asText("");
-                } catch (IOException | RuntimeException ignored) {
+                    version = ver.path("number").asString("");
+                    distribution = ver.path("distribution").asString("");
+                    clusterUuid = root.path("cluster_uuid").asString("");
+                } catch (RuntimeException ignored) {
                     // Version JSON is optional; connection still succeeds with blank version fields.
                 }
             }

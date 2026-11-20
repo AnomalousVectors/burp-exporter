@@ -10,13 +10,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.StreamReadConstraints;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.StreamReadConstraints;
+import tools.jackson.core.json.JsonFactory;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
 import ai.anomalousvectors.tools.burp.utils.Version;
 
@@ -107,12 +109,12 @@ public final class Json {
     private Json() { }
 
     private static ObjectMapper createMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.getFactory().setStreamReadConstraints(StreamReadConstraints.builder()
+        JsonFactory factory = JsonFactory.builder().streamReadConstraints(StreamReadConstraints.builder()
                 .maxNestingDepth(ConfigImportPolicy.MAX_JSON_NESTING_DEPTH)
                 .maxStringLength(ConfigImportPolicy.MAX_JSON_STRING_LENGTH)
-                .build());
-        return mapper.configure(SerializationFeature.INDENT_OUTPUT, true);
+                .build()).build();
+        return JsonMapper.builder(factory).configureForJackson2()
+                .enable(SerializationFeature.INDENT_OUTPUT).build();
     }
 
     /** Dedicated runtime exception for config JSON errors. */
@@ -302,7 +304,7 @@ public final class Json {
 
         try {
             return MAPPER.writeValueAsString(root);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new ConfigJsonException("JSON serialization error", e);
         }
     }
@@ -644,7 +646,13 @@ public final class Json {
     }
 
     private static ImportedConfig parseConfigJson(String json, ConfigImportReport report) throws IOException {
-        JsonNode root = MAPPER.readTree(json);
+        JsonNode root;
+        try {
+            root = MAPPER.readTree(json);
+        } catch (JacksonException e) {
+            // Import callers own the checked-I/O failure path, including config status reporting.
+            throw new IOException("Invalid config JSON: " + e.getOriginalMessage(), e);
+        }
         if (!root.isObject()) {
             throw new IOException("Invalid config: root must be a JSON object.");
         }
@@ -745,8 +753,8 @@ public final class Json {
         }
         List<String> raw = new ArrayList<>();
         for (JsonNode n : ds) {
-            if (n.isTextual()) {
-                raw.add(n.asText());
+            if (n.isString()) {
+                raw.add(n.asString());
             }
         }
         return ConfigImportCatalog.filterKnownDataSources(raw, report, communityEdition);
@@ -832,7 +840,7 @@ public final class Json {
         List<String> out = new ArrayList<>();
         if (arr.isArray()) {
             for (JsonNode n : arr) {
-                if (n.isTextual()) out.add(n.asText());
+                if (n.isString()) out.add(n.asString());
             }
         }
         return out;
@@ -844,8 +852,8 @@ public final class Json {
         // Current representation: simple scopes as array of strings, e.g. ["all"] or ["burp"].
         if (scope.isArray() && !scope.isEmpty()) {
             JsonNode first = scope.get(0);
-            if (first.isTextual()) {
-                String v = first.asText();
+            if (first.isString()) {
+                String v = first.asString();
                 if ("all".equals(v) || "burp".equals(v)) {
                     return new ScopeParts(v, List.of(), null);
                 }
@@ -881,16 +889,16 @@ public final class Json {
         ConfigImportPolicy.requireCustomScopeEntryCount("scope.custom", custom.size());
         List<String> vals = new ArrayList<>();
         List<String> kindsList = new ArrayList<>();
-        for (Iterator<String> it = custom.fieldNames(); it.hasNext(); ) {
+        for (Iterator<String> it = custom.propertyNames().iterator(); it.hasNext(); ) {
             String key = it.next();
             JsonNode v = custom.get(key);
-            if (!v.isTextual()) {
+            if (!v.isString()) {
                 continue;
             }
             // stringX => string, everything else => regex
             String kind = key.startsWith(LIT_STRING) ? LIT_STRING : LIT_REGEX;
             kindsList.add(kind);
-            vals.add(v.asText());
+            vals.add(v.asString());
         }
         return new ScopeParts(LIT_CUSTOM, vals, kindsList);
     }
@@ -899,7 +907,7 @@ public final class Json {
         ConfigImportPolicy.requireCustomScopeEntryCount("scope.custom", custom.size());
         List<String> vals = new ArrayList<>();
         for (JsonNode n : custom) {
-            if (n.isTextual()) vals.add(n.asText());
+            if (n.isString()) vals.add(n.asString());
         }
 
         List<String> kindsList = null;
@@ -910,7 +918,7 @@ public final class Json {
         if (types.isArray() && types.size() == vals.size()) {
             kindsList = new ArrayList<>(types.size());
             for (JsonNode t : types) {
-                kindsList.add(t.isTextual() ? t.asText() : LIT_REGEX);
+                kindsList.add(t.isString() ? t.asString() : LIT_REGEX);
             }
         }
         return new ScopeParts(LIT_CUSTOM, vals, kindsList);
@@ -930,8 +938,8 @@ public final class Json {
         boolean fileDiskUsagePercentEnabled = true;
         int fileDiskUsagePercent = ConfigState.DEFAULT_FILE_MAX_DISK_USED_PERCENT;
         JsonNode filePathNode = filesNode.get("path");
-        if (filePathNode != null && filePathNode.isTextual()) {
-            String v = filePathNode.asText();
+        if (filePathNode != null && filePathNode.isString()) {
+            String v = filePathNode.asString();
             if (!v.isBlank()) files = v;
         }
         boolean filesEnabled = bool(filesNode.get("enabled"), files != null);
@@ -939,10 +947,10 @@ public final class Json {
         if (fileFormatsNode.isArray()) {
             for (int i = 0; i < fileFormatsNode.size(); i++) {
                 JsonNode formatNode = fileFormatsNode.get(i);
-                if (!formatNode.isTextual()) {
+                if (!formatNode.isString()) {
                     throw new IOException("Invalid config: 'sinks.files.formats[" + i + "]' must be a string.");
                 }
-                String format = formatNode.asText();
+                String format = formatNode.asString();
                 switch (format) {
                     case "jsonl" -> fileJsonlEnabled = true;
                     case "bulkNdjson" -> fileBulkNdjsonEnabled = true;
@@ -1280,7 +1288,7 @@ public final class Json {
             return null;
         }
         Map<String, Set<String>> out = new java.util.LinkedHashMap<>();
-        for (Iterator<String> it = exportFields.fieldNames(); it.hasNext(); ) {
+        for (Iterator<String> it = exportFields.propertyNames().iterator(); it.hasNext(); ) {
             String indexName = it.next();
             if (!ConfigImportCatalog.isKnownExportIndex(indexName)) {
                 report.add(ConfigImportReport.Kind.UNKNOWN_KEY, "exportFields." + indexName, indexName);
@@ -1293,11 +1301,11 @@ public final class Json {
             }
             Set<String> set = new LinkedHashSet<>();
             for (JsonNode n : arr) {
-                if (!n.isTextual()) {
+                if (!n.isString()) {
                     continue;
                 }
                 String normalized = ConfigImportCatalog.normalizeExportFieldKey(
-                        indexName, n.asText(), report);
+                        indexName, n.asString(), report);
                 if (normalized != null) {
                     set.add(normalized);
                 }
@@ -1310,7 +1318,7 @@ public final class Json {
     }
 
     private static String textOrNull(JsonNode node) {
-        return node != null && node.isTextual() ? node.asText() : null;
+        return node != null && node.isString() ? node.asString() : null;
     }
 
     private static String textIfNotBlank(JsonNode node) {
@@ -1319,7 +1327,7 @@ public final class Json {
     }
 
     private static String textOrEmpty(JsonNode node) {
-        return node != null && node.isTextual() ? node.asText() : "";
+        return node != null && node.isString() ? node.asString() : "";
     }
 
     private static boolean isBlank(String value) {

@@ -5,8 +5,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.utils.config.SearchMappingResources;
@@ -37,7 +38,7 @@ class MappingsContractTest {
                     + "||EEE, d-MMM-yyyy HH:mm:ss 'GMT'Z||dd MMM yyyy HH:mm:ss zzz"
                     + "||d MMM yyyy HH:mm:ss zzz||strict_date_optional_time||epoch_millis";
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private final ObjectMapper mapper = JsonMapper.builderWithJackson2Defaults().build();
 
     @Test
     void mappingFiles_exist_parse_andContainRequiredKeys() throws Exception {
@@ -62,10 +63,10 @@ class MappingsContractTest {
                 assertThat(settings.path("number_of_shards").asInt())
                         .withFailMessage("%s must default newly created indexes to one primary shard", file)
                         .isEqualTo(1);
-                assertThat(settings.path("auto_expand_replicas").asText())
+                assertThat(settings.path("auto_expand_replicas").asString())
                         .withFailMessage("%s must retain one replica only when a second node exists", file)
                         .isEqualTo("0-1");
-                assertThat(settings.path("refresh_interval").asText())
+                assertThat(settings.path("refresh_interval").asString())
                         .withFailMessage("%s must use the conservative refresh default", file)
                         .isEqualTo("5s");
 
@@ -122,10 +123,10 @@ class MappingsContractTest {
             assertThat(responseProtocol.has("http_version")).isTrue();
             assertThat(props.path("response").path("properties").has("http_version")).isFalse();
             JsonNode responseProps = props.path("response").path("properties");
-            assertThat(responseProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(responseProps.path("headers").path("type").asString()).isEqualTo("nested");
             JsonNode responseHeaderAttributes = responseProps.path("header_attributes").path("properties");
-            assertThat(responseHeaderAttributes.path("date").path("type").asText()).isEqualTo("date");
-            assertThat(responseHeaderAttributes.path("date").path("format").asText()).isEqualTo(HTTP_DATE_FORMAT);
+            assertThat(responseHeaderAttributes.path("date").path("type").asString()).isEqualTo("date");
+            assertThat(responseHeaderAttributes.path("date").path("format").asString()).isEqualTo(HTTP_DATE_FORMAT);
             assertThat(responseHeaderAttributes.path("date").path("ignore_malformed").asBoolean()).isTrue();
             assertThat(responseProps.has("header")).isFalse();
             assertThat(props.path("response").path("properties").has("mime_type")).isTrue();
@@ -140,12 +141,12 @@ class MappingsContractTest {
             assertThat(props.path("response").path("properties").has("status_code_class")).isFalse();
             assertThat(props.path("response").path("properties").has("status_description")).isFalse();
             JsonNode requestProps = props.path("request").path("properties");
-            assertThat(requestProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(requestProps.path("headers").path("type").asString()).isEqualTo("nested");
             assertThat(requestProps.has("header")).isFalse();
             JsonNode responseCookies = responseProps.path("cookies").path("properties");
-            assertThat(responseCookies.path("expires").path("format").asText()).isEqualTo(HTTP_DATE_FORMAT);
+            assertThat(responseCookies.path("expires").path("format").asString()).isEqualTo(HTTP_DATE_FORMAT);
             assertThat(responseCookies.path("expires").path("ignore_malformed").asBoolean()).isTrue();
-            assertThat(responseCookies.path("max_age").path("type").asText()).isEqualTo("long");
+            assertThat(responseCookies.path("max_age").path("type").asString()).isEqualTo("long");
             assertThat(responseCookies.path("max_age").path("ignore_malformed").asBoolean()).isTrue();
             assertThat(props.path("meta").path("properties").has("export")).isFalse();
             assertThat(props.path("request").path("properties").has("content_type")).isTrue();
@@ -196,7 +197,7 @@ class MappingsContractTest {
             assertThat(payload.has("b64")).isTrue();
             assertThat(payload.has("length")).isTrue();
             assertThat(payload.has("text")).isTrue();
-            assertThat(payload.path("truncated").path("type").asText()).isEqualTo("boolean");
+            assertThat(payload.path("truncated").path("type").asString()).isEqualTo("boolean");
             assertThat(props.has("ws_upgrade_request")).isFalse();
         }
     }
@@ -216,9 +217,9 @@ class MappingsContractTest {
                     .path("requests_responses")
                     .path("properties");
             assertThat(rr.path("request").path("properties").path("body").path("properties")
-                    .path("truncated").path("type").asText()).isEqualTo("boolean");
+                    .path("truncated").path("type").asString()).isEqualTo("boolean");
             assertThat(rr.path("response").path("properties").path("body").path("properties")
-                    .path("truncated").path("type").asText()).isEqualTo("boolean");
+                    .path("truncated").path("type").asString()).isEqualTo("boolean");
         }
     }
 
@@ -256,9 +257,9 @@ class MappingsContractTest {
                     .path("properties");
 
             assertThat(rr.path("request").path("properties").path("body").path("properties").path("text")
-                    .path("index_options").asText()).isEqualTo("offsets");
+                    .path("index_options").asString()).isEqualTo("offsets");
             assertThat(rr.path("response").path("properties").path("body").path("properties").path("text")
-                    .path("index_options").asText()).isEqualTo("offsets");
+                    .path("index_options").asString()).isEqualTo("offsets");
         }
     }
 
@@ -278,10 +279,10 @@ class MappingsContractTest {
 
             assertThat(requestProps.has("host")).isFalse();
             assertThat(requestProps.has("content_type")).isTrue();
-            assertThat(requestProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(requestProps.path("headers").path("type").asString()).isEqualTo("nested");
             assertThat(responseProps.has("content_length")).isFalse();
-            assertThat(responseProps.path("cookies").path("type").asText()).isEqualTo("nested");
-            assertThat(responseProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(responseProps.path("cookies").path("type").asString()).isEqualTo("nested");
+            assertThat(responseProps.path("headers").path("type").asString()).isEqualTo("nested");
             assertThat(responseProps.has("location")).isFalse();
             assertThat(responseProps.has("mime_type")).isTrue();
             assertThat(requestProps.has("header")).isFalse();
@@ -361,7 +362,7 @@ class MappingsContractTest {
         JsonNode findingsProps = mappingProperties("findings.json");
         JsonNode evidence = findingsProps.path("requests_responses");
 
-        assertThat(evidence.path("type").asText()).isEqualTo("nested");
+        assertThat(evidence.path("type").asString()).isEqualTo("nested");
         assertThat(evidence.path("properties").has("request")).isTrue();
         assertThat(evidence.path("properties").has("response")).isTrue();
         assertThat(evidence.path("properties").has("burp")).isTrue();
@@ -415,29 +416,29 @@ class MappingsContractTest {
         JsonNode props = mappingProperties("findings.json");
 
         JsonNode collaboratorProps = props.path("collaborator").path("properties");
-        assertThat(collaboratorProps.path("client_ip").path("type").asText()).isEqualTo("ip");
+        assertThat(collaboratorProps.path("client_ip").path("type").asString()).isEqualTo("ip");
         assertThat(collaboratorProps.path("client_ip").has("ignore_malformed")).isFalse();
-        assertThat(collaboratorProps.path("client_port").path("type").asText()).isEqualTo("integer");
+        assertThat(collaboratorProps.path("client_port").path("type").asString()).isEqualTo("integer");
         assertThat(collaboratorProps.path("client_port").has("ignore_malformed")).isFalse();
-        assertThat(collaboratorProps.path("time").path("type").asText()).isEqualTo("date");
+        assertThat(collaboratorProps.path("time").path("type").asString()).isEqualTo("date");
         assertThat(collaboratorProps.path("time").has("ignore_malformed")).isFalse();
 
         JsonNode issueProps = props.path("issue").path("properties");
-        assertThat(issueProps.path("type_id").path("type").asText()).isEqualTo("integer");
+        assertThat(issueProps.path("type_id").path("type").asString()).isEqualTo("integer");
         assertThat(issueProps.path("type_id").has("ignore_malformed")).isFalse();
 
         JsonNode targetProps = props.path("target").path("properties");
-        assertThat(targetProps.path("port").path("type").asText()).isEqualTo("integer");
+        assertThat(targetProps.path("port").path("type").asString()).isEqualTo("integer");
         assertThat(targetProps.path("port").has("ignore_malformed")).isFalse();
     }
 
     @Test
     void settingsAndExporter_keepVariablePayloadsAsOpenObjects() throws Exception {
         JsonNode settingsProps = mappingProperties("settings.json");
-        assertThat(settingsProps.path("project").path("type").asText()).isEqualTo("object");
+        assertThat(settingsProps.path("project").path("type").asString()).isEqualTo("object");
         assertThat(settingsProps.path("project").path("enabled").asBoolean()).isFalse();
         assertThat(settingsProps.path("project").has("properties")).isFalse();
-        assertThat(settingsProps.path("user").path("type").asText()).isEqualTo("object");
+        assertThat(settingsProps.path("user").path("type").asString()).isEqualTo("object");
         assertThat(settingsProps.path("user").path("enabled").asBoolean()).isFalse();
         assertThat(settingsProps.path("user").has("properties")).isFalse();
 
@@ -445,7 +446,7 @@ class MappingsContractTest {
                 .path("event")
                 .path("properties")
                 .path("data");
-        assertThat(exporterEventData.path("type").asText()).isEqualTo("object");
+        assertThat(exporterEventData.path("type").asString()).isEqualTo("object");
         assertThat(exporterEventData.path("enabled").asBoolean()).isTrue();
         assertThat(exporterEventData.has("properties")).isFalse();
     }
@@ -493,12 +494,12 @@ class MappingsContractTest {
                     .path("properties");
 
             JsonNode rrReqProps = rr.path("request").path("properties");
-            assertThat(rrReqProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(rrReqProps.path("headers").path("type").asString()).isEqualTo("nested");
             assertThat(rrReqProps.has("header")).isFalse();
             assertThat(rr.path("request").path("properties").has("header_names")).isFalse();
 
             JsonNode rrRespProps = rr.path("response").path("properties");
-            assertThat(rrRespProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(rrRespProps.path("headers").path("type").asString()).isEqualTo("nested");
             assertThat(rrRespProps.has("header")).isFalse();
             assertThat(rr.path("response").path("properties").has("header_names")).isFalse();
             assertThat(rr.path("response").path("properties").has("etag_header")).isFalse();
@@ -517,7 +518,7 @@ class MappingsContractTest {
                     .path("properties")
                     .path("body")
                     .path("properties");
-            assertThat(bodyProps.path("truncated").path("type").asText()).isEqualTo("boolean");
+            assertThat(bodyProps.path("truncated").path("type").asString()).isEqualTo("boolean");
         }
     }
 
@@ -528,15 +529,15 @@ class MappingsContractTest {
             JsonNode props = root.path("mappings").path("properties");
 
             assertThat(props.path("request").path("properties").path("body").path("properties").path("text")
-                    .path("index_options").asText()).isEqualTo("offsets");
+                    .path("index_options").asString()).isEqualTo("offsets");
             assertThat(props.path("response").path("properties").path("body").path("properties").path("text")
-                    .path("index_options").asText()).isEqualTo("offsets");
+                    .path("index_options").asString()).isEqualTo("offsets");
             JsonNode responseBodyProps = props.path("response").path("properties").path("body").path("properties");
             JsonNode visibleText = isTrafficLikeHttpShape(mappingFile)
                     ? responseBodyProps.path("html").path("properties")
                             .path("text").path("properties").path("visible_text")
                     : responseBodyProps.path("visible_text");
-            assertThat(visibleText.path("index_options").asText()).isEqualTo("offsets");
+            assertThat(visibleText.path("index_options").asString()).isEqualTo("offsets");
         }
     }
 
@@ -628,7 +629,7 @@ class MappingsContractTest {
             JsonNode bodyProps = requestProps.path("body").path("properties");
 
             assertThat(requestProps.has("markers")).isFalse();
-            assertThat(bodyProps.path("markers").path("type").asText()).isEqualTo("nested");
+            assertThat(bodyProps.path("markers").path("type").asString()).isEqualTo("nested");
             JsonNode markerProps = bodyProps.path("markers").path("properties");
             assertThat(markerProps.has("start_inclusive")).isTrue();
             assertThat(markerProps.has("end_exclusive")).isTrue();
@@ -639,7 +640,7 @@ class MappingsContractTest {
             JsonNode responseBodyProps = responseProps.path("body").path("properties");
             JsonNode responseMarkerProps = responseBodyProps.path("markers").path("properties");
             assertThat(responseProps.has("markers")).isFalse();
-            assertThat(responseBodyProps.path("markers").path("type").asText()).isEqualTo("nested");
+            assertThat(responseBodyProps.path("markers").path("type").asString()).isEqualTo("nested");
             assertThat(responseMarkerProps.has("start_inclusive")).isTrue();
             assertThat(responseMarkerProps.has("end_exclusive")).isTrue();
             assertThat(responseMarkerProps.has("start_index_inclusive")).isFalse();
@@ -655,7 +656,7 @@ class MappingsContractTest {
 
             JsonNode requestProps = props.path("request").path("properties");
             JsonNode requestHeaders = requestProps.path("headers").path("properties");
-            assertThat(requestProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(requestProps.path("headers").path("type").asString()).isEqualTo("nested");
             assertThat(requestHeaders.has("name")).isTrue();
             assertThat(requestHeaders.has("raw")).isTrue();
             assertThat(requestHeaders.has("raw_name")).isFalse();
@@ -666,7 +667,7 @@ class MappingsContractTest {
 
             JsonNode responseProps = props.path("response").path("properties");
             JsonNode responseHeaders = responseProps.path("headers").path("properties");
-            assertThat(responseProps.path("headers").path("type").asText()).isEqualTo("nested");
+            assertThat(responseProps.path("headers").path("type").asString()).isEqualTo("nested");
             assertThat(responseHeaders.has("name")).isTrue();
             assertThat(responseHeaders.has("raw")).isTrue();
             assertThat(responseHeaders.has("raw_name")).isFalse();
@@ -801,8 +802,8 @@ class MappingsContractTest {
                 JsonNode type = field.get("type");
                 JsonNode rawType = field.path("fields").path("raw").path("type");
                 JsonNode rawIgnoreAbove = field.path("fields").path("raw").path("ignore_above");
-                boolean ok = type != null && type.isTextual() && "text".equals(type.asText())
-                        && rawType.isTextual() && "keyword".equals(rawType.asText())
+                boolean ok = type != null && type.isString() && "text".equals(type.asString())
+                        && rawType.isString() && "keyword".equals(rawType.asString())
                         && rawIgnoreAbove.isNumber() && rawIgnoreAbove.asInt() == 8191;
                 if (!ok) {
                     violations.add(entry.mappingFile() + " @ " + entry.dottedPath()
@@ -864,7 +865,7 @@ class MappingsContractTest {
         if (node == null) return;
         if (node.isObject()) {
             JsonNode type = node.get("type");
-            if (type != null && type.isTextual() && "keyword".equals(type.asText())) {
+            if (type != null && type.isString() && "keyword".equals(type.asString())) {
                 JsonNode ignoreAbove = node.get("ignore_above");
                 if (ignoreAbove == null || !ignoreAbove.isNumber() || ignoreAbove.asInt() != 8191) {
                     violations.add(file + " @ " + (path.isEmpty() ? "<root>" : path)
@@ -891,12 +892,12 @@ class MappingsContractTest {
 
     private static void assertBodyProgressiveEncodingFields(JsonNode messageProperties) {
         JsonNode body = messageProperties.path("body").path("properties");
-        assertThat(body.path("decoded_b64").path("type").asText()).isEqualTo("binary");
+        assertThat(body.path("decoded_b64").path("type").asString()).isEqualTo("binary");
         assertThat(body.path("decoded_b64").path("doc_values").asBoolean()).isFalse();
         JsonNode contentEncoding = body.path("content_encoding").path("properties");
-        assertThat(contentEncoding.path("applied").path("type").asText()).isEqualTo("keyword");
-        assertThat(contentEncoding.path("remaining").path("type").asText()).isEqualTo("keyword");
-        assertThat(contentEncoding.path("complete").path("type").asText()).isEqualTo("boolean");
+        assertThat(contentEncoding.path("applied").path("type").asString()).isEqualTo("keyword");
+        assertThat(contentEncoding.path("remaining").path("type").asString()).isEqualTo("keyword");
+        assertThat(contentEncoding.path("complete").path("type").asString()).isEqualTo("boolean");
     }
 
     private void assertBodyMetadataNested(String mappingFile) throws Exception {

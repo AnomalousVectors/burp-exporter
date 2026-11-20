@@ -2,8 +2,9 @@ package ai.anomalousvectors.tools.burp.ui;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.awt.Component;
 import java.awt.Container;
@@ -30,7 +31,7 @@ import ai.anomalousvectors.tools.burp.utils.config.SearchMappingResources;
 
 class ConfigPanelFieldTooltipsHeadlessTest {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMapper.builderWithJackson2Defaults().build();
 
     @Test
     void fieldSection_components_have_expected_tooltips() throws Exception {
