@@ -9,11 +9,15 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.Shape;
+import java.awt.geom.Rectangle2D;
+import java.awt.geom.PathIterator;
 import java.awt.image.BufferedImage;
+import java.io.Serial;
 import java.lang.reflect.InvocationTargetException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
@@ -36,11 +40,16 @@ import org.jfree.chart.JFreeChart;
 import org.jfree.chart.axis.DateAxis;
 import org.jfree.chart.axis.DateTickUnitType;
 import org.jfree.chart.axis.NumberAxis;
+import org.jfree.chart.plot.PlotRenderingInfo;
 import org.jfree.chart.plot.XYPlot;
+import org.jfree.chart.renderer.xy.XYItemRendererState;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
 import org.jfree.chart.renderer.xy.XYSplineRenderer;
 import org.jfree.data.RangeType;
 import org.jfree.data.time.TimeSeries;
+import org.jfree.data.time.Millisecond;
+import org.jfree.data.time.TimeSeriesCollection;
+import org.jfree.data.xy.XYDataset;
 import org.junit.jupiter.api.Test;
 
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.call;
@@ -57,6 +66,155 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 
 class StatsPanelTest {
+
+    @Test
+    void smoothRanges_coverActualRendererOvershootAcrossBothSinksAndHeap() {
+        onEdt(() -> {
+            StatsPanel panel = new StatsPanel();
+            Reflect.set(panel, "chartStyleIndex", 1);
+            for (String chartField : List.of("docsChart", "kibChart", "fileDocsChart", "fileKibChart", "memoryChart")) {
+                JFreeChart chart = (JFreeChart) get(panel, chartField);
+                seedChart(chart, new long[] { 0, 3, 300, 303 }, new double[] { 0, 10, 0, 0 });
+                RecordingSplineRenderer renderer = new RecordingSplineRenderer();
+                chart.getXYPlot().setRenderer(renderer);
+                NumberAxis axis = (NumberAxis) chart.getXYPlot().getRangeAxis();
+
+                // The previous sample-only bound clips the actual library-generated path.
+                axis.setRange(0.0, 15.0);
+                chart.createBufferedImage(600, 180);
+                assertThat(renderer.pathTop).as("old bound clips %s", chartField).isLessThan(renderer.dataTop);
+
+                call(panel, "refreshChartRangeAxes");
+                chart.createBufferedImage(600, 180);
+                assertThat(axis.getUpperBound()).as(chartField).isGreaterThan(152.0);
+                assertThat(renderer.pathTop).as("visible spline fits %s", chartField)
+                        .isGreaterThan(renderer.dataTop + 2.0);
+            }
+        });
+    }
+
+    @Test
+    void chartStyles_keepReadableTicksScaledUnitsAndIdleDefaults() {
+        onEdt(() -> {
+            StatsPanel panel = new StatsPanel();
+            for (int style = 0; style < 3; style++) {
+                Reflect.set(panel, "chartStyleIndex", style);
+                for (String chartField : List.of("docsChart", "kibChart", "fileDocsChart", "fileKibChart", "memoryChart")) {
+                    JFreeChart chart = (JFreeChart) get(panel, chartField);
+                    boolean docs = chartField.equals("docsChart") || chartField.equals("fileDocsChart");
+                    double divisor = docs ? 1.0 : 1024.0;
+                    seedChart(chart, new long[] { 0, 3, 6 }, new double[] { 6 * divisor, 6 * divisor, 6 * divisor });
+                    call(panel, "applyChartStyles");
+                    NumberAxis axis = (NumberAxis) chart.getXYPlot().getRangeAxis();
+                    chart.createBufferedImage(600, 180);
+                    assertThat(axis.getLowerBound()).isZero();
+                    assertThat(axis.getUpperBound()).isEqualTo(10.0 * divisor);
+                    assertThat(axis.getTickUnit().getSize()).isEqualTo(5.0 * divisor);
+                    assertThat(axis.isAutoTickUnitSelection()).isFalse();
+                    if (!docs) {
+                        assertThat(axis.getLabel()).isEqualTo(chartField.equals("memoryChart") ? "GiB" : "MiB per second");
+                    }
+
+                    ((TimeSeriesCollection) chart.getXYPlot().getDataset()).removeAllSeries();
+                    call(panel, "refreshChartRangeAxes");
+                    assertThat(axis.getUpperBound()).isEqualTo(10.0);
+                    assertThat(axis.getTickUnit().getSize()).isEqualTo(5.0);
+                    assertThat(axis.getNumberFormatOverride()).isNull();
+                }
+            }
+        });
+    }
+
+    @Test
+    void smoothRanges_coverWindowEdgesWithoutKeepingInvisiblePeaks() {
+        onEdt(() -> {
+            StatsPanel panel = new StatsPanel();
+            Reflect.set(panel, "chartStyleIndex", 1);
+            JFreeChart chart = (JFreeChart) get(panel, "docsChart");
+            seedChart(chart, new long[] { 0, 3, 300, 303 }, new double[] { 0, 10, 0, 0 });
+            RecordingSplineRenderer renderer = new RecordingSplineRenderer();
+            chart.getXYPlot().setRenderer(renderer);
+            long base = 1_700_000_000_000L;
+            for (long[] window : List.of(new long[] { 0, 1 }, new long[] { 80, 120 }, new long[] { 290, 303 })) {
+                chart.getXYPlot().getDomainAxis().setRange(base + window[0] * 1000L, base + window[1] * 1000L);
+                call(panel, "refreshChartRangeAxes");
+                chart.createBufferedImage(600, 180);
+                assertThat(renderer.pathTop).isGreaterThan(renderer.dataTop + 2.0);
+                if (window[0] == 80) {
+                    assertThat(chart.getXYPlot().getRangeAxis().getUpperBound()).isGreaterThan(152.0);
+                } else if (window[0] == 0) {
+                    assertThat(chart.getXYPlot().getRangeAxis().getUpperBound()).isLessThan(20.0);
+                } else {
+                    assertThat(chart.getXYPlot().getRangeAxis().getUpperBound()).isLessThan(50.0);
+                }
+            }
+        });
+    }
+
+    private static void seedChart(JFreeChart chart, long[] seconds, double[] values) {
+        long baseMs = 1_700_000_000_000L;
+        TimeSeries series = new TimeSeries("Traffic");
+        for (int item = 0; item < seconds.length; item++) {
+            series.add(new Millisecond(new Date(baseMs + seconds[item] * 1000L)), values[item]);
+        }
+        TimeSeriesCollection dataset = (TimeSeriesCollection) chart.getXYPlot().getDataset();
+        dataset.removeAllSeries();
+        dataset.addSeries(series);
+        chart.getXYPlot().getDomainAxis().setRange(baseMs, baseMs + seconds[seconds.length - 1] * 1000L);
+    }
+
+    /** Records the real library path before the plot clips it; no spline formula is copied into this oracle. */
+    private static final class RecordingSplineRenderer extends XYSplineRenderer {
+        @Serial private static final long serialVersionUID = 1L;
+        private double dataTop;
+        private double dataLeft;
+        private double dataRight;
+        private double pathTop;
+
+        private RecordingSplineRenderer() {
+            super(12, FillType.TO_LOWER_BOUND);
+        }
+
+        /** Starts a fresh path observation for each chart paint. */
+        @Override
+        public XYItemRendererState initialise(
+                Graphics2D graphics, Rectangle2D area, XYPlot plot, XYDataset data, PlotRenderingInfo info) {
+            dataTop = area.getMinY();
+            dataLeft = area.getMinX();
+            dataRight = area.getMaxX();
+            pathTop = Double.POSITIVE_INFINITY;
+            return super.initialise(graphics, area, plot, data, info);
+        }
+
+        /** Records the interpolated path's top edge before delegating the normal paint. */
+        @Override
+        protected void drawFirstPassShape(Graphics2D graphics, int pass, int series, int item, Shape shape) {
+            double[] point = new double[6];
+            double lastX = 0.0;
+            double lastY = 0.0;
+            for (PathIterator path = shape.getPathIterator(null); !path.isDone(); path.next()) {
+                int type = path.currentSegment(point);
+                if (type == PathIterator.SEG_LINETO) {
+                    double width = point[0] - lastX;
+                    if (width > 0.0) {
+                        double from = Math.max(0.0, (dataLeft - lastX) / width);
+                        double to = Math.min(1.0, (dataRight - lastX) / width);
+                        if (from <= to) {
+                            pathTop = Math.min(pathTop, Math.min(
+                                    lastY + (point[1] - lastY) * from,
+                                    lastY + (point[1] - lastY) * to));
+                        }
+                    }
+                }
+                if (point[0] >= dataLeft && point[0] <= dataRight) {
+                    pathTop = Math.min(pathTop, point[1]);
+                }
+                lastX = point[0];
+                lastY = point[1];
+            }
+            super.drawFirstPassShape(graphics, pass, series, item, shape);
+        }
+    }
 
     @Test
     void docsChart_usesReadableTimeAxis_andPositiveWholeNumberDefaults() {

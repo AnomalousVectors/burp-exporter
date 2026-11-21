@@ -1,13 +1,8 @@
 package ai.anomalousvectors.tools.burp.ui;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
-import org.jfree.data.time.Millisecond;
-import org.jfree.data.time.TimeSeries;
-import org.jfree.data.time.TimeSeriesCollection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.util.Date;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -148,44 +143,23 @@ class StatsPanelFormattersTest {
     }
 
     @Test
-    void maxTimeSeriesValueInDomain_usesOnlySamplesInsideWindow() {
-        TimeSeriesCollection dataset = new TimeSeriesCollection();
-        TimeSeries traffic = new TimeSeries("Traffic");
-        long baseMs = 1_700_000_000_000L;
-        traffic.addOrUpdate(new Millisecond(new Date(baseMs)), 400.0);
-        traffic.addOrUpdate(new Millisecond(new Date(baseMs + 30_000L)), 55.0);
-        dataset.addSeries(traffic);
-
-        assertThat(StatsPanelFormatters.maxTimeSeriesValueInDomain(dataset, baseMs, baseMs + 40_000L))
-                .isEqualTo(400.0);
-        assertThat(StatsPanelFormatters.maxTimeSeriesValueInDomain(dataset, baseMs + 20_000L, baseMs + 40_000L))
-                .isEqualTo(55.0);
-    }
-
-    @Test
-    void maxTimeSeriesValueInDomain_emptyWindow_returnsZero() {
-        TimeSeriesCollection dataset = new TimeSeriesCollection();
-        TimeSeries traffic = new TimeSeries("Traffic");
-        long baseMs = 1_700_000_000_000L;
-        traffic.addOrUpdate(new Millisecond(new Date(baseMs)), 100.0);
-        dataset.addSeries(traffic);
-
-        assertThat(StatsPanelFormatters.maxTimeSeriesValueInDomain(dataset, baseMs + 60_000L, baseMs + 120_000L))
-                .isEqualTo(0.0);
-    }
-
-    @Test
-    void nicePositiveUpperBound_roundsSmallCeilingsToWholeNumbers() {
-        assertThat(StatsPanelFormatters.nicePositiveUpperBound(3.9)).isEqualTo(4.0);
-        assertThat(StatsPanelFormatters.nicePositiveUpperBound(2.01)).isEqualTo(3.0);
-        assertThat(StatsPanelFormatters.nicePositiveUpperBound(87.0)).isEqualTo(90.0);
-        assertThat(StatsPanelFormatters.nicePositiveUpperBound(750.0)).isEqualTo(800.0);
+    void rangeCeiling_alignsToReadableTicksAndKeepsSmallWholeUnitResolution() {
+        assertThat(StatsPanelFormatters.rangeCeiling(3.9, 1.0)).isEqualTo(4.0);
+        assertThat(StatsPanelFormatters.rangeCeiling(2.01, 1.0)).isEqualTo(3.0);
+        assertThat(StatsPanelFormatters.rangeCeiling(6.0, 1.08)).isEqualTo(10.0);
+        assertThat(StatsPanelFormatters.rangeCeiling(87.0, 1.0)).isEqualTo(100.0);
+        assertThat(StatsPanelFormatters.rangeCeiling(750.0, 1.0)).isEqualTo(750.0);
     }
 
     @Test
     void integerDisplayTickStep_isAlwaysAtLeastOneWholeUnit() {
         assertThat(StatsPanelFormatters.integerDisplayTickStep(4.0)).isEqualTo(1);
         assertThat(StatsPanelFormatters.integerDisplayTickStep(100.0)).isEqualTo(25);
+        assertThat(StatsPanelFormatters.integerDisplayTickStep(10.0)).isEqualTo(5);
+        assertThat(StatsPanelFormatters.integerDisplayTickStep(20.0)).isEqualTo(5);
+        assertThat(StatsPanelFormatters.integerDisplayTickStep(40.0)).isEqualTo(10);
+        assertThat(StatsPanelFormatters.integerDisplayTickStep(300.0)).isEqualTo(100);
+        assertThat(StatsPanelFormatters.integerDisplayTickStep(1.0e18)).isEqualTo(2.5e17);
     }
 
     @Test
@@ -198,14 +172,21 @@ class StatsPanelFormattersTest {
     }
 
     @Test
-    void rangeCeiling_stepsPastTightNiceTickSoSplineHasHeadroom() {
-        // 800 * 1.0 lands exactly on a nice tick; ceiling must move above it.
-        assertThat(StatsPanelFormatters.rangeCeiling(800.0, 1.0)).isGreaterThan(800.0);
-        // Spiky rate peak with Smooth headroom still keeps spare above the padded max.
+    void rangeCeiling_keepsVisualHeadroomAboveTheVisibleCurve() {
         double max = 50.0;
         double headroom = 1.22;
         double ceiling = StatsPanelFormatters.rangeCeiling(max, headroom);
-        assertThat(ceiling).isGreaterThan(max * headroom);
+        assertThat(ceiling).isGreaterThanOrEqualTo(max * headroom);
+        double tick = StatsPanelFormatters.integerDisplayTickStep(ceiling);
+        assertThat(ceiling % tick).isZero();
+    }
+
+    @Test
+    void chooseByteRateAxisScale_includesRoundedTickCeilingWhenChoosingUnits() {
+        StatsPanelFormatters.ChartAxisScale scale = StatsPanelFormatters.chooseByteRateAxisScale(800.0, 1.08);
+        assertThat(scale.label()).isEqualTo("MiB per second");
+        assertThat(StatsPanelFormatters.rangeUpperInBaseUnits(800.0, 1.08, scale)
+                / scale.displayDivisor()).isLessThanOrEqualTo(StatsPanelFormatters.AXIS_TICK_LABEL_MAX);
     }
 
     @Test

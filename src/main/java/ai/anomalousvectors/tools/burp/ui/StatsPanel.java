@@ -110,8 +110,7 @@ public final class StatsPanel extends JPanel {
      */
     private static final int SMOOTH_SPLINE_PRECISION = 12;
     /**
-     * Headroom above sample max for Smooth style. Must cover {@link XYSplineRenderer} peak
-     * overshoot on spiky docs/sec and KiB/sec series (heap levels overshoot less, but share this).
+     * Visual padding above the visible spline maximum, not an estimate of spline overshoot.
      */
     private static final double SPLINE_RANGE_HEADROOM_MULTIPLIER = 1.22;
     private static final double LINE_RANGE_HEADROOM_MULTIPLIER = 1.08;
@@ -2856,12 +2855,13 @@ public final class StatsPanel extends JPanel {
     }
 
     /**
-     * Docs/sec charts: non-negative range from data max plus headroom, rounded to integer ticks.
+     * Sets a non-negative Docs/sec range from the visible curve plus headroom and whole-unit ticks.
      */
     private void applyDocsPerSecondRange(JFreeChart chart, TimeSeriesCollection dataset) {
         NumberAxis axis = (NumberAxis) chart.getXYPlot().getRangeAxis();
         long[] domainMs = chartDomainMillis(chart);
-        double max = StatsPanelFormatters.maxTimeSeriesValueInDomain(dataset, domainMs[0], domainMs[1]);
+        double max = StatsChartBounds.maximum(
+                dataset, domainMs[0], domainMs[1], chartStyleIndex == 1 ? SMOOTH_SPLINE_PRECISION : 1);
         if (max <= 0.0) {
             resetThroughputAxisToIdleRange(axis, "Docs per second");
             return;
@@ -2870,12 +2870,14 @@ public final class StatsPanel extends JPanel {
         axis.setAutoRange(false);
         axis.setRange(0.0, rangeUpper);
         axis.setStandardTickUnits(NumberAxis.createIntegerTickUnits());
+        axis.setTickUnit(new NumberTickUnit(StatsPanelFormatters.integerDisplayTickStep(rangeUpper)));
     }
 
     private void applyScaledByteRateRange(JFreeChart chart, TimeSeriesCollection dataset) {
         NumberAxis axis = (NumberAxis) chart.getXYPlot().getRangeAxis();
         long[] domainMs = chartDomainMillis(chart);
-        double max = StatsPanelFormatters.maxTimeSeriesValueInDomain(dataset, domainMs[0], domainMs[1]);
+        double max = StatsChartBounds.maximum(
+                dataset, domainMs[0], domainMs[1], chartStyleIndex == 1 ? SMOOTH_SPLINE_PRECISION : 1);
         double headroom = rangeHeadroomMultiplier();
         if (max <= 0.0) {
             resetThroughputAxisToIdleRange(axis, "KiB per second");
@@ -2888,7 +2890,8 @@ public final class StatsPanel extends JPanel {
     private void applyScaledMemoryRange(JFreeChart chart, TimeSeriesCollection dataset) {
         NumberAxis axis = (NumberAxis) chart.getXYPlot().getRangeAxis();
         long[] domainMs = chartDomainMillis(chart);
-        double max = StatsPanelFormatters.maxTimeSeriesValueInDomain(dataset, domainMs[0], domainMs[1]);
+        double max = StatsChartBounds.maximum(
+                dataset, domainMs[0], domainMs[1], chartStyleIndex == 1 ? SMOOTH_SPLINE_PRECISION : 1);
         double headroom = rangeHeadroomMultiplier();
         if (max <= 0.0) {
             resetThroughputAxisToIdleRange(axis, "MiB");
@@ -2901,16 +2904,16 @@ public final class StatsPanel extends JPanel {
     /**
      * Restores a throughput chart Y-axis after rates return to zero.
      *
-     * <p>Byte-rate charts set an explicit {@link NumberTickUnit} while active; without clearing it,
-     * idle refresh keeps a step-1 unit and labels every integer on the 0–10 default range.</p>
+     * <p>Restore tick spacing along with the default range so an active chart's tick unit does
+     * not leak into the idle view.</p>
      */
     private static void resetThroughputAxisToIdleRange(NumberAxis axis, String yLabel) {
         axis.setLabel(yLabel);
         axis.setNumberFormatOverride(null);
-        axis.setAutoTickUnitSelection(true);
         axis.setAutoRange(false);
         axis.setRange(0.0, DEFAULT_RATE_RANGE_MAX);
         axis.setStandardTickUnits(NumberAxis.createIntegerTickUnits());
+        axis.setTickUnit(new NumberTickUnit(5.0));
     }
 
     private static void applyScaledPositiveRange(
@@ -2920,7 +2923,7 @@ public final class StatsPanel extends JPanel {
             StatsPanelFormatters.ChartAxisScale scale) {
         double rangeUpper = StatsPanelFormatters.rangeUpperInBaseUnits(maxInBaseUnits, headroomMultiplier, scale);
         double niceDisplayUpper = rangeUpper / scale.displayDivisor();
-        int tickStepDisplay = StatsPanelFormatters.integerDisplayTickStep(niceDisplayUpper);
+        double tickStepDisplay = StatsPanelFormatters.integerDisplayTickStep(niceDisplayUpper);
         axis.setLabel(scale.label());
         axis.setNumberFormatOverride(StatsPanelFormatters.axisTickNumberFormat(scale.displayDivisor()));
         axis.setStandardTickUnits(NumberAxis.createIntegerTickUnits());

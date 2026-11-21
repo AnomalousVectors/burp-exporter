@@ -18,17 +18,11 @@ import java.util.Map;
 import java.util.function.LongFunction;
 import java.util.function.ToLongFunction;
 
-import org.jfree.data.time.TimeSeries;
-import org.jfree.data.time.TimeSeriesCollection;
-
 /**
- * Pure string formatters for the Misc Stats rows that surface OpenSearch health, retry-queue
- * age, and silent-skip counters. Extracted from {@link StatsPanel} so the logic is
- * unit-testable without a Swing harness.
+ * Display formatters and chart-scale helpers for {@link StatsPanel}.
  *
- * <p>All methods read from {@link ExportStats} (no Swing state) and return plain strings.
- * Returned values are ready to drop into a {@code JLabel}; callers do not need to format
- * further.</p>
+ * <p>Metric formatters read from {@link ExportStats} without Swing state. Chart helpers
+ * operate on their supplied numeric values.</p>
  *
  * <p>The methods are stateless and safe to call from the EDT or a Stop worker.</p>
  */
@@ -37,21 +31,20 @@ final class StatsPanelFormatters {
     /** Y-axis tick labels stay at or below this value by rolling KiB → MiB → GiB (or MiB → GiB). */
     static final double AXIS_TICK_LABEL_MAX = 999.0;
 
-    /** Smallest nice axis ceiling ≥ normalized value (1, 1.2, … 10), used for values &gt; 10. */
-    private static final double[] NICE_AXIS_NORMALIZED =
-            {1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0};
+    /** Readable tick steps above the small whole-unit range. */
+    private static final double[] NICE_TICK_STEPS = { 1.0, 2.5, 5.0, 10.0 };
 
     private StatsPanelFormatters() {}
 
     /**
      * Y-axis label and tick scaling for throughput byte-rate charts (dataset values are KiB/s).
      *
-     * @param maxKiBPerSec largest series sample in KiB/s (before headroom)
+     * @param maxKiBPerSec largest visible curve value in KiB/s, before headroom
      * @param headroomMultiplier applied to max when picking the display unit (matches chart range)
      */
     static ChartAxisScale chooseByteRateAxisScale(double maxKiBPerSec, double headroomMultiplier) {
         return chooseAxisScale(
-                maxKiBPerSec * headroomMultiplier,
+                maxKiBPerSec, headroomMultiplier,
                 new String[] { "KiB per second", "MiB per second", "GiB per second" },
                 new double[] { 1.0, 1024.0, 1024.0 * 1024.0 });
     }
@@ -61,17 +54,19 @@ final class StatsPanelFormatters {
      */
     static ChartAxisScale chooseMemoryAxisScale(double maxMiB, double headroomMultiplier) {
         return chooseAxisScale(
-                maxMiB * headroomMultiplier,
+                maxMiB, headroomMultiplier,
                 new String[] { "MiB", "GiB" },
                 new double[] { 1.0, 1024.0 });
     }
 
     private static ChartAxisScale chooseAxisScale(
-            double rangeUpperInBaseUnits,
+            double maximumInBaseUnits,
+            double headroomMultiplier,
             String[] labels,
             double[] divisorsFromBase) {
         for (int unitIndex = 0; unitIndex < labels.length; unitIndex++) {
-            double displayUpper = rangeUpperInBaseUnits / divisorsFromBase[unitIndex];
+            double displayUpper = rangeCeiling(
+                    maximumInBaseUnits / divisorsFromBase[unitIndex], headroomMultiplier);
             boolean lastUnit = unitIndex == labels.length - 1;
             if (displayUpper <= AXIS_TICK_LABEL_MAX || lastUnit) {
                 return new ChartAxisScale(labels[unitIndex], divisorsFromBase[unitIndex]);
@@ -92,11 +87,10 @@ final class StatsPanelFormatters {
     }
 
     /**
-     * Y-axis ceiling in the same units as {@code maxValue}: headroom, then a nice tick that stays
-     * strictly above the padded peak so spline overshoot cannot paint through the plot top.
+     * Y-axis ceiling aligned to readable whole-unit ticks after adding visual headroom.
      *
-     * @param maxValue largest visible sample (docs/s, KiB/s, MiB, …)
-     * @param headroomMultiplier multiplier applied before choosing a nice tick
+     * @param maxValue largest visible curve value, including interpolation where enabled
+     * @param headroomMultiplier multiplier applied before choosing tick spacing
      * @return positive axis upper bound
      */
     static double rangeCeiling(double maxValue, double headroomMultiplier) {
@@ -105,69 +99,29 @@ final class StatsPanelFormatters {
         }
         double headroom = headroomMultiplier > 0.0 ? headroomMultiplier : 1.0;
         double rawUpper = maxValue * headroom;
-        double bound = nicePositiveUpperBound(rawUpper);
-        // When max*headroom lands on (or within 0.5% of) a nice tick, step to the next tick.
-        if (bound <= rawUpper * 1.005) {
-            bound = nicePositiveUpperBound(bound + Math.max(bound * 0.05, 0.05));
-        }
-        return bound;
-    }
-
-    /**
-     * Smallest readable axis ceiling ≥ {@code value} ({@code 7.5 → 8}, {@code 750 → 800}, not {@code 1000}).
-     */
-    static double nicePositiveUpperBound(double value) {
-        if (value <= 0.0) {
-            return 1.0;
-        }
-        if (value <= 10.0) {
-            return Math.ceil(value);
-        }
-        double magnitude = Math.pow(10.0, Math.floor(Math.log10(value)));
-        double normalized = value / magnitude;
-        for (double candidate : NICE_AXIS_NORMALIZED) {
-            if (candidate + 1e-9 >= normalized) {
-                return candidate * magnitude;
-            }
-        }
-        return 10.0 * magnitude;
-    }
-
-    /**
-     * Largest sample in {@code dataset} whose timestamp falls in {@code [minMs, maxMs]} (inclusive).
-     * Used so the Y-axis tracks the visible chart window, not older points still held in the series.
-     */
-    static double maxTimeSeriesValueInDomain(TimeSeriesCollection dataset, long minMs, long maxMs) {
-        if (maxMs < minMs) {
-            maxMs = minMs;
-        }
-        double max = 0.0;
-        for (int seriesIndex = 0; seriesIndex < dataset.getSeriesCount(); seriesIndex++) {
-            TimeSeries series = dataset.getSeries(seriesIndex);
-            int items = series.getItemCount();
-            for (int itemIndex = 0; itemIndex < items; itemIndex++) {
-                long t = series.getTimePeriod(itemIndex).getMiddleMillisecond();
-                if (t < minMs || t > maxMs) {
-                    continue;
-                }
-                Number value = series.getValue(itemIndex);
-                if (value != null) {
-                    max = Math.max(max, value.doubleValue());
-                }
-            }
-        }
-        return max;
+        double step = integerDisplayTickStep(rawUpper);
+        return Math.max(2.0, Math.ceil(rawUpper / step)) * step;
     }
 
     /**
      * Tick step in display units (whole numbers only) targeting about four labels on the axis.
      */
-    static int integerDisplayTickStep(double niceDisplayUpper) {
-        if (niceDisplayUpper <= 0.0) {
-            return 1;
+    static double integerDisplayTickStep(double rangeUpper) {
+        double target = rangeUpper / 4.0;
+        if (target <= 1.0) {
+            return 1.0;
         }
-        double step = nicePositiveUpperBound(niceDisplayUpper / 4.0);
-        return (int) Math.max(1L, Math.round(step));
+        if (target <= 5.0) {
+            return 5.0;
+        }
+        double magnitude = Math.pow(10.0, Math.floor(Math.log10(target)));
+        for (double candidate : NICE_TICK_STEPS) {
+            double step = candidate * magnitude;
+            if (step >= target) {
+                return step;
+            }
+        }
+        return 10.0 * magnitude;
     }
 
     /**
