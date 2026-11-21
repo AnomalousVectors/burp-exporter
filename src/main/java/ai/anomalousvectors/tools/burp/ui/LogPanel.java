@@ -534,13 +534,13 @@ public final class LogPanel extends JPanel implements Logger.ReplayableLogListen
         Tooltips.apply(pauseAutoscrollBtn, Tooltips.html(
                 "Pause autoscroll while reviewing the log. Click again (Unpause) to follow new entries."));
 
-        Tooltips.apply(filterField, Tooltips.html("Filter by string or regex."));
+        Tooltips.apply(filterField, Tooltips.html("Filter visible log entries by plain text or regex; retained entries are not deleted."));
         Tooltips.apply(filterCaseToggle, Tooltips.html("Case-sensitive filter."));
         Tooltips.apply(filterRegexToggle, Tooltips.html("Regex filter."));
         Tooltips.apply(filterNegativeToggle, Tooltips.html(
                 "Exclude (!): show only lines that do not match the filter."));
 
-        Tooltips.apply(searchField, Tooltips.html("Find string or regex."));
+        Tooltips.apply(searchField, Tooltips.html("Find plain text or regex within the visible log entries without changing the filter."));
         Tooltips.apply(searchCaseToggle, Tooltips.html("Case-sensitive search."));
         Tooltips.apply(searchRegexToggle, Tooltips.html("Regex search."));
 
@@ -548,7 +548,7 @@ public final class LogPanel extends JPanel implements Logger.ReplayableLogListen
         Tooltips.apply(searchNextBtn, Tooltips.html("Jump to next match."));
 
         Tooltips.apply(clearBtn, Tooltips.html("Clear log pane."));
-        Tooltips.apply(copyBtn, Tooltips.html("Copy log to clipboard."));
+        Tooltips.apply(copyBtn, Tooltips.html("Copy the selected text, or all visible log text when nothing is selected."));
     }
 
     /**

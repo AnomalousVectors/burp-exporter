@@ -1,0 +1,115 @@
+package ai.anomalousvectors.tools.burp.utils.search;
+
+import java.io.IOException;
+import java.security.GeneralSecurityException;
+
+import javax.net.ssl.SSLContext;
+
+import org.apache.hc.client5.http.config.TlsConfig;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.impl.nio.PoolingAsyncClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.ssl.ClientTlsStrategyBuilder;
+import org.apache.hc.client5.http.ssl.HostnameVerificationPolicy;
+import org.apache.hc.client5.http.ssl.NoopHostnameVerifier;
+import org.apache.hc.client5.http.ssl.TrustAllStrategy;
+import org.apache.hc.core5.http2.HttpVersionPolicy;
+import org.apache.hc.core5.ssl.SSLContextBuilder;
+
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+
+/**
+ * Shared TLS configuration for OpenSearch HTTP clients so async test-connection, Java SDK
+ * transport, and classic bulk paths present the same trust and client-certificate material.
+ */
+final class SearchHttpTlsSupport {
+
+    private SearchHttpTlsSupport() {
+        throw new AssertionError("No instances");
+    }
+
+    /**
+     * Applies negotiated TLS settings to an async connection manager builder for one destination.
+     */
+    static void configureAsyncTls(
+            PoolingAsyncClientConnectionManagerBuilder connManagerBuilder,
+            SearchAuth auth,
+            boolean insecure,
+            ConfigState.SearchDestination destination) throws GeneralSecurityException, IOException {
+        applyNegotiatedTlsDefaults(connManagerBuilder);
+        SearchAuth resolvedAuth = auth == null ? SearchAuth.none() : auth;
+        SSLContextBuilder sslBuilder = SSLContextBuilder.create();
+        resolvedAuth.loadClientKeyMaterial(sslBuilder);
+        if (insecure) {
+            SSLContext sslContext = sslBuilder
+                    .loadTrustMaterial(TrustAllStrategy.INSTANCE)
+                    .build();
+            connManagerBuilder.setTlsStrategy(insecureTlsStrategy(sslContext).buildAsync());
+        } else if (SearchTlsSupport.isPinnedMode(destination)) {
+            SSLContextBuilder pinnedBuilder = SearchTlsSupport.pinnedSslContextBuilder(destination);
+            resolvedAuth.loadClientKeyMaterial(pinnedBuilder);
+            SSLContext sslContext = pinnedBuilder.build();
+            connManagerBuilder.setTlsStrategy(ClientTlsStrategyBuilder.create()
+                    .setSslContext(sslContext)
+                    .buildAsync());
+        } else if (resolvedAuth.mode() == SearchAuth.Mode.CERTIFICATE) {
+            SSLContext sslContext = sslBuilder.build();
+            connManagerBuilder.setTlsStrategy(ClientTlsStrategyBuilder.create()
+                    .setSslContext(sslContext)
+                    .buildAsync());
+        }
+    }
+
+    /**
+     * Applies negotiated TLS settings to a classic connection manager builder for one destination.
+     */
+    static void configureClassicTls(
+            PoolingHttpClientConnectionManagerBuilder connManagerBuilder,
+            SearchAuth auth,
+            boolean insecure,
+            ConfigState.SearchDestination destination) throws GeneralSecurityException, IOException {
+        applyNegotiatedTlsDefaults(connManagerBuilder);
+        SearchAuth resolvedAuth = auth == null ? SearchAuth.none() : auth;
+        SSLContextBuilder sslBuilder = SSLContextBuilder.create();
+        resolvedAuth.loadClientKeyMaterial(sslBuilder);
+        if (insecure) {
+            SSLContext sslContext = sslBuilder
+                    .loadTrustMaterial(TrustAllStrategy.INSTANCE)
+                    .build();
+            connManagerBuilder.setTlsSocketStrategy(insecureTlsStrategy(sslContext).buildClassic());
+        } else if (SearchTlsSupport.isPinnedMode(destination)) {
+            SSLContextBuilder pinnedBuilder = SearchTlsSupport.pinnedSslContextBuilder(destination);
+            resolvedAuth.loadClientKeyMaterial(pinnedBuilder);
+            SSLContext sslContext = pinnedBuilder.build();
+            connManagerBuilder.setTlsSocketStrategy(ClientTlsStrategyBuilder.create()
+                    .setSslContext(sslContext)
+                    .buildClassic());
+        } else if (resolvedAuth.mode() == SearchAuth.Mode.CERTIFICATE) {
+            SSLContext sslContext = sslBuilder.build();
+            connManagerBuilder.setTlsSocketStrategy(ClientTlsStrategyBuilder.create()
+                    .setSslContext(sslContext)
+                    .buildClassic());
+        }
+    }
+
+    private static void applyNegotiatedTlsDefaults(PoolingAsyncClientConnectionManagerBuilder connManagerBuilder) {
+        connManagerBuilder.setDefaultTlsConfig(TlsConfig.custom()
+                .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
+                .build());
+    }
+
+    private static void applyNegotiatedTlsDefaults(PoolingHttpClientConnectionManagerBuilder connManagerBuilder) {
+        connManagerBuilder.setDefaultTlsConfig(TlsConfig.custom()
+                .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
+                .build());
+    }
+
+    private static ClientTlsStrategyBuilder insecureTlsStrategy(SSLContext sslContext) {
+        // A verifier alone selects HttpClient's BOTH policy, which still enables JSSE endpoint
+        // identification before the verifier runs. CLIENT delegates hostname handling only to the
+        // explicit no-op verifier; verify and pinned modes retain the default BUILTIN policy.
+        return ClientTlsStrategyBuilder.create()
+                .setSslContext(sslContext)
+                .setHostVerificationPolicy(HostnameVerificationPolicy.CLIENT)
+                .setHostnameVerifier(NoopHostnameVerifier.INSTANCE);
+    }
+}

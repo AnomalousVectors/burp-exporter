@@ -361,7 +361,7 @@ public final class ConfigState {
             String pinnedTlsCertificateEncodedBase64) {
         /** Normalizes the authentication type and replaces absent non-secret strings with empty values. */
         public OpenSearchOptions {
-            authType = normalizeOpenSearchAuthType(authType);
+            authType = normalizeSearchAuthType(authType);
             apiKeyId = apiKeyId == null ? "" : apiKeyId;
             certPath = certPath == null ? "" : certPath;
             certKeyPath = certKeyPath == null ? "" : certKeyPath;
@@ -716,7 +716,7 @@ public final class ConfigState {
     }
 
     /** Returns a normalized persisted OpenSearch auth type, defaulting to {@link #DEFAULT_OPEN_SEARCH_AUTH_TYPE}. */
-    public static String normalizeOpenSearchAuthType(String authType) {
+    public static String normalizeSearchAuthType(String authType) {
         if (authType == null || authType.isBlank()) {
             return DEFAULT_OPEN_SEARCH_AUTH_TYPE;
         }
@@ -780,7 +780,7 @@ public final class ConfigState {
 
     /** Returns a normalized Elasticsearch auth type. */
     public static String normalizeElasticsearchAuthType(String authType) {
-        return normalizeOpenSearchAuthType(authType);
+        return normalizeSearchAuthType(authType);
     }
 
     /** Returns one of trace/debug/info/warn/error, defaulting to {@link #DEFAULT_LOG_MIN_LEVEL}. */

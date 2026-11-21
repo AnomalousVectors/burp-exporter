@@ -42,11 +42,11 @@ public final class ExportFieldSectionTooltips {
             case "burp" ->
                     "Burp tool attribution, scope, message correlation, user annotations, and nested proxy, repeater, and timing groups.";
             case "burp.proxy" ->
-                    "Proxy History HTTP pair identifiers and edit flags (not used for live handler traffic or WebSocket frames).";
+                    "Proxy listener and History metadata. Live Proxy HTTP supplies its native listener port; exact History identifiers and edit flags are available only from History-backed sources. Live WebSocket metadata may remain unknown.";
             case "burp.repeater" ->
                     "Best-effort Repeater tab name and tab-group labels for Repeater-origin traffic.";
             case "burp.timing" ->
-                    "Start, end, duration, and latency timestamps for live HTTP, Proxy History, and WebSocket traffic.";
+                    "Source timestamps and elapsed milliseconds when available. Live callback times are observations, not exact socket-write times; History-backed timing comes from Burp.";
             case "meta" ->
                     "Required document metadata (always exported as a whole). Expand to see sub-fields; "
                             + "individual meta leaves are shown for visibility only and cannot be disabled.";
@@ -66,14 +66,14 @@ public final class ExportFieldSectionTooltips {
                     "HTTP status, headers, body, MIME classification, and response markers.";
             case "response.status" -> "HTTP status code, status family, and reason phrase from the response.";
             case "response.body" ->
-                    "Response wire bytes, deepest successful Content-Encoding decode, chain status, and searchable text when bytes classify as text.";
+                    "Response body representations and Content-Encoding decode status. Video payloads are omitted in both destinations; database size fitting may shorten other payloads. Length and limit flags explain what was retained.";
             case "response.body.content_encoding" ->
                     "Progressive Content-Encoding decode status: layers applied, layers remaining, and whether the chain completed.";
             case "response.body.html" -> "HTML parser attributes derived from the response body.";
             case "response.body.html.dom" -> "HTML tag, id, and CSS-class facets parsed from the response body.";
             case "response.body.html.forms" -> "HTML form controls and submit-label facets parsed from the response body.";
             case "response.body.html.links" -> "HTML links and outbound references parsed from the response body.";
-            case "response.body.html.text" -> "Visible rendered-text facets parsed from the HTML response body.";
+            case "response.body.html.text" -> "Visible-text facets parsed by Burp from the HTML response body, not a browser-rendered DOM.";
             case "response.body.markers" -> "Response highlight ranges (inclusive start, exclusive end offsets).";
             case "response.headers" -> "Ordered response header rows with normalized names, raw names, values, and ordinals.";
             case "response.cookies" -> "Set-Cookie attributes parsed from the response.";
@@ -82,7 +82,7 @@ public final class ExportFieldSectionTooltips {
             case "response.mime_type" ->
                     "Burp MIME classifications: determined by Burp Suite, inferred from the body, and stated in headers.";
             case "websocket" ->
-                    "WebSocket frame identity, direction, type, timing, and edit flag (separate from burp.proxy HTTP edit flags).";
+                    "WebSocket direction, type, timing, payload, and source-specific edit evidence. Exact conversation/message ids belong to History-backed frames; live callbacks leave them unknown.";
             case "websocket.payload" ->
                     "Effective WebSocket frame payload after any user edit (text and/or Base64, plus length).";
             default -> genericDescription(path);
@@ -175,13 +175,13 @@ public final class ExportFieldSectionTooltips {
             return "HTTP request half of an issue evidence pair.";
         }
         if (path.startsWith("request.")) {
-            return "Request " + path.substring("request.".length()).replace('_', ' ') + " on issue evidence.";
+            return trafficDescription(path) + " Applies to the request attached to this issue evidence pair.";
         }
         if (path.equals("response")) {
             return "HTTP response half of an issue evidence pair.";
         }
         if (path.startsWith("response.")) {
-            return "Response " + path.substring("response.".length()).replace('_', ' ') + " on issue evidence.";
+            return trafficDescription(path) + " Applies to the response attached to this issue evidence pair.";
         }
         return genericDescription("requests_responses." + path);
     }

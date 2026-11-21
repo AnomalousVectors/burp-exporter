@@ -20,8 +20,8 @@ import org.junit.platform.launcher.core.LauncherFactory;
 class OpenSearchTestDiscoveryTest {
 
     private static final List<Class<?>> CLASSES = List.of(
-            OpenSearchSinkIT.class, OpenSearchSinkFreshCreateIT.class, OpenSearchSinkConcurrencyIT.class,
-            OpenSearchSinkMappingsIT.class, OpenSearchSinkSubsetIT.class, OpenSearchSinkExporterOnlyIT.class,
+            SearchSinkIT.class, SearchSinkFreshCreateIT.class, SearchSinkConcurrencyIT.class,
+            SearchSinkMappingsIT.class, SearchSinkSubsetIT.class, SearchSinkExporterOnlyIT.class,
             OpenSearchCleanupIT.class);
 
     @Test

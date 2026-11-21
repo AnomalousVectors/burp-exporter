@@ -3,8 +3,8 @@ package ai.anomalousvectors.tools.burp.ui;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;

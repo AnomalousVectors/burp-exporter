@@ -17,7 +17,7 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinato
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.http.message.requests.HttpRequest;

@@ -17,7 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Contract tests for the search index mapping resources.
  * Ensures required JSON files are present, parseable, and contain the structure
- * that OpenSearchSink.createIndexFromResource() expects: both "settings" and "mappings"
+ * that SearchSink.createIndexFromResource() expects: both "settings" and "mappings"
  * (with non-empty "mappings.properties").
  */
 class MappingsContractTest {
@@ -52,7 +52,7 @@ class MappingsContractTest {
 
                 JsonNode root = mapper.readTree(in);
 
-                // Required by OpenSearchSink: presence of both keys
+                // Required by SearchSink: presence of both keys
                 assertThat(root.has("settings"))
                         .withFailMessage("Missing 'settings' in %s", file)
                         .isTrue();

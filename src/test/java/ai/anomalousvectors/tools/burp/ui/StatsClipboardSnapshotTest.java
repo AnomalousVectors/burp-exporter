@@ -19,7 +19,7 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /** Unit tests for {@link StatsClipboardSnapshot}. */
 class StatsClipboardSnapshotTest {

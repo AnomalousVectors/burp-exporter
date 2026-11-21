@@ -39,12 +39,12 @@ public final class SnapshotSummary {
         return new Baseline(
                 () -> TrafficRouteBucket.fileSuccessCount(route),
                 () -> TrafficRouteBucket.fileFailureCount(route),
-                () -> TrafficRouteBucket.openSearchSuccessCount(route),
-                () -> TrafficRouteBucket.openSearchFailureCount(route),
+                () -> TrafficRouteBucket.databaseSuccessCount(route),
+                () -> TrafficRouteBucket.databaseFailureCount(route),
                 TrafficRouteBucket.fileSuccessCount(route),
                 TrafficRouteBucket.fileFailureCount(route),
-                TrafficRouteBucket.openSearchSuccessCount(route),
-                TrafficRouteBucket.openSearchFailureCount(route));
+                TrafficRouteBucket.databaseSuccessCount(route),
+                TrafficRouteBucket.databaseFailureCount(route));
     }
 
     /**

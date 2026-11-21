@@ -1,7 +1,7 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchPushCancellation;
+import ai.anomalousvectors.tools.burp.utils.search.SearchPushCancellation;
 
 /**
  * Shared single-document outcome accounting for reporters that push one document at a time.
@@ -9,7 +9,7 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchPushCancellatio
  * <p>Complements {@link BulkOutcomeRecorder} for callers such as {@code ExporterIndexConfigReporter},
  * {@code ExporterIndexLogForwarder}, {@code ExporterIndexStatsReporter}, and
  * {@code SettingsIndexReporter}, which each push individual documents via
- * {@code OpenSearchClientWrapper.pushDocument} and would otherwise duplicate the same
+ * {@code SearchClientWrapper.pushDocument} and would otherwise duplicate the same
  * {@code recordSuccess/recordFailure/recordLastError} triplet on every call site.</p>
  *
  * <p>When {@code openSearchActive} is {@code false}, counters are not touched (file-sink
@@ -45,10 +45,10 @@ public final class SingleDocOutcomeRecorder {
             return;
         }
         if (ok) {
-            // Index success counters are recorded by OpenSearchClientWrapper.pushDocument.
+            // Index success counters are recorded by SearchClientWrapper.pushDocument.
             return;
         }
-        if (OpenSearchPushCancellation.shouldSuppressFailureAccounting()) {
+        if (SearchPushCancellation.shouldSuppressFailureAccounting()) {
             return;
         }
         ExportStats.recordFailure(indexKey, 1);

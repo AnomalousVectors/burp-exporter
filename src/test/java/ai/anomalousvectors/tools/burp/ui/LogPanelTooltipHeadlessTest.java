@@ -5,10 +5,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.awt.Component;
 
 import javax.swing.JLabel;
+import javax.swing.JButton;
 
 import org.junit.jupiter.api.Test;
 
 class LogPanelTooltipHeadlessTest {
+    @Test
+    void copyHelpExplainsSelectionAndVisibleText() {
+        LogPanel panel = LogPanelTestHarness.newPanel();
+        JButton copy = (JButton) LogPanelTestHarness.findBy(panel,
+                component -> "log.copy".equals(component.getName()));
+        assertThat(copy.getToolTipText()).contains("selected text", "all visible log text");
+    }
+
 
     @Test
     void toolbarLabels_and_searchCount_have_expected_tooltips() {

@@ -7,7 +7,7 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
+import ai.anomalousvectors.tools.burp.utils.search.SearchAuth;
 
 /**
  * Revalidates search indexes and reseeds reproducible snapshots after authorization recovery.
@@ -40,14 +40,14 @@ public final class SearchRecoveryBootstrap {
             boolean clusterIdentityChanged,
             ExportRunToken token) {
         List<String> sources = RuntimeConfig.getState().dataSources();
-        OpenSearchAuth auth = OpenSearchAuth.fromRuntime(RuntimeConfig.searchDestinationKind());
-        List<OpenSearchSink.IndexResult> results = OpenSearchSink.createSelectedIndexes(
+        SearchAuth auth = SearchAuth.fromRuntime(RuntimeConfig.searchDestinationKind());
+        List<SearchSink.IndexResult> results = SearchSink.createSelectedIndexes(
                 baseUrl,
                 sources,
                 auth,
                 () -> RuntimeConfig.isExportRunActive(token));
-        OpenSearchSink.IndexResult failed = results.stream()
-                .filter(result -> result.status() == OpenSearchSink.IndexResult.Status.FAILED)
+        SearchSink.IndexResult failed = results.stream()
+                .filter(result -> result.status() == SearchSink.IndexResult.Status.FAILED)
                 .findFirst()
                 .orElse(null);
         if (failed != null) {
@@ -57,7 +57,7 @@ public final class SearchRecoveryBootstrap {
             return new RecoveryPreparation(false, false, detail);
         }
         boolean indexCreated = results.stream()
-                .anyMatch(result -> result.status() == OpenSearchSink.IndexResult.Status.CREATED);
+                .anyMatch(result -> result.status() == SearchSink.IndexResult.Status.CREATED);
         return new RecoveryPreparation(
                 true,
                 clusterIdentityChanged || indexCreated,

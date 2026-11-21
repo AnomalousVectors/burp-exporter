@@ -30,8 +30,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
@@ -145,7 +145,7 @@ public final class RepeaterTabsIndexReporter {
         return replaySearchRecoverySnapshot(
                 token,
                 (baseUrl, indexName, indexKey, documents) ->
-                        OpenSearchClientWrapper.pushPreparedBulk(baseUrl, indexName, indexKey, documents));
+                        SearchClientWrapper.pushPreparedBulk(baseUrl, indexName, indexKey, documents));
     }
 
     /** Runs the direct replay with a replaceable sender for focused queue/file isolation tests. */

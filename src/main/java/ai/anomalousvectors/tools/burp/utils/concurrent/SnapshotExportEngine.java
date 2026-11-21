@@ -25,8 +25,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
 import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 
 /**
  * Parallel snapshot build and prepare with overlapping bulk flushes.
@@ -739,7 +739,7 @@ public final class SnapshotExportEngine {
         long flushStartNs = System.nanoTime();
         BulkPushOutcome outcome = ExportRunContext.call(
                 token,
-                () -> OpenSearchClientWrapper.pushPreparedBulk(baseUrl, indexName, indexKey, snapshot));
+                () -> SearchClientWrapper.pushPreparedBulk(baseUrl, indexName, indexKey, snapshot));
         long chunkFlushMs = (System.nanoTime() - flushStartNs) / 1_000_000L;
         if (!isLive(token, cancellation)) {
             return null;

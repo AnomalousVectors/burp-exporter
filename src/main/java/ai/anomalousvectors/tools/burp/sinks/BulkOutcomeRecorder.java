@@ -6,7 +6,7 @@ import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchPushCancellation;
+import ai.anomalousvectors.tools.burp.utils.search.SearchPushCancellation;
 
 /**
  * Shared bulk-outcome accounting for search database bulk requests across reporters.
@@ -130,7 +130,7 @@ public final class BulkOutcomeRecorder {
                 ? Math.max(breakdown.failed(), transportFailure)
                 : transportFailure;
         boolean failuresSuppressed = failure > 0
-                && OpenSearchPushCancellation.shouldSuppressFailureAccounting();
+                && SearchPushCancellation.shouldSuppressFailureAccounting();
         if (breakdown != null) {
             ExportStats.recordExported(indexKey, breakdown.exportedCount());
             ExportStats.recordNoop(indexKey, breakdown.noop());

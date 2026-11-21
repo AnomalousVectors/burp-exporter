@@ -195,7 +195,7 @@ public final class SearchDeployment {
      *        {@link ConfigState#DEPLOYMENT_SERVERLESS}, or {@link ConfigState#DEPLOYMENT_AUTO}
      * @return immutable auth-type labels for the combo model; unresolved input uses the hosted set
      */
-    public static List<String> amazonOpenSearchAuthTypesForUrl(String baseUrl, String resolvedDeploymentType) {
+    public static List<String> amazonSearchAuthTypesForUrl(String baseUrl, String resolvedDeploymentType) {
         String deployment = ConfigState.normalizeDeploymentType(resolvedDeploymentType);
         if (ConfigState.DEPLOYMENT_AUTO.equals(deployment)) {
             deployment = detectAmazonOpenSearchDeploymentType(baseUrl);

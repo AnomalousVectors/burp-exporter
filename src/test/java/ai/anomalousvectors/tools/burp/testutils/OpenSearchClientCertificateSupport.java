@@ -12,8 +12,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchRawGet;
+import ai.anomalousvectors.tools.burp.utils.search.SearchAuth;
+import ai.anomalousvectors.tools.burp.utils.search.SearchRawGet;
 
 /**
  * Resolves and provisions the local multi/opensearch client certificate used by certificate ITs.
@@ -152,12 +152,12 @@ public final class OpenSearchClientCertificateSupport {
 
     private static int probeStatus(Paths paths) {
         try {
-            OpenSearchAuth auth = OpenSearchAuth.certificate(
+            SearchAuth auth = SearchAuth.certificate(
                     paths.certificatePath().toString(),
                     paths.privateKeyPath().toString(),
                     "");
-            OpenSearchRawGet.RawGetResult result =
-                    OpenSearchRawGet.performRawGet(OpenSearchTestConfig.get().baseUrl(), auth);
+            SearchRawGet.RawGetResult result =
+                    SearchRawGet.performRawGet(OpenSearchTestConfig.get().baseUrl(), auth);
             return result.statusCode();
         } catch (RuntimeException ex) {
             return 0;
@@ -335,7 +335,7 @@ public final class OpenSearchClientCertificateSupport {
         OpenSearchTestConfig config = OpenSearchTestConfig.get();
         while (System.nanoTime() < deadline) {
             try {
-                if (ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper
+                if (ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper
                         .testConnection(config.baseUrl(), config.username(), config.password())
                         .success()) {
                     return;

@@ -115,7 +115,7 @@ public final class ExportFieldTooltips {
 
     static String genericLeafTooltip(String fieldKey) {
         return Tooltips.textWithSource(
-                "Exported field mapped in OpenSearch as " + fieldKey + ".",
+                "Exported field mapped in search databases as " + fieldKey + ".",
                 "Included when this toggle is enabled in the Fields panel.");
     }
 

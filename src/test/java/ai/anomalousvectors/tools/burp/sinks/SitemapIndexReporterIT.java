@@ -229,10 +229,10 @@ class SitemapIndexReporterIT {
 
     private void createSitemapIndex() {
         cleanupIndex();
-        List<OpenSearchSink.IndexResult> results = OpenSearchReachable.createSelectedIndexes(List.of("sitemap"));
+        List<SearchSink.IndexResult> results = OpenSearchReachable.createSelectedIndexes(List.of("sitemap"));
         assertThat(results).isNotEmpty();
         boolean sitemapCreated = results.stream()
-                .anyMatch(r -> r.shortName().equals("sitemap") && (r.status() == OpenSearchSink.IndexResult.Status.CREATED || r.status() == OpenSearchSink.IndexResult.Status.EXISTS));
+                .anyMatch(r -> r.shortName().equals("sitemap") && (r.status() == SearchSink.IndexResult.Status.CREATED || r.status() == SearchSink.IndexResult.Status.EXISTS));
         assertThat(sitemapCreated).as("sitemap index created or exists").isTrue();
     }
 

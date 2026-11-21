@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 
 /** Verifies stale snapshot contexts cannot update adaptive controllers or emit their logs. */
 class ExportRunContextTest {

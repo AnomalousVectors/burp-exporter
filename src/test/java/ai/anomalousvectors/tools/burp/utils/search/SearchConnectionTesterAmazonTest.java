@@ -5,7 +5,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
 
 class SearchConnectionTesterAmazonTest {
 
@@ -37,7 +36,7 @@ class SearchConnectionTesterAmazonTest {
 
     @Test
     void amazonAuthStatus_doesNotReportNotUsedWhenSigV4WasAttempted() {
-        OpenSearchAuth none = OpenSearchAuth.none();
+        SearchAuth none = SearchAuth.none();
         assertThat(SearchConnectionTester.amazonAuthStatus(none, true, 404, false))
                 .isEqualTo("Attempted");
         assertThat(SearchConnectionTester.amazonAuthStatus(none, true, 403, false))
@@ -46,7 +45,7 @@ class SearchConnectionTesterAmazonTest {
                 .isEqualTo("Successful");
         assertThat(SearchConnectionTester.amazonAuthStatus(none, false, 404, false))
                 .isEqualTo("Not used");
-        assertThat(SearchConnectionTester.amazonAuthStatus(OpenSearchAuth.basic("u", "p"), false, 401, false))
+        assertThat(SearchConnectionTester.amazonAuthStatus(SearchAuth.basic("u", "p"), false, 401, false))
                 .isEqualTo("Failed");
     }
 

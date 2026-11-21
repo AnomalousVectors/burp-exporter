@@ -32,13 +32,13 @@ class SnapshotSummaryTest {
     @Test
     void snapshotRoute_capturesDeltasAcrossMutations() {
         TrafficRouteBucket.Route route = TrafficRouteBucket.proxyHistorySnapshot();
-        TrafficRouteBucket.recordOpenSearchSuccess(route, 2);
+        TrafficRouteBucket.recordDatabaseSuccess(route, 2);
         TrafficRouteBucket.recordFileSuccess(route, 1);
 
         SnapshotSummary.Baseline baseline = SnapshotSummary.forRoute(route);
 
-        TrafficRouteBucket.recordOpenSearchSuccess(route, 5);
-        TrafficRouteBucket.recordOpenSearchFailure(route, 2);
+        TrafficRouteBucket.recordDatabaseSuccess(route, 5);
+        TrafficRouteBucket.recordDatabaseFailure(route, 2);
         TrafficRouteBucket.recordFileSuccess(route, 3);
         TrafficRouteBucket.recordFileFailure(route, 4);
 
@@ -52,7 +52,7 @@ class SnapshotSummaryTest {
         TrafficRouteBucket.Route route = TrafficRouteBucket.proxyHistorySnapshot();
         SnapshotSummary.Baseline baseline = SnapshotSummary.forRoute(route);
 
-        TrafficRouteBucket.recordOpenSearchSuccess(route, 5);
+        TrafficRouteBucket.recordDatabaseSuccess(route, 5);
         TrafficRouteBucket.recordFileSuccess(route, 3);
 
         SnapshotSummary.CompletionDeltas deltas = SnapshotSummary.completionDeltas(baseline);

@@ -26,8 +26,8 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnector;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.burpsuite.BurpSuite;
 import burp.api.montoya.core.ByteArray;
@@ -186,7 +186,7 @@ class ExportReporterLifecycleTest {
         // this test asserts the join contract rather than real-cluster TLS/reactor teardown
         // timing. Earlier integration tests in the same JVM may have populated the cache with
         // live clients whose close() can take several seconds.
-        OpenSearchConnector.closeAll();
+        SearchConnector.closeAll();
         ExportReporterLifecycle.awaitStopReclaim(30_000L);
 
         ExportReporterLifecycle.releaseRunResourcesAsync();
@@ -212,7 +212,7 @@ class ExportReporterLifecycleTest {
         // Start -> Stop). The second fire must replace the tracked thread reference; awaiting
         // after each fire must join only the corresponding daemon. Drain the cache first so
         // closeAll() work is bounded and not dominated by live-cluster reactor teardown.
-        OpenSearchConnector.closeAll();
+        SearchConnector.closeAll();
         ExportReporterLifecycle.awaitStopReclaim(30_000L);
 
         ExportReporterLifecycle.releaseRunResourcesAsync();

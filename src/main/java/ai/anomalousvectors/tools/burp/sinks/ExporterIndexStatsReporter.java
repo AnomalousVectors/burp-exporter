@@ -17,7 +17,7 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
@@ -81,7 +81,7 @@ public final class ExporterIndexStatsReporter {
      * Pushes a final stats snapshot at export Stop with {@code event.data.export.running=false}.
      *
      * <p>Bypasses the export-running gate and the retry coordinator {@code isExportReady} check
-     * via {@link OpenSearchClientWrapper#pushDocumentDuringShutdown}. Returns a skip outcome when
+     * via {@link SearchClientWrapper#pushDocumentDuringShutdown}. Returns a skip outcome when
      * exporter stats are disabled or no sink is enabled. Performs synchronous destination I/O;
      * caller must invoke off the EDT.</p>
      *
@@ -219,14 +219,14 @@ public final class ExporterIndexStatsReporter {
             boolean openSearchActive = RuntimeConfig.isSearchActive();
             String indexName = RuntimeConfig.indexNameForKey("exporter");
             Map<String, Object> doc = buildSnapshotDoc(finalSnapshot);
-            OpenSearchClientWrapper.ShutdownDocumentPushResult pushResult;
+            SearchClientWrapper.ShutdownDocumentPushResult pushResult;
             if (finalSnapshot) {
-                pushResult = OpenSearchClientWrapper.pushDocumentDuringShutdown(
+                pushResult = SearchClientWrapper.pushDocumentDuringShutdown(
                         baseUrl, indexName, "exporter", doc, true);
             } else {
-                boolean ok = OpenSearchClientWrapper.pushDocument(
+                boolean ok = SearchClientWrapper.pushDocument(
                         baseUrl, indexName, "exporter", doc);
-                pushResult = new OpenSearchClientWrapper.ShutdownDocumentPushResult(
+                pushResult = new SearchClientWrapper.ShutdownDocumentPushResult(
                         ok, ok ? null : (openSearchActive ? "OpenSearch push returned false" : "file sink write failed"));
             }
             boolean ok = pushResult.success();
@@ -347,7 +347,7 @@ public final class ExporterIndexStatsReporter {
         Map<String, Object> export = new LinkedHashMap<>();
         boolean exportRunning = !finalSnapshot && RuntimeConfig.isExportRunning();
         export.put("running", exportRunning);
-        export.put("batch_size", ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController.getInstance()
+        export.put("batch_size", ai.anomalousvectors.tools.burp.utils.search.BatchSizeController.getInstance()
                 .getCurrentBatchSize());
         export.put("throughput_docs_per_sec_60", ExportStats.getThroughputDocsPerSecLast60s());
         long startToFirstTrafficMs = ExportStats.getStartToFirstTrafficMs();

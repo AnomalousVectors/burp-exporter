@@ -128,7 +128,7 @@ final class ExportFieldTooltipsFindings {
             case "response.header" -> Tooltips.textWithSource(
                     "Actual evidence response headers as ordered rows.",
                     "RequestResponseDocBuilder.buildTrafficResponseDoc() writes HttpHeader values into response.headers rows with name, raw, value, and ordinal fields; response.mime_type carries Burp and parsed MIME helpers.");
-            default -> ExportFieldTooltipsTraffic.trafficTooltip(nestedFieldKey);
+            default -> ExportFieldTooltipsTraffic.trafficFieldTooltip(nestedFieldKey);
         };
     }
 

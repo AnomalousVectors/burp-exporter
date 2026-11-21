@@ -6,7 +6,7 @@ import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /**
  * Helpers for tests that assert {@link TrafficExportQueue} depth without racing the drain worker.

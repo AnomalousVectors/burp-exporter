@@ -108,12 +108,12 @@ class TrafficRouteBucketTest {
     }
 
     @Test
-    void recordOpenSearchPermanentAndRetryQueueDrops_routeToTheirDisplaySources() {
+    void recordDatabasePermanentAndRetryQueueDrops_routeToTheirDisplaySources() {
         resetStats();
-        TrafficRouteBucket.recordOpenSearchPermanentDrop(TrafficRouteBucket.proxyHistorySnapshot(), 2);
-        TrafficRouteBucket.recordOpenSearchPermanentDrop(TrafficRouteBucket.fromToolType("REPEATER_TABS"), 1);
-        TrafficRouteBucket.recordOpenSearchRetryQueueDrop(TrafficRouteBucket.proxyWebSocketLive(), 3);
-        TrafficRouteBucket.recordOpenSearchRetryQueueDrop(TrafficRouteBucket.fromToolType("INTRUDER"), 4);
+        TrafficRouteBucket.recordDatabasePermanentDrop(TrafficRouteBucket.proxyHistorySnapshot(), 2);
+        TrafficRouteBucket.recordDatabasePermanentDrop(TrafficRouteBucket.fromToolType("REPEATER_TABS"), 1);
+        TrafficRouteBucket.recordDatabaseRetryQueueDrop(TrafficRouteBucket.proxyWebSocketLive(), 3);
+        TrafficRouteBucket.recordDatabaseRetryQueueDrop(TrafficRouteBucket.fromToolType("INTRUDER"), 4);
 
         assertThat(ExportStats.getTrafficSourcePermanentDrops(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT))
                 .isEqualTo(2);
@@ -159,10 +159,10 @@ class TrafficRouteBucketTest {
     }
 
     @Test
-    void recordOpenSearchSuccess_routesSourceAndToolTypeSeparately() {
+    void recordDatabaseSuccess_routesSourceAndToolTypeSeparately() {
         resetStats();
-        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.proxyHistorySnapshot(), 3);
-        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.fromToolType("REPEATER_TABS"), 2);
+        TrafficRouteBucket.recordDatabaseSuccess(TrafficRouteBucket.proxyHistorySnapshot(), 3);
+        TrafficRouteBucket.recordDatabaseSuccess(TrafficRouteBucket.fromToolType("REPEATER_TABS"), 2);
 
         assertThat(ExportStats.getTrafficSourceSuccessCount(TrafficRouteBucket.SOURCE_PROXY_HISTORY_SNAPSHOT))
                 .isEqualTo(3);
@@ -170,10 +170,10 @@ class TrafficRouteBucketTest {
     }
 
     @Test
-    void recordOpenSearchFailure_routesSourceAndToolTypeSeparately() {
+    void recordDatabaseFailure_routesSourceAndToolTypeSeparately() {
         resetStats();
-        TrafficRouteBucket.recordOpenSearchFailure(TrafficRouteBucket.proxyWebSocketLive(), 4);
-        TrafficRouteBucket.recordOpenSearchFailure(TrafficRouteBucket.fromToolType("INTRUDER"), 1);
+        TrafficRouteBucket.recordDatabaseFailure(TrafficRouteBucket.proxyWebSocketLive(), 4);
+        TrafficRouteBucket.recordDatabaseFailure(TrafficRouteBucket.fromToolType("INTRUDER"), 1);
 
         assertThat(ExportStats.getTrafficSourceFailureCount(
                         TrafficRouteBucket.SOURCE_PROXY_WEBSOCKET_LIVE))
@@ -195,10 +195,10 @@ class TrafficRouteBucketTest {
     @Test
     void resolveOpenSearchSourceSuccess_separatesHistoricAndLiveWebSockets() {
         resetStats();
-        TrafficRouteBucket.recordOpenSearchSuccess(
+        TrafficRouteBucket.recordDatabaseSuccess(
                 TrafficRouteBucket.fromToolType("PROXY_HISTORY"), 2); // proxy_history_snapshot
-        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.proxyWebSocketHistory(), 3);
-        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.proxyWebSocketLive(), 4);
+        TrafficRouteBucket.recordDatabaseSuccess(TrafficRouteBucket.proxyWebSocketHistory(), 3);
+        TrafficRouteBucket.recordDatabaseSuccess(TrafficRouteBucket.proxyWebSocketLive(), 4);
         // A plain PROXY_HISTORY tool-type value should never land in the tool-type map because
         // the route bucket always resolves PROXY_HISTORY -> SOURCE, but confirm the display path
         // is stable when the tool-type map is empty.
@@ -321,8 +321,8 @@ class TrafficRouteBucketTest {
     @Test
     void zeroOrNegativeCount_recordsNothing() {
         resetStats();
-        TrafficRouteBucket.recordOpenSearchSuccess(TrafficRouteBucket.fromToolType("REPEATER"), 0);
-        TrafficRouteBucket.recordOpenSearchFailure(TrafficRouteBucket.fromToolType("REPEATER"), -2);
+        TrafficRouteBucket.recordDatabaseSuccess(TrafficRouteBucket.fromToolType("REPEATER"), 0);
+        TrafficRouteBucket.recordDatabaseFailure(TrafficRouteBucket.fromToolType("REPEATER"), -2);
         TrafficRouteBucket.recordFileSuccess(TrafficRouteBucket.fromToolType("REPEATER"), 0);
         TrafficRouteBucket.recordFileFailure(TrafficRouteBucket.fromToolType("REPEATER"), -9);
 

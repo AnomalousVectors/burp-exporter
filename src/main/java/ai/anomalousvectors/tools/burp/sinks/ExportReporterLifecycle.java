@@ -12,9 +12,9 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
-import ai.anomalousvectors.tools.burp.utils.opensearch.SearchBodyTruncationLog;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnector;
+import ai.anomalousvectors.tools.burp.utils.search.SearchBodyTruncationLog;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -38,7 +38,7 @@ public final class ExportReporterLifecycle {
      * Holds the most recent {@link #releaseRunResourcesAsync()} worker so test teardown can join
      * it deterministically. Production callers do not need to await; the daemon thread completes
      * on its own. Tests must await before issuing further OpenSearch traffic in the same JVM,
-     * because {@link OpenSearchConnector#closeAll()} closes pooled clients that other tests may
+     * because {@link SearchConnector#closeAll()} closes pooled clients that other tests may
      * still hold references to.
      */
     private static final AtomicReference<Thread> lastStopReclaimThread = new AtomicReference<>();
@@ -166,11 +166,11 @@ public final class ExportReporterLifecycle {
      * <p>Intentionally NOT invoked from auto-abort paths: a failed Start did not establish a
      * running export, and synchronously closing pools mid-abort can starve the EDT during the
      * abort acknowledgement. The unload path performs the same closure synchronously via
-     * {@link ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector#closeAll()}.</p>
+     * {@link ai.anomalousvectors.tools.burp.utils.search.SearchConnector#closeAll()}.</p>
      */
     public static void releaseRunResourcesAsync() {
         Thread t = new Thread(
-                OpenSearchConnector::closeAll,
+                SearchConnector::closeAll,
                 "burp-exporter-stop-reclaim");
         t.setDaemon(true);
         lastStopReclaimThread.set(t);
@@ -181,7 +181,7 @@ public final class ExportReporterLifecycle {
      * Awaits completion of the most recent {@link #releaseRunResourcesAsync()} worker, if any.
      *
      * <p>Intended for test teardown so a Stop-triggered async
-     * {@link OpenSearchConnector#closeAll()} cannot race with a subsequent integration test that
+     * {@link SearchConnector#closeAll()} cannot race with a subsequent integration test that
      * fetches a cached client. Returns once the thread terminates or the wait expires; thread
      * interruption is preserved. This method blocks the caller and must not be invoked on the
      * EDT.</p>

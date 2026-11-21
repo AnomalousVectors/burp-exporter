@@ -108,8 +108,8 @@ class ExportStatsTest {
         ExportStats.recordBodyParamsSource("supplemental");
         ExportStats.recordBodyParamsSkipReason("binary");
         ExportStats.recordBodyParamsEncoding("gzip");
-        ExportStats.recordOpenSearchSuccess();
-        ExportStats.recordOpenSearchFailure();
+        ExportStats.recordDatabaseSuccess();
+        ExportStats.recordDatabaseFailure();
         ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1L);
         ExportStats.recordBulkStart();
         ExportStats.recordSoftOutageEntry();
@@ -185,8 +185,8 @@ class ExportStatsTest {
         assertThat(ExportStats.getBodyParamsSourceCounts()).isEmpty();
         assertThat(ExportStats.getBodyParamsSkipReasonCounts()).isEmpty();
         assertThat(ExportStats.getBodyParamsEncodingCounts()).isEmpty();
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isEqualTo(-1L);
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isZero();
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isEqualTo(-1L);
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isZero();
         assertThat(ExportStats.getTotalSkipCount()).isZero();
         assertThat(ExportStats.getBulkInFlight()).isZero();
         assertThat(ExportStats.getSoftOutageEntries()).isZero();
@@ -451,19 +451,19 @@ class ExportStatsTest {
     }
 
     @Test
-    void recordOpenSearchSuccess_updatesLastSuccessAndResetsConsecutiveFailures() {
+    void recordDatabaseSuccess_updatesLastSuccessAndResetsConsecutiveFailures() {
         ExportStats.resetForTests();
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isEqualTo(-1L);
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isEqualTo(0L);
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isEqualTo(-1L);
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isEqualTo(0L);
 
-        ExportStats.recordOpenSearchFailure();
-        ExportStats.recordOpenSearchFailure();
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isEqualTo(2L);
+        ExportStats.recordDatabaseFailure();
+        ExportStats.recordDatabaseFailure();
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isEqualTo(2L);
 
         long beforeSuccess = System.currentTimeMillis();
-        ExportStats.recordOpenSearchSuccess();
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isEqualTo(0L);
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isGreaterThanOrEqualTo(beforeSuccess);
+        ExportStats.recordDatabaseSuccess();
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isEqualTo(0L);
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isGreaterThanOrEqualTo(beforeSuccess);
     }
 
     @Test

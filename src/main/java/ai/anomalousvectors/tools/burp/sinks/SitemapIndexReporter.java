@@ -10,8 +10,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
@@ -25,7 +25,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.HighlightColor;
@@ -591,7 +591,7 @@ public final class SitemapIndexReporter {
     private static void flushBatch(List<PreparedExportDocument> batchDocs) {
         String activeBaseUrl = RuntimeConfig.searchBaseUrl();
         boolean openSearchActive = RuntimeConfig.isSearchActive();
-        var outcome = OpenSearchClientWrapper.pushPreparedBulk(activeBaseUrl, sitemapIndexName(), "sitemap", batchDocs);
+        var outcome = SearchClientWrapper.pushPreparedBulk(activeBaseUrl, sitemapIndexName(), "sitemap", batchDocs);
         BulkOutcomeRecorder.record("sitemap", "Sitemap", "Bulk push", outcome, openSearchActive);
     }
 

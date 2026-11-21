@@ -80,7 +80,7 @@ class ConfigImportResilienceTest {
     }
 
     @Test
-    void parse_stillFailsOnInvalidOpenSearchAuthType() {
+    void parse_stillFailsOnInvalidSearchAuthType() {
         String json = """
                 {
                   "dataSources": ["exporter"],

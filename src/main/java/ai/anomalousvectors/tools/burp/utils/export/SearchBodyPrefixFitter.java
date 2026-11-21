@@ -8,7 +8,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 
 /**
  * Pressure-aware search/database document fitting to the live {@link BulkByteBudget}.

@@ -16,10 +16,10 @@ import ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket;
 import ai.anomalousvectors.tools.burp.utils.config.TrafficToolCatalog;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /**
- * Thread-safe per-index export stats for OpenSearch pushes.
+ * Thread-safe per-index export stats for search database pushes.
  *
  * <p>Session-scoped: counts and last error/duration are not persisted. Used by
  * StatsPanel and by the Exporter-index stats snapshot. Index keys align with
@@ -304,7 +304,7 @@ public final class ExportStats {
     }
 
     /**
-     * Records recovered OpenSearch traffic pushes for a specific traffic source.
+     * Records recovered search database traffic pushes for a specific traffic source.
      *
      * @param sourceKey traffic source key; unknown keys create a new counter bucket
      * @param count recovered document count; values {@code <= 0} are ignored
@@ -380,7 +380,7 @@ public final class ExportStats {
     }
 
     /**
-     * Returns successful OpenSearch {@code noop} bulk results for an index key this run.
+     * Returns successful search database {@code noop} bulk results for an index key this run.
      *
      * @param indexKey short index key; unknown keys create an empty counter bucket
      * @return non-negative no-op result count
@@ -451,7 +451,7 @@ public final class ExportStats {
     }
 
     /**
-     * Records successful OpenSearch traffic pushes for a specific tool type.
+     * Records successful search database traffic pushes for a specific tool type.
      */
     public static void recordTrafficToolTypeSuccess(String toolTypeKey, long count) {
         if (count <= 0) return;
@@ -471,7 +471,7 @@ public final class ExportStats {
     }
 
     /**
-     * Records recovered OpenSearch traffic pushes for a specific tool type.
+     * Records recovered search database traffic pushes for a specific tool type.
      *
      * @param toolTypeKey tool type label; null or blank normalizes to {@code UNKNOWN}
      * @param count recovered document count; values {@code <= 0} are ignored
@@ -529,7 +529,7 @@ public final class ExportStats {
     }
 
     /**
-     * Returns recovered OpenSearch traffic push count for a specific tool type.
+     * Returns recovered search database traffic push count for a specific tool type.
      *
      * @param toolTypeKey tool type label; null or blank normalizes to {@code UNKNOWN}
      * @return non-negative recovered document count
@@ -672,7 +672,7 @@ public final class ExportStats {
     }
 
     /**
-     * Records high-water marks for OpenSearch retry queue depth during the current export run.
+     * Records high-water marks for search database retry queue depth during the current export run.
      */
     public static void noteRetryQueuePeak(int retryDocs, long retryBytes) {
         if (retryDocs > 0) {
@@ -948,9 +948,9 @@ public final class ExportStats {
     /** Per-document counts by Content-Encoding token applied during BODY supplemental parse. */
     private static final ReasonCounterSet bodyParamsEncodingCounts = new ReasonCounterSet();
     /** OpenSearch connection-health: epoch ms of the most recent successful push, or -1 when none yet. */
-    private static final AtomicLong openSearchLastSuccessAtMs = new AtomicLong(-1L);
+    private static final AtomicLong databaseLastSuccessAtMs = new AtomicLong(-1L);
     /** OpenSearch connection-health: consecutive push failures since the last success. */
-    private static final AtomicLong openSearchConsecutiveFailures = new AtomicLong(0L);
+    private static final AtomicLong databaseConsecutiveFailures = new AtomicLong(0L);
     /** Reason-coded count of documents silently skipped by scope / tool-source / self-export filters. */
     private static final ReasonCounterSet skipReasonCounts = new ReasonCounterSet();
     /** Stable reason-coded totals for documents counted as permanent search drops. */
@@ -1280,30 +1280,30 @@ public final class ExportStats {
     }
 
     /**
-     * Records a successful OpenSearch push. Updates the connection-health timestamp and resets
+     * Records a successful search-database push. Updates the connection-health timestamp and resets
      * the consecutive-failure counter so the panel can surface live destination health.
      */
-    public static void recordOpenSearchSuccess() {
-        openSearchLastSuccessAtMs.set(System.currentTimeMillis());
-        openSearchConsecutiveFailures.set(0L);
+    public static void recordDatabaseSuccess() {
+        databaseLastSuccessAtMs.set(System.currentTimeMillis());
+        databaseConsecutiveFailures.set(0L);
     }
 
     /**
-     * Records a failed OpenSearch push. Increments the consecutive-failure counter without
+     * Records a failed search-database push. Increments the consecutive-failure counter without
      * disturbing the last-success timestamp so the panel shows both values side by side.
      */
-    public static void recordOpenSearchFailure() {
-        openSearchConsecutiveFailures.incrementAndGet();
+    public static void recordDatabaseFailure() {
+        databaseConsecutiveFailures.incrementAndGet();
     }
 
-    /** Returns the epoch-ms timestamp of the most recent successful OpenSearch push, or -1. */
-    public static long getOpenSearchLastSuccessAtMs() {
-        return openSearchLastSuccessAtMs.get();
+    /** Returns the epoch-ms timestamp of the most recent successful search-database push, or -1. */
+    public static long getDatabaseLastSuccessAtMs() {
+        return databaseLastSuccessAtMs.get();
     }
 
-    /** Returns the count of consecutive OpenSearch push failures since the last success. */
-    public static long getOpenSearchConsecutiveFailures() {
-        return openSearchConsecutiveFailures.get();
+    /** Returns the count of consecutive search-database push failures since the last success. */
+    public static long getDatabaseConsecutiveFailures() {
+        return databaseConsecutiveFailures.get();
     }
 
     /**
@@ -1384,7 +1384,7 @@ public final class ExportStats {
     /**
      * Records one soft capacity outage entry (false → true transition).
      *
-     * <p>Called from {@link ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator}
+     * <p>Called from {@link ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator}
      * when soft outage mode activates. Surfaced in Misc Stats {@code Soft Outage Entries}.</p>
      */
     public static void recordSoftOutageEntry() {
@@ -1403,7 +1403,7 @@ public final class ExportStats {
     /**
      * Records one shared capacity-cooldown extension.
      *
-     * <p>Called when {@link ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff}
+     * <p>Called when {@link ai.anomalousvectors.tools.burp.utils.search.BulkRateLimitBackoff}
      * lengthens the shared deadline. Surfaced in Misc Stats {@code Capacity Events}.</p>
      */
     public static void recordCapacityPressureEvent() {
@@ -1651,7 +1651,7 @@ public final class ExportStats {
      * Per-index permanent-failure drops: documents that will not be retried again this session.
      *
      * <p>Includes mapping/parse/validation poison pills from
-     * {@link ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator} and queued
+     * {@link ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator} and queued
      * retry documents discarded on Stop. Distinct from
      * {@link #recordRetryQueueDrop(String, long)} which counts capacity-driven drops while export
      * is still running.</p>
@@ -1695,7 +1695,7 @@ public final class ExportStats {
 
     /**
      * Records one search document whose body/payload fields were prefix-truncated to fit the live
-     * {@link ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget}.
+     * {@link ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget}.
      *
      * @param indexKey short index key (for example {@code traffic}); blank uses {@code unknown}
      */
@@ -1875,8 +1875,8 @@ public final class ExportStats {
         bodyParamsSourceCounts.clear();
         bodyParamsSkipReasonCounts.clear();
         bodyParamsEncodingCounts.clear();
-        openSearchLastSuccessAtMs.set(-1L);
-        openSearchConsecutiveFailures.set(0L);
+        databaseLastSuccessAtMs.set(-1L);
+        databaseConsecutiveFailures.set(0L);
         skipReasonCounts.clear();
         bulkInFlight.set(0);
         softOutageEntries.set(0L);

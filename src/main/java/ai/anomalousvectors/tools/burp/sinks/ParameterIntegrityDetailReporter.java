@@ -7,7 +7,7 @@ import java.util.Map;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 
 /**
  * Writes structured Parameter Integrity drill-down events to the Exporter index.
@@ -127,8 +127,8 @@ final class ParameterIntegrityDetailReporter {
         String indexName = RuntimeConfig.indexNameForKey("exporter");
         boolean bypassReadyGate = !RuntimeConfig.isExportReady();
         for (Map<String, Object> doc : docs) {
-            OpenSearchClientWrapper.ShutdownDocumentPushResult result =
-                    OpenSearchClientWrapper.pushDocumentDuringShutdown(
+            SearchClientWrapper.ShutdownDocumentPushResult result =
+                    SearchClientWrapper.pushDocumentDuringShutdown(
                             baseUrl, indexName, "exporter", doc, bypassReadyGate);
             SingleDocOutcomeRecorder.record(
                     "exporter",

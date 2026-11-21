@@ -3,8 +3,8 @@ package ai.anomalousvectors.tools.burp.sinks;
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 
 /**
  * Shared chunk-target tuning for startup snapshot exports.

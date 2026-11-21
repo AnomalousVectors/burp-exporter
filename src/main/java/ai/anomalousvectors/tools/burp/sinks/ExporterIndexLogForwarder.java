@@ -12,7 +12,7 @@ import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 
 /**
  * Forwards selected exporter log events to the Exporter index.
@@ -183,7 +183,7 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
 
                 String baseUrl = RuntimeConfig.searchBaseUrl();
                 boolean openSearchActive = RuntimeConfig.isSearchActive();
-                boolean ok = OpenSearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
+                boolean ok = SearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
                 SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive,
                         "Exporter log push failed");
             } catch (InterruptedException e) {

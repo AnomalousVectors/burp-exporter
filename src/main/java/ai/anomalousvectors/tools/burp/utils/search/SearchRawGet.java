@@ -1,0 +1,199 @@
+package ai.anomalousvectors.tools.burp.utils.search;
+
+import java.util.concurrent.Future;
+
+import org.apache.hc.client5.http.async.methods.SimpleHttpRequest;
+import org.apache.hc.client5.http.async.methods.SimpleHttpResponse;
+import org.apache.hc.client5.http.async.methods.SimpleRequestBuilder;
+import org.apache.hc.client5.http.impl.async.CloseableHttpAsyncClient;
+import org.apache.hc.client5.http.impl.async.HttpAsyncClients;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.config.TlsConfig;
+import org.apache.hc.client5.http.impl.nio.PoolingAsyncClientConnectionManagerBuilder;
+import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
+import org.apache.hc.core5.http.Header;
+import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http2.HttpVersionPolicy;
+import org.apache.hc.core5.util.Timeout;
+
+import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+
+/**
+ * Performs a raw HTTP GET to the OpenSearch root (/) with the same auth, SSL, and
+ * HTTP version policy (NEGOTIATE) as {@link SearchConnector}, so we can log the
+ * actual protocol and status line from the wire (including HTTP/2 when negotiated).
+ *
+ * <p>Stateless and safe for concurrent callers. Public operations block on client construction,
+ * credential file access, TLS negotiation, and network completion.</p>
+ */
+public final class SearchRawGet {
+
+    private SearchRawGet() {}
+
+    /**
+     * Result of a raw root request.
+     *
+     * <p>When a request fails before a response, {@code protocol} is null and {@code statusCode} is
+     * zero. {@code requestForLog} and response headers are redacted, but {@code body} is raw server
+     * content and must be reviewed before logging.</p>
+     *
+     * @param statusCode HTTP status, or {@code 0} before a response
+     * @param protocol negotiated protocol, or {@code null} when unknown
+     * @param reasonPhrase response reason or client-side failure detail
+     * @param body raw response body
+     * @param requestForLog redacted request summary
+     * @param responseHeaderLines response headers with known sensitive values redacted
+     */
+    public record RawGetResult(
+            int statusCode, String protocol, String reasonPhrase, String body,
+            String requestForLog, java.util.List<String> responseHeaderLines) {}
+
+    /**
+     * Performs a root request with optional Basic authentication.
+     *
+     * <p>Uses the async client with {@code HttpVersionPolicy.NEGOTIATE}, then blocks until
+     * completion. Failures are represented by a result with status zero. Interruption restores the
+     * thread interrupt flag.</p>
+     *
+     * @param baseUrl database base URL
+     * @param username Basic username; null or empty disables authentication
+     * @param password sensitive Basic password; null or empty disables authentication
+     * @return non-null wire result with redacted request/header log fields
+     */
+    public static RawGetResult performRawGet(String baseUrl, String username, String password) {
+        return performRawGet(baseUrl, SearchAuth.basicOrNone(username, password));
+    }
+
+    /**
+     * Performs a root request with a selected authentication mode.
+     *
+     * <p>Expected setup, TLS, transport, and interruption failures are returned as status-zero
+     * results rather than thrown. Interruption restores the thread interrupt flag.</p>
+     *
+     * @param baseUrl database base URL
+     * @param auth authentication descriptor; {@code null} selects no authentication
+     * @return non-null wire result with redacted request/header log fields
+     */
+    public static RawGetResult performRawGet(String baseUrl, SearchAuth auth) {
+        SearchAuth resolvedAuth = auth == null ? SearchAuth.none() : auth;
+        String authForLog = resolvedAuth.redactedAuthorizationForLog();
+        SearchEndpoint endpoint;
+        try {
+            endpoint = SearchEndpoint.parse(baseUrl);
+        } catch (IllegalArgumentException e) {
+            String reqLog = SearchLogFormat.formatRequestForLog("GET", "/", "/", null, authForLog);
+            return new RawGetResult(0, null, e.getMessage(), "", reqLog, java.util.List.of());
+        }
+        if (!resolvedAuth.isComplete()) {
+            String reqLog = SearchLogFormat.formatRequestForLog(
+                    "GET", "/", endpoint.baseUrl(), null, authForLog);
+            return new RawGetResult(0, null, resolvedAuth.validationMessage(), "", reqLog, java.util.List.of());
+        }
+        String requestUri = endpoint.resolve("/").toString();
+        boolean insecure = SearchConnector.isInsecureEnabled();
+        try {
+            HttpHost host = new HttpHost(endpoint.scheme(), endpoint.host(), endpoint.port());
+            if ("https".equals(endpoint.scheme())
+                    && SearchTlsSupport.isPinnedMode()
+                    && !SearchTlsSupport.hasPinnedCertificate()) {
+                Logger.logErrorPanelOnly("[OpenSearch] TLS mode requires a pinned certificate, but none is imported.");
+                String reqLog = SearchLogFormat.formatRequestForLog("GET", "/", requestUri, null, authForLog);
+                return new RawGetResult(0, null, "Pinned TLS certificate not imported.", "", reqLog, java.util.List.of());
+            }
+            try (CloseableHttpAsyncClient client = buildAsyncClient(host, resolvedAuth, insecure)) {
+                client.start();
+                SimpleHttpRequest request = SimpleRequestBuilder.get(requestUri).build();
+                resolvedAuth.applyTo(request);
+                Future<SimpleHttpResponse> future = client.execute(request, null);
+                SimpleHttpResponse response = future.get();
+                String protocol = response.getVersion() != null ? response.getVersion().toString() : null;
+                int code = response.getCode();
+                String reason = response.getReasonPhrase();
+                String body = response.getBodyText() != null ? response.getBodyText() : "";
+                String reqForLog = SearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, authForLog);
+                java.util.List<String> respHeaderLines = new java.util.ArrayList<>();
+                for (Header h : response.getHeaders()) {
+                    String name = h.getName();
+                    String value = SearchLogFormat.shouldRedactHeader(name) ? "***" : (h.getValue() != null ? h.getValue() : "");
+                    respHeaderLines.add(name + ": " + value);
+                }
+                return new RawGetResult(code, protocol, reason, body, reqForLog, respHeaderLines);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            String protocol = SearchLogFormat.parseProtocolFromException(e);
+            String reqForLog = SearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, authForLog);
+            return new RawGetResult(0, null, msg, "", reqForLog, java.util.List.of());
+        } catch (java.security.GeneralSecurityException | java.io.IOException
+                | java.util.concurrent.ExecutionException | IllegalArgumentException e) {
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            String protocol = SearchLogFormat.parseProtocolFromException(e);
+            String reqForLog = SearchLogFormat.formatRequestForLog("GET", "/", requestUri, protocol, authForLog);
+            return new RawGetResult(0, null, msg, "", reqForLog, java.util.List.of());
+        }
+    }
+
+    private static final Timeout RAW_GET_RESPONSE_TIMEOUT = Timeout.ofSeconds(5);
+    private static final Timeout BULK_RESPONSE_TIMEOUT = Timeout.ofMinutes(2);
+
+    static CloseableHttpAsyncClient buildAsyncClientForBulk(
+            HttpHost host,
+            SearchAuth auth,
+            boolean insecure,
+            ConfigState.SearchDestination destination) throws java.security.GeneralSecurityException {
+        return buildAsyncClient(host, auth, insecure, BULK_RESPONSE_TIMEOUT, destination);
+    }
+
+    private static CloseableHttpAsyncClient buildAsyncClient(HttpHost host, SearchAuth auth, boolean insecure)
+            throws java.security.GeneralSecurityException {
+        return buildAsyncClient(host, auth, insecure, RAW_GET_RESPONSE_TIMEOUT);
+    }
+
+    private static CloseableHttpAsyncClient buildAsyncClient(
+            HttpHost host, SearchAuth auth, boolean insecure, Timeout responseTimeout)
+            throws java.security.GeneralSecurityException {
+        return buildAsyncClient(
+                host, auth, insecure, responseTimeout, ConfigState.SearchDestination.OPEN_SEARCH);
+    }
+
+    private static CloseableHttpAsyncClient buildAsyncClient(
+            HttpHost host,
+            SearchAuth auth,
+            boolean insecure,
+            Timeout responseTimeout,
+            ConfigState.SearchDestination destination)
+            throws java.security.GeneralSecurityException {
+        Timeout connectTimeout = Timeout.ofMilliseconds(Math.min(
+                SearchConnector.CLASSIC_CONNECT_TIMEOUT.toMilliseconds(),
+                Math.max(1_000L, responseTimeout.toMilliseconds())));
+        Timeout connectionRequestTimeout = Timeout.ofMilliseconds(Math.min(
+                SearchConnector.CLASSIC_CONNECTION_REQUEST_TIMEOUT.toMilliseconds(),
+                Math.max(1_000L, responseTimeout.toMilliseconds())));
+        var clientBuilder = HttpAsyncClients.custom();
+        PoolingAsyncClientConnectionManagerBuilder connManagerBuilder =
+                PoolingAsyncClientConnectionManagerBuilder.create()
+                        .setDefaultConnectionConfig(org.apache.hc.client5.http.config.ConnectionConfig.custom()
+                                .setConnectTimeout(connectTimeout)
+                                .build());
+        clientBuilder.setDefaultRequestConfig(RequestConfig.custom()
+                .setResponseTimeout(responseTimeout)
+                .setConnectionRequestTimeout(connectionRequestTimeout)
+                .build());
+        if ("https".equalsIgnoreCase(host.getSchemeName())) {
+            try {
+                SearchHttpTlsSupport.configureAsyncTls(connManagerBuilder, auth, insecure, destination);
+            } catch (java.io.IOException e) {
+                throw new java.security.GeneralSecurityException("Failed to load OpenSearch client certificate.", e);
+            }
+        } else {
+            connManagerBuilder.setDefaultTlsConfig(TlsConfig.custom()
+                    .setVersionPolicy(HttpVersionPolicy.NEGOTIATE)
+                    .build());
+        }
+        AsyncClientConnectionManager connManager = connManagerBuilder.build();
+        clientBuilder.setConnectionManager(connManager);
+        return clientBuilder.build();
+    }
+}

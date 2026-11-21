@@ -19,10 +19,10 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
-import ai.anomalousvectors.tools.burp.utils.opensearch.ChunkedBulkSender;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.ChunkedBulkSender;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /**
  * Offloads prepared traffic documents to bounded memory and spill queues for destination delivery.
@@ -668,9 +668,9 @@ public final class TrafficExportQueue {
                 result.attemptedCount, result.successCount, true, result.breakdown);
         // Streaming sends bypass the prepared/retry coordinator's destination-health accounting.
         if (recorded.sent() > 0) {
-            ExportStats.recordOpenSearchSuccess();
+            ExportStats.recordDatabaseSuccess();
         } else if (result.attemptedCount > 0 && !recorded.failuresSuppressed()) {
-            ExportStats.recordOpenSearchFailure();
+            ExportStats.recordDatabaseFailure();
         }
         ExportStats.recordLastLiveBulkDurationMs(TrafficRouteBucket.INDEX_KEY, durationMs);
         BulkByteBudget.recordBulkLatency(durationMs);

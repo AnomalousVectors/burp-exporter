@@ -31,7 +31,7 @@ class ConfigPanelRegexDefaultsTooltipHeadlessTest {
         assertThat(toggles).hasSize(3);
         for (JCheckBox cb : toggles) {
             assertThat(cb.isSelected()).isTrue();
-            assertThat(cb.getToolTipText()).isEqualTo("<html>Interpret value as a regular expression.</html>");
+            assertThat(cb.getToolTipText()).contains("regular expression", "anchors", "exact host match");
         }
     }
 

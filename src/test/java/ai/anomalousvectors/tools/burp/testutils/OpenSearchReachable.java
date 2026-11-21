@@ -1,6 +1,6 @@
 package ai.anomalousvectors.tools.burp.testutils;
 
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 
 /**
  * Caches reachability for the OpenSearch instance used by integration tests.
@@ -40,7 +40,7 @@ public final class OpenSearchReachable {
      */
     public static org.opensearch.client.opensearch.OpenSearchClient getClient() {
         OpenSearchTestConfig c = OpenSearchTestConfig.get();
-        return ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector.getClient(
+        return ai.anomalousvectors.tools.burp.utils.search.SearchConnector.getClient(
                 c.baseUrl(), c.username(), c.password());
     }
 
@@ -48,12 +48,12 @@ public final class OpenSearchReachable {
      * Creates the indices required by the selected sources using test-cluster credentials.
      *
      * @param selectedSources selected exporter source keys
-     * @return index-creation results from {@link ai.anomalousvectors.tools.burp.sinks.OpenSearchSink}
+     * @return index-creation results from {@link ai.anomalousvectors.tools.burp.sinks.SearchSink}
      */
-    public static java.util.List<ai.anomalousvectors.tools.burp.sinks.OpenSearchSink.IndexResult> createSelectedIndexes(
+    public static java.util.List<ai.anomalousvectors.tools.burp.sinks.SearchSink.IndexResult> createSelectedIndexes(
             java.util.List<String> selectedSources) {
         OpenSearchTestConfig c = OpenSearchTestConfig.get();
-        return ai.anomalousvectors.tools.burp.sinks.OpenSearchSink.createSelectedIndexes(
+        return ai.anomalousvectors.tools.burp.sinks.SearchSink.createSelectedIndexes(
                 c.baseUrl(), selectedSources, c.username(), c.password());
     }
 
@@ -63,9 +63,9 @@ public final class OpenSearchReachable {
      * @param shortName index short name such as {@code traffic}
      * @return index-creation result
      */
-    public static ai.anomalousvectors.tools.burp.sinks.OpenSearchSink.IndexResult createIndexFromResource(String shortName) {
+    public static ai.anomalousvectors.tools.burp.sinks.SearchSink.IndexResult createIndexFromResource(String shortName) {
         OpenSearchTestConfig c = OpenSearchTestConfig.get();
-        return ai.anomalousvectors.tools.burp.sinks.OpenSearchSink.createIndexFromResource(
+        return ai.anomalousvectors.tools.burp.sinks.SearchSink.createIndexFromResource(
                 c.baseUrl(), shortName, null, c.username(), c.password());
     }
 
@@ -78,7 +78,7 @@ public final class OpenSearchReachable {
     public static synchronized boolean isReachable() {
         if (cached == null) {
             OpenSearchTestConfig config = OpenSearchTestConfig.get();
-            cached = OpenSearchClientWrapper.testConnection(
+            cached = SearchClientWrapper.testConnection(
                     config.baseUrl(), config.username(), config.password()).success();
         }
         return cached;

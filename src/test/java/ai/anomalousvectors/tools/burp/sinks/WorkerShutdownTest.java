@@ -29,7 +29,7 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /**
  * Proves that every extension-owned background worker terminates deterministically when its
@@ -72,7 +72,7 @@ class WorkerShutdownTest {
             Map.entry("utils/concurrent/SnapshotExportEngine.java", 2),
             Map.entry("utils/concurrent/SnapshotFlushExecutor.java", 1),
             Map.entry("utils/concurrent/StartupSnapshotCoordinator.java", 2),
-            Map.entry("utils/opensearch/IndexingRetryCoordinator.java", 1));
+            Map.entry("utils/search/IndexingRetryCoordinator.java", 1));
 
     /**
      * Lifecycle contracts represented by the factory census.

@@ -31,7 +31,7 @@ import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.burpsuite.BurpSuite;
 import burp.api.montoya.core.Version;
@@ -108,10 +108,10 @@ class SettingsIndexReporterIT {
     }
 
     private void createSettingsIndex() {
-        List<OpenSearchSink.IndexResult> results = OpenSearchReachable.createSelectedIndexes(List.of("settings"));
+        List<SearchSink.IndexResult> results = OpenSearchReachable.createSelectedIndexes(List.of("settings"));
         assertThat(results).isNotEmpty();
         boolean settingsCreated = results.stream()
-                .anyMatch(r -> r.shortName().equals("settings") && (r.status() == OpenSearchSink.IndexResult.Status.CREATED || r.status() == OpenSearchSink.IndexResult.Status.EXISTS));
+                .anyMatch(r -> r.shortName().equals("settings") && (r.status() == SearchSink.IndexResult.Status.CREATED || r.status() == SearchSink.IndexResult.Status.EXISTS));
         assertThat(settingsCreated).as("settings index created or exists").isTrue();
     }
 

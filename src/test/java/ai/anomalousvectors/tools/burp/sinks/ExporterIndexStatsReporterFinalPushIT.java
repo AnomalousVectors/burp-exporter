@@ -29,7 +29,7 @@ import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnector;
 
 /**
  * Integration test: final exporter stats snapshot indexes with {@code running:false} after Stop.
@@ -92,7 +92,7 @@ class ExporterIndexStatsReporterFinalPushIT {
         assertThat(outcome.succeeded()).isTrue();
 
         OpenSearchTestConfig config = OpenSearchTestConfig.get();
-        OpenSearchClient client = OpenSearchConnector.getClient(
+        OpenSearchClient client = SearchConnector.getClient(
                 config.baseUrl(), config.username(), config.password());
         String indexName = IndexNaming.indexNameForShortName("exporter");
         client.indices().refresh(RefreshRequest.of(r -> r.index(indexName)));

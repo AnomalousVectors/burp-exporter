@@ -76,7 +76,7 @@ public record PreparedExportDocument(
      * Returns the byte size used for bulk chunking and retry drain caps.
      *
      * <p>Prefers the length of pre-serialized NDJSON when present so senders cannot under-count
-     * against {@link ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget}.</p>
+     * against {@link ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget}.</p>
      *
      * @return non-negative bulk payload bytes for this document
      */

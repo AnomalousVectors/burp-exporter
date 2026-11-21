@@ -32,10 +32,10 @@ import org.slf4j.LoggerFactory;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
-import ai.anomalousvectors.tools.burp.utils.opensearch.AmazonOpenSearchSigV4;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClassicHttpSupport;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
+import ai.anomalousvectors.tools.burp.utils.search.AmazonOpenSearchSigV4;
+import ai.anomalousvectors.tools.burp.utils.search.SearchAuth;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClassicHttpSupport;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnector;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionTester;
 
 import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
@@ -83,7 +83,7 @@ public final class PackagedRuntimeProbe {
         HttpServer server = startServer();
         String endpoint = "http://127.0.0.1:" + server.getAddress().getPort();
         try {
-            var client = OpenSearchConnector.getClient(endpoint, OpenSearchAuth.none());
+            var client = SearchConnector.getClient(endpoint, SearchAuth.none());
             check(client.indices().create(request -> request.index("packaging-probe")
                     .mappings(mapping -> mapping.properties("marker", property -> property.keyword(k -> k))))
                     .acknowledged(), "OpenSearch index/mapping JSON-P path failed");
@@ -99,21 +99,21 @@ public final class PackagedRuntimeProbe {
             var searchSource = search.hits().hits().getFirst().source();
             check(searchSource != null && "packaged".equals(searchSource.get("marker")),
                     "Jackson 3 nested search _source parsing failed");
-            var http = OpenSearchConnector.getClassicHttpClient(endpoint, OpenSearchAuth.none());
+            var http = SearchConnector.getClassicHttpClient(endpoint, SearchAuth.none());
             HttpPost post = new HttpPost("/_bulk");
             post.setEntity(new StringEntity("{\"index\":{}}\n{\"marker\":\"packaged\"}\n",
                     org.apache.hc.core5.http.ContentType.APPLICATION_JSON));
-            check(http.execute(OpenSearchClassicHttpSupport.hostForBaseUrl(endpoint), post,
+            check(http.execute(SearchClassicHttpSupport.hostForBaseUrl(endpoint), post,
                     response -> response.getCode()) == 200, "Classic bulk transport failed");
             SecureCredentialStore.saveBasicCredentials(ConfigState.SearchDestination.ELASTICSEARCH.configKey(),
                     "fixture-user", "fixture-password");
             var status = SearchConnectionTester.safeTestConnection(ConfigState.SearchDestination.ELASTICSEARCH, endpoint);
             check(status.success(), "Reflective Elasticsearch Test Connection failed: " + status.message());
             // Construct both TLS-capable client families without contacting an external host.
-            OpenSearchConnector.getClassicHttpClient("https://127.0.0.1:1", OpenSearchAuth.none());
-            OpenSearchConnector.getAsyncHttpClient("https://127.0.0.1:1", OpenSearchAuth.none());
+            SearchConnector.getClassicHttpClient("https://127.0.0.1:1", SearchAuth.none());
+            SearchConnector.getAsyncHttpClient("https://127.0.0.1:1", SearchAuth.none());
         } finally {
-            OpenSearchConnector.closeAll();
+            SearchConnector.closeAll();
             server.stop(0);
             stopLogging();
         }

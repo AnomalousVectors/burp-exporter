@@ -73,9 +73,9 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.SystemMetrics;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.BulkRateLimitBackoff;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /**
  * Panel that displays live export charts and dashboard metrics.
@@ -398,7 +398,7 @@ public final class StatsPanel extends JPanel {
     private final JLabel recoveredFailuresTotalValue;
     private final JLabel retryAttemptsTotalValue;
     private final JLabel openSearchLastSuccessValue;
-    private final JLabel openSearchConsecutiveFailuresValue;
+    private final JLabel databaseConsecutiveFailuresValue;
     private final JLabel oldestQueuedAgeValue;
     private final JLabel trafficQueueBytesValue;
     private final JLabel retryQueueDepthValue;
@@ -622,7 +622,7 @@ public final class StatsPanel extends JPanel {
         recoveredFailuresTotalValue = miscValues.get("Recovered Failures");
         retryAttemptsTotalValue = miscValues.get("Retry Drain Pushes");
         openSearchLastSuccessValue = miscValues.get("Last Success");
-        openSearchConsecutiveFailuresValue = miscValues.get("Consecutive Failures");
+        databaseConsecutiveFailuresValue = miscValues.get("Consecutive Failures");
         oldestQueuedAgeValue = miscValues.get("Oldest Queued Age");
         trafficQueueBytesValue = miscValues.get("Traffic Queue Bytes (est.)");
         retryQueueDepthValue = miscValues.get("Queue Depth");
@@ -810,8 +810,8 @@ public final class StatsPanel extends JPanel {
         bodyTruncationsByIndexValue.setText(StatsPanelFormatters.formatBodyTruncationsByIndex());
         recoveredFailuresTotalValue.setText(formatWhole(ExportStats.getTotalRecoveredFailureCount()));
         retryAttemptsTotalValue.setText(formatWhole(ExportStats.getTotalRetryAttempts()));
-        openSearchLastSuccessValue.setText(StatsPanelFormatters.formatRelativeTime(ExportStats.getOpenSearchLastSuccessAtMs()));
-        openSearchConsecutiveFailuresValue.setText(formatWhole(ExportStats.getOpenSearchConsecutiveFailures()));
+        openSearchLastSuccessValue.setText(StatsPanelFormatters.formatRelativeTime(ExportStats.getDatabaseLastSuccessAtMs()));
+        databaseConsecutiveFailuresValue.setText(formatWhole(ExportStats.getDatabaseConsecutiveFailures()));
         oldestQueuedAgeValue.setText(StatsPanelFormatters.formatOldestQueuedAgeSummary());
         trafficQueueBytesValue.setText(StatsPanelFormatters.formatBytesHuman(trafficQueueBytes));
         retryQueueDepthValue.setText(StatsPanelFormatters.formatRetryQueueDepthSummary());
@@ -876,7 +876,7 @@ public final class StatsPanel extends JPanel {
     }
 
     /**
-     * Rebuilds the merged OpenSearch counts table.
+     * Rebuilds the merged search database counts table.
      *
      * <p>Row order is: index rows in alphabetical order, the Traffic row, traffic-source
      * sub-rows directly under it (indented in the first column), then a Total row that
@@ -1466,7 +1466,7 @@ public final class StatsPanel extends JPanel {
     /**
      * Shows only the sink-specific chart and table sections enabled by the current runtime config.
      *
-     * <p>Files sections appear above OpenSearch sections. One sink is always expected to remain
+     * <p>Files sections appear above search database sections. One sink is always expected to remain
      * enabled, so the shared legend stays visible whenever at least one chart section is shown.</p>
      */
     private void updateSectionVisibility() {
@@ -1498,11 +1498,11 @@ public final class StatsPanel extends JPanel {
      * remains visible. Within Overview, Soft Outage, Authorization Failures, and Database
      * Exported Size follow database enablement, Traffic Spill Status follows live traffic export
      * relevance, and Files Exported Size follows files enablement. The {@code Files} section and
-     * OpenSearch-prefixed groups follow the currently visible lower-panel destinations. Traffic
+     * search database-prefixed groups follow the currently visible lower-panel destinations. Traffic
      * Spill and Streaming Recovery details follow traffic export relevance (files and/or database).</p>
      *
      * @param fileVisible whether the Files metrics group should be visible
-     * @param openSearchVisible whether the OpenSearch metrics group should be visible
+     * @param openSearchVisible whether the search database metrics group should be visible
      */
     private void updateMiscStatsSectionVisibility(boolean fileVisible, boolean openSearchVisible) {
         boolean trafficRelevant = RuntimeConfig.isAnyTrafficExportEnabled();
@@ -1950,7 +1950,7 @@ public final class StatsPanel extends JPanel {
                 "Computed on refresh; excludes spill-file backlog (see Spill / Queue)."));
         tooltips.put("Queue Drops", Tooltips.htmlRaw(
                 "Session total of live traffic documents dropped because the in-memory queue was full.",
-                "Distinct from OpenSearch failures and from spill drop counters under Spill."));
+                "Distinct from database failures and from spill drop counters under Spill."));
         tooltips.put("Pending Orphans", Tooltips.htmlRaw(
                 "Live HTTP request/response pairs held until a matching response arrives.",
                 "A non-zero value during heavy traffic is normal; sustained growth may indicate pairing pressure."));
@@ -2022,10 +2022,10 @@ public final class StatsPanel extends JPanel {
                 "search database acknowledged those documents in a bulk response.",
                 "Misc Stats shows the session total across all indexes; Database Counts shows the same total per index."));
         tooltips.put("Last Success", Tooltips.htmlRaw(
-                "How long ago any OpenSearch push last succeeded (any index).",
+                "How long ago any search-database push last succeeded (any index).",
                 "Shows <b>never</b> when no success has been recorded this session."));
         tooltips.put("Consecutive Failures", Tooltips.htmlRaw(
-                "OpenSearch push failures since the most recent success.",
+                "Search-database push failures since the most recent success.",
                 "Resets to zero on any successful push."));
         tooltips.put("Mis-gate Suspects", Tooltips.htmlRaw(
                 "Requests whose <code>Content-Type</code> declares a web form",
@@ -2150,8 +2150,8 @@ public final class StatsPanel extends JPanel {
         tooltips.put("Soft Outage", Tooltips.htmlRaw(
                 "Whether soft capacity outage mode is active.",
                 "<b>Yes</b> (yellow) means gateway/timeout/429-class pressure is pacing export via the",
-                "shared cooldown and retry drain; the destination stays enabled (unlike auth",
-                "failures, which disable the database destination).",
+                "shared cooldown and retry drain; the destination stays enabled.",
+                "Authorization failures use separate recovery probes and retain queued work.",
                 "<b>No</b> uses the default value style when idle. Clears after meaningful payload",
                 "recovery, not from exporter log/stats singles alone."));
         tooltips.put("Database Exported Size", Tooltips.htmlRaw(

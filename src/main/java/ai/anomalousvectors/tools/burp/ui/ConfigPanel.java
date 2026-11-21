@@ -59,7 +59,7 @@ import ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter;
 import ai.anomalousvectors.tools.burp.sinks.ExporterStatsPushOutcome;
 import ai.anomalousvectors.tools.burp.sinks.FileExportService;
 import ai.anomalousvectors.tools.burp.sinks.FindingsIndexReporter;
-import ai.anomalousvectors.tools.burp.sinks.OpenSearchSink;
+import ai.anomalousvectors.tools.burp.sinks.SearchSink;
 import ai.anomalousvectors.tools.burp.sinks.ParameterIntegritySessionLog;
 import ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter;
 import ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter;
@@ -98,10 +98,10 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 import ai.anomalousvectors.tools.burp.utils.config.TrafficToolCatalog;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchTlsSupport;
+import ai.anomalousvectors.tools.burp.utils.search.BulkRateLimitBackoff;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.SearchAuth;
+import ai.anomalousvectors.tools.burp.utils.search.SearchTlsSupport;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDeployment;
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 import burp.api.montoya.MontoyaApi;
@@ -338,11 +338,11 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         return Map.of(
                 "Verify", Tooltips.htmlRaw(
                         "<b>Verify</b>",
-                        "Use the JVM/system trust store to verify the server certificate.",
+                        "Use the JVM trust store to verify the server certificate.",
                         "Recommended for production clusters whose certificate chain is already trusted by the host."),
                 "Trust pinned certificate", Tooltips.htmlRaw(
                         "<b>Trust pinned certificate</b>",
-                        "Trust only the imported server certificate for this Burp session.",
+                        "Trust the imported server certificate for this Burp session; hostname verification remains enabled.",
                         "Use when the cluster presents a self-signed or private-CA certificate that is not in the system trust store.",
                         "Import a .cer/.crt/.der/.pem file; pinned bytes stay in session memory only."),
                 "Trust all certificates", Tooltips.htmlRaw(
@@ -1244,7 +1244,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         if (databaseEnabled && !url.isEmpty()) {
             ConfigState.SearchDestination databaseDestination = RuntimeConfig.searchDestinationKind();
             String databaseName = databaseDestination.displayName();
-            OpenSearchAuth openSearchAuth = OpenSearchAuth.fromRuntime(databaseDestination);
+            SearchAuth openSearchAuth = SearchAuth.fromRuntime(databaseDestination);
             if (!openSearchAuth.isComplete()) {
                 String reason = openSearchAuth.validationMessage();
                 if (!RuntimeConfig.isAnyFileExportEnabled()) {
@@ -1260,7 +1260,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         if (databaseEnabled && !url.isEmpty()) {
             ConfigState.SearchDestination databaseDestination = RuntimeConfig.searchDestinationKind();
             String databaseName = databaseDestination.displayName();
-            OpenSearchAuth openSearchAuth = OpenSearchAuth.fromRuntime(databaseDestination);
+            SearchAuth openSearchAuth = SearchAuth.fromRuntime(databaseDestination);
             postStartProgress(runToken, uiCallbacks, "Starting: testing " + databaseName + " connection …");
             Logger.logDebug("[" + databaseName + "] Preflight connection test for " + url);
             var preflight = ai.anomalousvectors.tools.burp.utils.search.SearchConnectionTester.safeTestConnection(
@@ -1290,16 +1290,16 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 postStartProgress(runToken, uiCallbacks, "Starting: creating " + databaseName + " indexes …");
                 Logger.logInfoPanelOnly("[" + databaseName + "] Initializing indexes for selected sources.");
                 Logger.logDebug("[" + databaseName + "] Ensuring indexes for sources: " + sources);
-                List<OpenSearchSink.IndexResult> results = OpenSearchSink.createSelectedIndexes(url, sources,
+                List<SearchSink.IndexResult> results = SearchSink.createSelectedIndexes(url, sources,
                         openSearchAuth, () -> RuntimeConfig.isExportRunActive(runToken));
                 if (!RuntimeConfig.isExportRunActive(runToken)) {
                     return;
                 }
-                for (OpenSearchSink.IndexResult r : results) {
+                for (SearchSink.IndexResult r : results) {
                     Logger.logDebug("[" + databaseName + "] Index " + r.fullName() + ": " + r.status()
                             + (r.error() != null ? " (" + r.error() + ")" : ""));
                 }
-                if (results.stream().anyMatch(r -> r.status() == OpenSearchSink.IndexResult.Status.FAILED)) {
+                if (results.stream().anyMatch(r -> r.status() == SearchSink.IndexResult.Status.FAILED)) {
                     String reason = "one or more search database indexes failed to initialize.";
                     logDatabaseIndexInitializationFailures(results);
                     if (!RuntimeConfig.isAnyFileExportEnabled()) {
@@ -1495,14 +1495,14 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         return "none";
     }
 
-    private static void logDatabaseIndexInitializationFailures(List<OpenSearchSink.IndexResult> results) {
+    private static void logDatabaseIndexInitializationFailures(List<SearchSink.IndexResult> results) {
         String databaseName = RuntimeConfig.searchDestinationDisplayName();
         Logger.logErrorPanelOnly("[" + databaseName + "] Index initialization failed for one or more selected indexes.");
         if (results == null) {
             return;
         }
-        for (OpenSearchSink.IndexResult result : results) {
-            if (result == null || result.status() != OpenSearchSink.IndexResult.Status.FAILED) {
+        for (SearchSink.IndexResult result : results) {
+            if (result == null || result.status() != SearchSink.IndexResult.Status.FAILED) {
                 continue;
             }
             String detail = result.error() == null || result.error().isBlank() ? "unknown error" : result.error();
@@ -2696,9 +2696,9 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 "Select how " + destination.displayName() + " HTTPS server certificates are trusted.",
                 "",
                 "<b>Verify</b>",
-                "&nbsp;&nbsp;Use the JVM/system trust store. Recommended for production.",
+                "&nbsp;&nbsp;Use the JVM trust store. Recommended for production.",
                 "<b>Trust pinned certificate</b>",
-                "&nbsp;&nbsp;Trust only an imported X.509 server certificate for this Burp session.",
+                "&nbsp;&nbsp;Trust the imported X.509 server certificate for this Burp session; hostname verification remains enabled.",
                 "<b>Trust all certificates</b>",
                 "&nbsp;&nbsp;Disable verification. Lab/testing only; allows man-in-the-middle interception.");
         String importTip = Tooltips.htmlRaw(
@@ -2773,7 +2773,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 + " pinned TLS certificate from " + selectedPath);
         try {
             SecureCredentialStore.PinnedTlsCertificate certificate =
-                    OpenSearchTlsSupport.importPinnedCertificate(selectedPath);
+                    SearchTlsSupport.importPinnedCertificate(selectedPath);
             SecureCredentialStore.savePinnedTlsCertificate(
                     selectedDestination.configKey(),
                     certificate.sourcePath(), certificate.fingerprintSha256(), certificate.encodedBytes());
@@ -2850,7 +2850,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         lastLoggedTlsMode = normalizedMode;
         String label = labelForTlsMode(normalizedMode);
         Logger.logDebug("[ConfigPanel] OpenSearch TLS mode set to " + label + ".");
-        if (ConfigState.OPEN_SEARCH_TLS_PINNED.equals(normalizedMode) && !OpenSearchTlsSupport.hasPinnedCertificate()) {
+        if (ConfigState.OPEN_SEARCH_TLS_PINNED.equals(normalizedMode) && !SearchTlsSupport.hasPinnedCertificate()) {
             Logger.logInfoPanelOnly("[ConfigPanel] OpenSearch TLS mode requires an imported pinned certificate before test/start.");
         } else if (ConfigState.OPEN_SEARCH_TLS_INSECURE.equals(normalizedMode)) {
             Logger.logInfoPanelOnly("[ConfigPanel] OpenSearch TLS mode is trusting all certificates insecurely.");
@@ -3072,7 +3072,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         }
         replaceAuthTypeItems(
                 openSearchAmazonAuthTypeCombo,
-                SearchDeployment.amazonOpenSearchAuthTypesForUrl(openSearchAmazonUrlField.getText(), resolved),
+                SearchDeployment.amazonSearchAuthTypesForUrl(openSearchAmazonUrlField.getText(), resolved),
                 ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE);
     }
 
@@ -3407,7 +3407,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
     private static String indexBaseNameTooltip() {
         return Tooltips.htmlRaw(
                 "<b>Index Base Name</b>",
-                "Shared base used to derive all OpenSearch index names and file basenames.",
+                "Shared base used to derive all search database index names and file basenames.",
                 "Enter only the shared base. Fixed suffixes are appended automatically:",
                 "&nbsp;&nbsp;<code>-exporter</code>, <code>-findings</code>, <code>-settings</code>, <code>-sitemap</code>, <code>-traffic</code>",
                 "",
@@ -3423,7 +3423,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 "&nbsp;&nbsp;<code>{NOW}</code> or <code>{DATE-TIME}</code> for the built-in current local date/time value",
                 "&nbsp;&nbsp;<code>${now:yyyyMMdd}</code> or <code>${now:yyyyMMdd-HHmmss}</code> for explicit Java date-time formats",
                 "",
-                "OpenSearch requirements after suffixes are appended:",
+                "Search database naming requirements after suffixes are appended:",
                 "&nbsp;&nbsp;- lowercase only",
                 "&nbsp;&nbsp;- cannot start with <code>-</code>, <code>_</code>, or <code>+</code>",
                 "&nbsp;&nbsp;- cannot be <code>.</code> or <code>..</code>",
@@ -3439,7 +3439,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
     private static String validIndexBaseNameTooltip() {
         return Tooltips.htmlRaw(
                 "<b>Valid Index Base Name</b>",
-                "All resolved index names currently satisfy the OpenSearch naming rules.",
+                "All resolved index names currently satisfy the search database naming rules.",
                 "Blank is also allowed and falls back to <code>tool-burp</code>."
         );
     }
@@ -3859,8 +3859,8 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         Tooltips.apply(trafficIntruderCheckbox, Tooltips.html("Traffic sent from Intruder."));
         Tooltips.apply(trafficProxyCheckbox, Tooltips.html(
                 "Live traffic from Proxy (HTTP and WebSocket frames).",
-                "WebSocket frames are exported from Proxy WebSocket history on a short interval",
-                "so Burp conversation and message ids are included.",
+                "HTTP uses native Proxy callbacks; streamed responses may also produce independent History-backed snapshots for up to five minutes.",
+                "Live WebSocket frames use callback observations without History conversation/message ids.",
                 "For historic proxy traffic already in the table when Start is clicked, select Proxy History."));
         Tooltips.apply(trafficProxyHistoryCheckbox, Tooltips.html(
                 "Historic traffic from Proxy History (HTTP pairs and WebSocket frames).",
@@ -3926,13 +3926,13 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 "Write one filtered JSON document per line.",
                 "Each line is a standalone JSON object with no bulk action metadata.",
                 "Best for local grep, line-by-line tooling, or simple downstream processing.",
-                "Cannot be imported directly into OpenSearch — re-export with <b>NDJSON</b> selected, or convert to bulk NDJSON first."
+                "For search-database <code>_bulk</code> imports, convert these objects to bulk NDJSON or select <b>NDJSON</b> before exporting."
         ));
         Tooltips.apply(fileBulkNdjsonCheckbox, Tooltips.htmlRaw(
                 "<b>NDJSON (Newline-Delimited JSON)</b>",
                 "Write search-database bulk-request lines.",
                 "Each exported document becomes two lines: bulk action metadata, then the JSON document body.",
-                "Only this format can be imported directly into OpenSearch later via <code>_bulk</code>."
+                "Provides the action/source structure used by OpenSearch and Elasticsearch <code>_bulk</code> APIs; later import is managed separately from this export."
         ));
         Tooltips.apply(fileTotalCapCheckbox, Tooltips.htmlRaw(
                 "<b>Total file cap</b>",
@@ -3964,14 +3964,14 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         Tooltips.apply(openSearchSinkCheckbox, Tooltips.htmlRaw(
                 "<b>OpenSearch</b>",
                 "Upstream OpenSearch destination.",
-                "Test Connection, Start/export, retry/outage handling, and final counts are wired in this build."
+                "Uses the shared database export, retry, and capacity controls."
         ));
         Tooltips.apply(openSearchAmazonDestinationRadio, Tooltips.htmlRaw(
                 "<b>Amazon OpenSearch</b>",
                 "Amazon OpenSearch Service / Serverless destination.",
                 "Supports IAM SigV4 (profile or static), Basic, and None.",
                 "Default auth is <b>IAM SigV4 - Profile</b> for long runs.",
-                "Test Connection, Start/export, retry/outage handling, and final counts are wired in this build.",
+                "Uses the shared database export, retry, and capacity controls.",
                 "Profile re-resolves credentials on every signed request; temporary credentials renew only for SSO/assume-role/credential_process profiles.",
                 "Pasted Static session tokens are not renewed and raise mid-run auth-failure risk."
         ));
@@ -3979,7 +3979,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 "<b>Elasticsearch</b>",
                 "Elasticsearch destination (hosted, serverless, or self-hosted).",
                 "Supports API key, Bearer token, Certificate, Basic, and None.",
-                "Test Connection, Start/export, retry/outage handling, and final counts are wired in this build."
+                "Uses the shared database export, retry, and capacity controls."
         ));
         Tooltips.apply(openSearchUrlField, Tooltips.htmlRaw(
                 "<b>OpenSearch URL</b>",

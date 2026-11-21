@@ -136,7 +136,7 @@ final class ExportFieldTooltipsRequestResponse {
         return switch (leaf) {
             case "b64" -> Tooltips.textWithSource(
                     "On-the-wire body bytes as Base64 — exactly what Burp captured (still compressed when Content-Encoding is set). "
-                            + "Use for exact replay; use body.decoded_b64 for the deepest successfully decoded representation.",
+                            + "Use for replay only when not search-truncated; body.decoded_b64 holds the deepest successfully decoded representation.",
                     "HttpMessageDocSupport.buildBodyContent() Base64-encodes the raw body bytes.");
             case "decoded_b64" -> Tooltips.textWithSource(
                     "Deepest successfully decoded body bytes as Base64. Present after at least one Content-Encoding layer is removed, "
@@ -153,12 +153,12 @@ final class ExportFieldTooltipsRequestResponse {
                     "HttpMessageDocSupport.buildBodyContent() uses HttpRequest.bodyOffset().");
             case "text" -> Tooltips.textWithSource(
                     "UTF-8 or charset-decoded body string after Content-Encoding removal (when applicable) and text classification. "
-                            + "Indexed as OpenSearch text for full-text search. "
+                            + "Indexed as text by search databases for full-text search. "
                             + "Null when the payload remains binary after decompress (e.g. protobuf inside gzip) or is not textual.",
                     "HttpMessageDocSupport.decodeHumanReadableBodyText() on logical bytes from BodyContentEncodingSupport.resolveForExport().");
             case "markers" -> Tooltips.textWithSource(
                     "Burp request highlight marker ranges.",
-                    "RequestResponseDocBuilder.markersToList() copies HttpRequest.markers() into request.body.markers.");
+                    "HttpMessageDocSupport.markersToList() copies HttpRequest.markers() into request.body.markers.");
             case "truncated" -> Tooltips.textWithSource(
                     "True when search/database export prefix-truncated this request body to fit the live bulk byte budget. "
                             + "body.length remains the original wire size; file export is not truncated by this path.",
@@ -197,7 +197,7 @@ final class ExportFieldTooltipsRequestResponse {
                     "HttpMessageDocSupport.buildBodyContent() uses HttpResponse.bodyOffset().");
             case "text" -> Tooltips.textWithSource(
                     "UTF-8 or charset-decoded body string after Content-Encoding removal (when applicable) and text classification. "
-                            + "Indexed as OpenSearch text for full-text search. "
+                            + "Indexed as text by search databases for full-text search. "
                             + "Null when the payload remains binary after decompress or is not textual.",
                     "HttpMessageDocSupport.decodeHumanReadableBodyText() on logical bytes from BodyContentEncodingSupport.resolveForExport().");
             case "truncated" -> Tooltips.textWithSource(
@@ -245,7 +245,7 @@ final class ExportFieldTooltipsRequestResponse {
                     "RequestResponseDocBuilder.putResponseAttributes() reads HttpResponseReceived.attributes(AttributeType.INPUT_IMAGE_LABELS) into response.body.input_image_labels.");
             case "markers" -> Tooltips.textWithSource(
                     "Burp response highlight marker ranges.",
-                    "RequestResponseDocBuilder.markersToList() copies HttpResponse.markers() into response.body.markers.");
+                    "HttpMessageDocSupport.markersToList() copies HttpResponse.markers() into response.body.markers.");
             case "non_hidden_form_input_types" -> Tooltips.textWithSource(
                     "Non-hidden HTML form input types present in the response.",
                     "RequestResponseDocBuilder.putResponseAttributes() reads HttpResponseReceived.attributes(AttributeType.NON_HIDDEN_FORM_INPUT_TYPES) into response.body.non_hidden_form_input_types.");
@@ -332,16 +332,16 @@ final class ExportFieldTooltipsRequestResponse {
         return switch (leaf) {
             case "start_inclusive" -> Tooltips.textWithSource(
                     "Inclusive start offset of a Burp request body highlight marker.",
-                    "RequestResponseDocBuilder.trafficMarkersToList() copies Marker.range().startIndexInclusive() from HttpRequest.markers() into request.body.markers.start_inclusive.");
+                    "HttpMessageDocSupport.trafficMarkersToList() copies Marker.range().startIndexInclusive() from HttpRequest.markers() into request.body.markers.start_inclusive.");
             case "end_exclusive" -> Tooltips.textWithSource(
                     "Exclusive end offset of a Burp request body highlight marker.",
-                    "RequestResponseDocBuilder.trafficMarkersToList() copies Marker.range().endIndexExclusive() from HttpRequest.markers() into request.body.markers.end_exclusive.");
+                    "HttpMessageDocSupport.trafficMarkersToList() copies Marker.range().endIndexExclusive() from HttpRequest.markers() into request.body.markers.end_exclusive.");
             case "start_index_inclusive" -> Tooltips.textWithSource(
                     "Inclusive start offset of a Burp request highlight marker.",
-                    "RequestResponseDocBuilder.markersToList() copies Marker.range().startIndexInclusive() from HttpRequest.markers().");
+                    "HttpMessageDocSupport.markersToList() copies Marker.range().startIndexInclusive() from HttpRequest.markers().");
             case "end_index_exclusive" -> Tooltips.textWithSource(
                     "Exclusive end offset of a Burp request highlight marker.",
-                    "RequestResponseDocBuilder.markersToList() copies Marker.range().endIndexExclusive() from HttpRequest.markers().");
+                    "HttpMessageDocSupport.markersToList() copies Marker.range().endIndexExclusive() from HttpRequest.markers().");
             default -> ExportFieldTooltips.genericLeafTooltip("request.markers." + leaf);
         };
     }
@@ -350,16 +350,16 @@ final class ExportFieldTooltipsRequestResponse {
         return switch (leaf) {
             case "start_inclusive" -> Tooltips.textWithSource(
                     "Inclusive start offset of a Burp response body highlight marker.",
-                    "RequestResponseDocBuilder.trafficMarkersToList() copies Marker.range().startIndexInclusive() from HttpResponse.markers() into response.body.markers.start_inclusive.");
+                    "HttpMessageDocSupport.trafficMarkersToList() copies Marker.range().startIndexInclusive() from HttpResponse.markers() into response.body.markers.start_inclusive.");
             case "end_exclusive" -> Tooltips.textWithSource(
                     "Exclusive end offset of a Burp response body highlight marker.",
-                    "RequestResponseDocBuilder.trafficMarkersToList() copies Marker.range().endIndexExclusive() from HttpResponse.markers() into response.body.markers.end_exclusive.");
+                    "HttpMessageDocSupport.trafficMarkersToList() copies Marker.range().endIndexExclusive() from HttpResponse.markers() into response.body.markers.end_exclusive.");
             case "start_index_inclusive" -> Tooltips.textWithSource(
                     "Inclusive start offset of a Burp response highlight marker.",
-                    "RequestResponseDocBuilder.markersToList() copies Marker.range().startIndexInclusive() from HttpResponse.markers().");
+                    "HttpMessageDocSupport.markersToList() copies Marker.range().startIndexInclusive() from HttpResponse.markers().");
             case "end_index_exclusive" -> Tooltips.textWithSource(
                     "Exclusive end offset of a Burp response highlight marker.",
-                    "RequestResponseDocBuilder.markersToList() copies Marker.range().endIndexExclusive() from HttpResponse.markers().");
+                    "HttpMessageDocSupport.markersToList() copies Marker.range().endIndexExclusive() from HttpResponse.markers().");
             default -> ExportFieldTooltips.genericLeafTooltip("response.markers." + leaf);
         };
     }
@@ -368,13 +368,13 @@ final class ExportFieldTooltipsRequestResponse {
         return switch (leaf) {
             case "name" -> Tooltips.textWithSource(
                     "Parsed HTTP parameter name.",
-                    "RequestResponseDocBuilder.parametersToList() uses ParsedHttpParameter.name() from HttpRequest.parameters(); BODY parameters may be filtered on binary bodies.");
+                    "RequestResponseParametersSupport reads Burp parameters, filters unusable BODY rows, and supplements parseable urlencoded logical bodies when needed.");
             case "type" -> Tooltips.textWithSource(
                     "Burp parameter type (URL, BODY, JSON, XML, etc.; cookies are exported under request.cookies).",
-                    "RequestResponseDocBuilder.parametersToList() uses ParsedHttpParameter.type().name().");
+                    "RequestResponseParametersSupport preserves ParsedHttpParameter.type().name(); supplemental form rows use BODY.");
             case "value" -> Tooltips.textWithSource(
                     "Parsed HTTP parameter value.",
-                    "RequestResponseDocBuilder.parametersToList() uses ParsedHttpParameter.value().");
+                    "RequestResponseParametersSupport preserves parsed values or supplements them from urlencoded logical body bytes.");
             case "truncated" -> Tooltips.textWithSource(
                     "True when search/database export prefix-truncated this parameter value to fit the live bulk byte budget.",
                     "SearchBodyPrefixFitter sets truncated when shortening parameter values under BulkByteBudget pressure.");

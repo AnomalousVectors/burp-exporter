@@ -27,13 +27,6 @@ import tools.jackson.databind.json.JsonMapper;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.AmazonOpenSearchSigV4;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClassicHttpSupport;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchAuth;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchLogFormat;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchTlsSupport;
 
 /**
  * Routes search-destination connection tests to destination-specific client implementations.
@@ -81,15 +74,15 @@ public final class SearchConnectionTester {
         }
         String canonicalBaseUrl = endpoint.baseUrl();
         return switch (destination) {
-            case OPEN_SEARCH -> OpenSearchClientWrapper.safeTestConnection(
-                    canonicalBaseUrl, OpenSearchAuth.fromRuntime());
+            case OPEN_SEARCH -> SearchClientWrapper.safeTestConnection(
+                    canonicalBaseUrl, SearchAuth.fromRuntime());
             case OPEN_SEARCH_AMAZON -> safeTestOpenSearchAmazonConnection(canonicalBaseUrl);
             case ELASTICSEARCH -> safeTestElasticsearchConnection(canonicalBaseUrl);
         };
     }
 
     private static SearchConnectionStatus safeTestElasticsearchConnection(String baseUrl) {
-        OpenSearchAuth auth = elasticsearchAuthFromSession();
+        SearchAuth auth = elasticsearchAuthFromSession();
         if (!auth.isComplete()) {
             String msg = auth.validationMessage().replace("OpenSearch", "Elasticsearch");
             Logger.logWarnPanelOnly("[Elasticsearch] Test connection skipped: " + msg);
@@ -102,12 +95,12 @@ public final class SearchConnectionTester {
             String msg = rootMessage(e);
             Logger.logWarnPanelOnly("[Elasticsearch] Test connection failed for " + baseUrl + ": " + msg);
             return new SearchConnectionStatus("Elasticsearch", false, "", "", msg,
-                    "Failed", "Not tested", OpenSearchTlsSupport.failureTrustSummary(
+                    "Failed", "Not tested", SearchTlsSupport.failureTrustSummary(
                             baseUrl, msg, ConfigState.SearchDestination.ELASTICSEARCH));
         }
     }
 
-    private static SearchConnectionStatus testElasticsearchConnection(String baseUrl, OpenSearchAuth auth)
+    private static SearchConnectionStatus testElasticsearchConnection(String baseUrl, SearchAuth auth)
             throws GeneralSecurityException, IOException {
         Object restClient = null;
         try {
@@ -123,11 +116,11 @@ public final class SearchConnectionTester {
 
             RawHttpResult result = performElasticsearchRootGet(restClient, baseUrl, auth);
             if (result.statusCode() > 0) {
-                Logger.logDebug("[Elasticsearch] Request:\n" + OpenSearchLogFormat.indentRaw(result.requestForLog()));
-                String responseLog = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
+                Logger.logDebug("[Elasticsearch] Request:\n" + SearchLogFormat.indentRaw(result.requestForLog()));
+                String responseLog = SearchLogFormat.buildResponsePreviewWithHeaders(
                         result.body(), result.protocol(), result.statusCode(), result.reasonPhrase(),
                         result.responseHeaderLines());
-                Logger.logDebug("[Elasticsearch] Response:\n" + OpenSearchLogFormat.indentRaw(responseLog));
+                Logger.logDebug("[Elasticsearch] Response:\n" + SearchLogFormat.indentRaw(responseLog));
             }
             if (result.statusCode() != 200) {
                 String msg = result.statusCode() == 0
@@ -141,19 +134,19 @@ public final class SearchConnectionTester {
                 return new SearchConnectionStatus("Elasticsearch", false, "", "", msg,
                         "Failed", authStatusForHttpFailure(auth, result.statusCode()),
                         result.statusCode() == 0
-                                ? OpenSearchTlsSupport.failureTrustSummary(
+                                ? SearchTlsSupport.failureTrustSummary(
                                         baseUrl, msg, ConfigState.SearchDestination.ELASTICSEARCH)
-                                : OpenSearchTlsSupport.successTrustSummary(
+                                : SearchTlsSupport.successTrustSummary(
                                         baseUrl, ConfigState.SearchDestination.ELASTICSEARCH));
             }
             String version = elasticsearchVersionFromBody(result.body());
             String clusterUuid = clusterUuidFromBody(result.body());
-            String authStatus = auth.mode() == OpenSearchAuth.Mode.NONE ? "Not used" : "Successful";
+            String authStatus = auth.mode() == SearchAuth.Mode.NONE ? "Not used" : "Successful";
             Logger.logDebug("[Elasticsearch] Connection test succeeded: auth=" + authStatus
                     + ", version=" + version);
             return new SearchConnectionStatus("Elasticsearch", true, "", version, clusterUuid,
                     "Connection successful", "Success", authStatus,
-                    OpenSearchTlsSupport.successTrustSummary(baseUrl, ConfigState.SearchDestination.ELASTICSEARCH));
+                    SearchTlsSupport.successTrustSummary(baseUrl, ConfigState.SearchDestination.ELASTICSEARCH));
         } catch (ReflectiveOperationException e) {
             throw new IOException("Elasticsearch client invocation failed: " + rootMessage(e), e);
         } finally {
@@ -170,7 +163,7 @@ public final class SearchConnectionTester {
             List<String> responseHeaderLines) {
     }
 
-    private static RawHttpResult performElasticsearchRootGet(Object restClient, String baseUrl, OpenSearchAuth auth)
+    private static RawHttpResult performElasticsearchRootGet(Object restClient, String baseUrl, SearchAuth auth)
             throws ReflectiveOperationException, IOException {
         Class<?> requestClass = Class.forName("org.elasticsearch.client.Request");
         Object request = requestClass.getConstructor(String.class, String.class).newInstance("GET", "/");
@@ -184,8 +177,8 @@ public final class SearchConnectionTester {
                 return elasticsearchResponseToRawResult(errorResponse, baseUrl, auth);
             }
             Throwable cause = invocationCause == null ? e : invocationCause;
-            String requestForLog = OpenSearchLogFormat.formatRequestForLog(
-                    "GET", "/", baseUrl, OpenSearchLogFormat.parseProtocolFromException(cause),
+            String requestForLog = SearchLogFormat.formatRequestForLog(
+                    "GET", "/", baseUrl, SearchLogFormat.parseProtocolFromException(cause),
                     auth.redactedAuthorizationForLog());
             return new RawHttpResult(0, null, rootMessage(cause), "", requestForLog, List.of());
         }
@@ -204,7 +197,7 @@ public final class SearchConnectionTester {
     }
 
     private static RawHttpResult elasticsearchResponseToRawResult(
-            Object response, String baseUrl, OpenSearchAuth auth)
+            Object response, String baseUrl, SearchAuth auth)
             throws ReflectiveOperationException, IOException {
         Object statusLine = response.getClass().getMethod("getStatusLine").invoke(response);
         int statusCode = ((Number) statusLine.getClass().getMethod("getStatusCode").invoke(statusLine)).intValue();
@@ -212,7 +205,7 @@ public final class SearchConnectionTester {
         String protocol = protocolValue == null ? null : String.valueOf(protocolValue);
         Object reasonValue = statusLine.getClass().getMethod("getReasonPhrase").invoke(statusLine);
         String reason = reasonValue == null ? "" : String.valueOf(reasonValue);
-        String requestForLog = OpenSearchLogFormat.formatRequestForLog(
+        String requestForLog = SearchLogFormat.formatRequestForLog(
                 "GET", "/", baseUrl, protocol, auth.redactedAuthorizationForLog());
         return new RawHttpResult(
                 statusCode,
@@ -234,7 +227,7 @@ public final class SearchConnectionTester {
             }
             String name = String.valueOf(header.getClass().getMethod("getName").invoke(header));
             Object value = header.getClass().getMethod("getValue").invoke(header);
-            lines.add(name + ": " + (OpenSearchLogFormat.shouldRedactHeader(name)
+            lines.add(name + ": " + (SearchLogFormat.shouldRedactHeader(name)
                     ? "***"
                     : value == null ? "" : String.valueOf(value)));
         }
@@ -255,18 +248,18 @@ public final class SearchConnectionTester {
         }
     }
 
-    private static String authStatusForHttpFailure(OpenSearchAuth auth, int statusCode) {
+    private static String authStatusForHttpFailure(SearchAuth auth, int statusCode) {
         return switch (statusCode) {
             case 401, 403 -> "Failed";
             case 0 -> "Not tested";
-            default -> auth.mode() == OpenSearchAuth.Mode.NONE ? "Not used" : "Attempted";
+            default -> auth.mode() == SearchAuth.Mode.NONE ? "Not used" : "Attempted";
         };
     }
 
     /**
      * Returns the Amazon OpenSearch auth status line for Test Connection results.
      *
-     * <p>SigV4 is separate from {@link OpenSearchAuth.Mode}; when signing is enabled the UI must not
+     * <p>SigV4 is separate from {@link SearchAuth.Mode}; when signing is enabled the UI must not
      * report {@code Not used} merely because the auth mode is {@code NONE}.</p>
      *
      * @param auth resolved Amazon auth descriptor
@@ -276,7 +269,7 @@ public final class SearchConnectionTester {
      * @return status label for the Authentication result row
      */
     static String amazonAuthStatus(
-            OpenSearchAuth auth,
+            SearchAuth auth,
             boolean sigV4Enabled,
             int statusCode,
             boolean success) {
@@ -284,7 +277,7 @@ public final class SearchConnectionTester {
             if (sigV4Enabled) {
                 return "Successful";
             }
-            return auth.mode() == OpenSearchAuth.Mode.NONE ? "Not used" : "Successful";
+            return auth.mode() == SearchAuth.Mode.NONE ? "Not used" : "Successful";
         }
         if (sigV4Enabled) {
             return switch (statusCode) {
@@ -336,7 +329,7 @@ public final class SearchConnectionTester {
             ConfigState.OpenSearchAmazonOptions options = state == null || state.sinks() == null
                     ? ConfigState.defaultOpenSearchAmazonOptions()
                     : state.sinks().openSearchAmazonOptions();
-            OpenSearchAuth auth = OpenSearchAuth.fromRuntime(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON);
+            SearchAuth auth = SearchAuth.fromRuntime(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON);
             if (!auth.isComplete()) {
                 String msg = auth.validationMessage().replace("OpenSearch", "Amazon OpenSearch");
                 Logger.logWarnPanelOnly("[Amazon OpenSearch] Test connection skipped: " + msg);
@@ -356,26 +349,26 @@ public final class SearchConnectionTester {
             String msg = rootMessage(e);
             Logger.logWarnPanelOnly("[Amazon OpenSearch] Test connection failed for " + baseUrl + ": " + msg);
             // Transport/probe IO failures are connectivity/capacity, not authentication rejection.
-            OpenSearchAuth auth = OpenSearchAuth.fromRuntime(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON);
-            String authStatus = auth.mode() == OpenSearchAuth.Mode.NONE
+            SearchAuth auth = SearchAuth.fromRuntime(ConfigState.SearchDestination.OPEN_SEARCH_AMAZON);
+            String authStatus = auth.mode() == SearchAuth.Mode.NONE
                     && !AmazonOpenSearchSigV4.isEnabledForRuntime()
                     ? "Not used"
                     : "Attempted";
             return new SearchConnectionStatus("Amazon OpenSearch", false, "", "", msg,
-                    "Failed", authStatus, OpenSearchTlsSupport.failureTrustSummary(
+                    "Failed", authStatus, SearchTlsSupport.failureTrustSummary(
                             baseUrl, msg, ConfigState.SearchDestination.OPEN_SEARCH_AMAZON));
         }
     }
 
     private static SearchConnectionStatus testAmazonProbeGet(
             String baseUrl,
-            OpenSearchAuth auth,
+            SearchAuth auth,
             ConfigState.OpenSearchAmazonOptions options) throws IOException {
         String deployment = resolvedAmazonDeployment(baseUrl, options);
         String path = amazonProbePath(deployment);
         boolean sigV4 = AmazonOpenSearchSigV4.isEnabledForRuntime();
-        var client = OpenSearchConnector.getClassicHttpClient(baseUrl, auth);
-        HttpHost host = OpenSearchClassicHttpSupport.hostForBaseUrl(baseUrl);
+        var client = SearchConnector.getClassicHttpClient(baseUrl, auth);
+        HttpHost host = SearchClassicHttpSupport.hostForBaseUrl(baseUrl);
         HttpGet get = new HttpGet(path);
         auth.applyTo(get);
         String redactedAuth = auth.redactedAuthorizationForLog();
@@ -383,8 +376,8 @@ public final class SearchConnectionTester {
             AmazonOpenSearchSigV4.sign(get, "GET", baseUrl, path, new byte[0]);
             redactedAuth = AmazonOpenSearchSigV4.redactedAuthorizationForLog();
         }
-        String requestLog = OpenSearchLogFormat.formatRequestForLog("GET", path, baseUrl, null, redactedAuth);
-        Logger.logDebug("[Amazon OpenSearch] Request:\n" + OpenSearchLogFormat.indentRaw(requestLog));
+        String requestLog = SearchLogFormat.formatRequestForLog("GET", path, baseUrl, null, redactedAuth);
+        Logger.logDebug("[Amazon OpenSearch] Request:\n" + SearchLogFormat.indentRaw(requestLog));
         Logger.logDebug("[Amazon OpenSearch] Probe path=" + path
                 + ", deployment=" + deployment
                 + ", sigV4=" + sigV4);
@@ -398,10 +391,10 @@ public final class SearchConnectionTester {
             } catch (ParseException e) {
                 throw new IOException("Failed to parse Amazon OpenSearch response.", e);
             }
-            String responseLog = OpenSearchLogFormat.buildResponsePreviewWithHeaders(
+            String responseLog = SearchLogFormat.buildResponsePreviewWithHeaders(
                     body, response.getVersion() == null ? null : response.getVersion().toString(),
                     status, response.getReasonPhrase(), List.of());
-            Logger.logDebug("[Amazon OpenSearch] Response:\n" + OpenSearchLogFormat.indentRaw(responseLog));
+            Logger.logDebug("[Amazon OpenSearch] Response:\n" + SearchLogFormat.indentRaw(responseLog));
             boolean success = status >= 200 && status < 300;
             String authStatus = amazonAuthStatus(auth, sigV4, status, success);
             if (!success) {
@@ -419,7 +412,7 @@ public final class SearchConnectionTester {
                         + ", sigV4=" + sigV4);
                 return new SearchConnectionStatus("Amazon OpenSearch", false, "", "", msg,
                         "Failed", authStatus,
-                        OpenSearchTlsSupport.successTrustSummary(
+                        SearchTlsSupport.successTrustSummary(
                                 baseUrl, ConfigState.SearchDestination.OPEN_SEARCH_AMAZON));
             }
             String version = "/".equals(path) ? elasticsearchVersionFromBody(body) : "";
@@ -435,16 +428,16 @@ public final class SearchConnectionTester {
                     + ", version=" + (version.isBlank() ? "unknown" : version));
             return new SearchConnectionStatus("Amazon OpenSearch", true, "", version, clusterUuid, message,
                     "Success", authStatus,
-                    OpenSearchTlsSupport.successTrustSummary(
+                    SearchTlsSupport.successTrustSummary(
                             baseUrl, ConfigState.SearchDestination.OPEN_SEARCH_AMAZON));
         });
     }
 
-    private static OpenSearchAuth elasticsearchAuthFromSession() {
-        return OpenSearchAuth.fromRuntime(ConfigState.SearchDestination.ELASTICSEARCH);
+    private static SearchAuth elasticsearchAuthFromSession() {
+        return SearchAuth.fromRuntime(ConfigState.SearchDestination.ELASTICSEARCH);
     }
 
-    private static void applyElasticsearchSecurity(Object builder, String baseUrl, OpenSearchAuth auth, String tlsMode)
+    private static void applyElasticsearchSecurity(Object builder, String baseUrl, SearchAuth auth, String tlsMode)
             throws ReflectiveOperationException, GeneralSecurityException, IOException {
         if (auth != null && auth.usesAuthorizationHeader()) {
             Class<?> headerClass = Class.forName("org.apache.http.Header");
@@ -468,7 +461,7 @@ public final class SearchConnectionTester {
                             httpClientBuilder.getClass()
                                     .getMethod("setSSLContext", SSLContext.class)
                                     .invoke(httpClientBuilder, sslContext);
-                            if (OpenSearchTlsSupport.isInsecureMode(tlsMode)) {
+                            if (SearchTlsSupport.isInsecureMode(tlsMode)) {
                                 HostnameVerifier trustAllHostnames = (hostname, session) -> true;
                                 httpClientBuilder.getClass()
                                         .getMethod("setSSLHostnameVerifier", HostnameVerifier.class)
@@ -485,25 +478,25 @@ public final class SearchConnectionTester {
         }
     }
 
-    private static boolean requiresElasticsearchTlsCallback(String baseUrl, OpenSearchAuth auth, String tlsMode) {
+    private static boolean requiresElasticsearchTlsCallback(String baseUrl, SearchAuth auth, String tlsMode) {
         boolean https = baseUrl != null && baseUrl.trim().toLowerCase(java.util.Locale.ROOT).startsWith("https://");
         if (!https) {
             return false;
         }
-        boolean certificateAuth = auth != null && auth.mode() == OpenSearchAuth.Mode.CERTIFICATE;
-        return certificateAuth || OpenSearchTlsSupport.isInsecureMode(tlsMode)
-                || OpenSearchTlsSupport.isPinnedMode(tlsMode);
+        boolean certificateAuth = auth != null && auth.mode() == SearchAuth.Mode.CERTIFICATE;
+        return certificateAuth || SearchTlsSupport.isInsecureMode(tlsMode)
+                || SearchTlsSupport.isPinnedMode(tlsMode);
     }
 
-    private static SSLContext sslContextForElasticsearch(OpenSearchAuth auth, String tlsMode)
+    private static SSLContext sslContextForElasticsearch(SearchAuth auth, String tlsMode)
             throws GeneralSecurityException, IOException {
         SSLContextBuilder sslBuilder = isPinnedTlsMode(tlsMode)
-                ? OpenSearchTlsSupport.pinnedSslContextBuilder(ConfigState.SearchDestination.ELASTICSEARCH)
+                ? SearchTlsSupport.pinnedSslContextBuilder(ConfigState.SearchDestination.ELASTICSEARCH)
                 : SSLContextBuilder.create();
-        if (OpenSearchTlsSupport.isInsecureMode(tlsMode)) {
+        if (SearchTlsSupport.isInsecureMode(tlsMode)) {
             sslBuilder.loadTrustMaterial(null, (chain, authType) -> true);
         }
-        if (auth != null && auth.mode() == OpenSearchAuth.Mode.CERTIFICATE) {
+        if (auth != null && auth.mode() == SearchAuth.Mode.CERTIFICATE) {
             auth.loadClientKeyMaterial(sslBuilder);
         }
         return sslBuilder.build();
@@ -518,7 +511,7 @@ public final class SearchConnectionTester {
     }
 
     private static boolean isPinnedTlsMode(String tlsMode) {
-        return OpenSearchTlsSupport.isPinnedMode(tlsMode);
+        return SearchTlsSupport.isPinnedMode(tlsMode);
     }
 
     private static String elasticsearchVersionFromBody(String body) {

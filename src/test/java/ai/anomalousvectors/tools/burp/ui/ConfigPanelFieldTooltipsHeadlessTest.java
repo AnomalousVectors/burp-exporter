@@ -83,7 +83,7 @@ class ConfigPanelFieldTooltipsHeadlessTest {
             assertThat(findingsLabel.getToolTipText())
                     .isEqualTo("<html><b>Findings fields</b><br>Configure fields exported to the Findings index.<br>The index name can be customized from the Index Base Name field.<br>These fields cover Burp findings (aka issues) documents.</html>");
             assertThat(findingsExpand.getToolTipText()).isEqualTo("<html>Show or hide Findings field options.</html>");
-            assertThat(baseTemplateField.getToolTipText()).contains("Shared base used to derive all OpenSearch index names");
+            assertThat(baseTemplateField.getToolTipText()).contains("Shared base used to derive all search database index names");
             assertThat(baseTemplateField.getToolTipText()).contains("Enter only the shared base");
             assertThat(baseTemplateField.getToolTipText()).contains("${now:yyyyMMdd}");
             assertThat(baseTemplateField.getToolTipText()).contains("{NOW}");
@@ -126,7 +126,7 @@ class ConfigPanelFieldTooltipsHeadlessTest {
             assertThat(trafficResponseStatusCode.getText()).isEqualTo("Code");
             assertThat(trafficResponseStatusCode.getToolTipText())
                     .contains("<b>Description:</b>")
-                    .contains("Obtain the HTTP status code contained in the response.")
+                    .contains("HTTP response status code", "0 means no response was available")
                     .contains("<b>Source")
                     .contains("HttpResponse.statusCode()")
                     .contains("orphan docs use sentinel response.status.code=0");

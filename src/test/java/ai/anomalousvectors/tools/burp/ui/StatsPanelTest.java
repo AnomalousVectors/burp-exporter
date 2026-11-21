@@ -395,12 +395,12 @@ class StatsPanelTest {
             JPanel osFileChartsSection = JPanel.class.cast(get(openSearchOnlyPanel, "fileChartsSectionPanel"));
             JPanel osOpenSearchChartsSection = JPanel.class.cast(get(openSearchOnlyPanel, "openSearchChartsSectionPanel"));
             JPanel osFileSinkRow = JPanel.class.cast(get(openSearchOnlyPanel, "fileSinkRow"));
-            JPanel osOpenSearchSinkRow = JPanel.class.cast(get(openSearchOnlyPanel, "openSearchSinkRow"));
+            JPanel osSearchSinkRow = JPanel.class.cast(get(openSearchOnlyPanel, "openSearchSinkRow"));
             onEdt(() -> call(openSearchOnlyPanel, "refreshDashboard"));
             assertThat(onEdt(osFileChartsSection::isVisible)).isFalse();
             assertThat(onEdt(osOpenSearchChartsSection::isVisible)).isTrue();
             assertThat(onEdt(osFileSinkRow::isVisible)).isFalse();
-            assertThat(onEdt(osOpenSearchSinkRow::isVisible)).isTrue();
+            assertThat(onEdt(osSearchSinkRow::isVisible)).isTrue();
         } finally {
             RuntimeConfig.updateState(previous);
         }

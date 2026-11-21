@@ -988,7 +988,7 @@ public final class Json {
         String os = textIfNotBlank(openSearchNode.get("url"));
         String tlsMode = ConfigState.normalizeOpenSearchTlsMode(textOrNull(openSearchNode.get("tlsMode")));
         JsonNode authNode = openSearchNode.path("auth");
-        String authType = validateAndResolveOpenSearchAuthType(authNode, "sinks.database.openSearch.auth.type");
+        String authType = validateAndResolveSearchAuthType(authNode, "sinks.database.openSearch.auth.type");
         String username = textOrNull(authNode.get("username"));
         JsonNode pinnedTlsNode = openSearchNode.path("pinnedTlsCertificate");
         ConfigState.OpenSearchOptions openSearchOptions = new ConfigState.OpenSearchOptions(
@@ -999,7 +999,7 @@ public final class Json {
                 textOrNull(pinnedTlsNode.get("sourcePath")),
                 textOrNull(pinnedTlsNode.get("fingerprintSha256")),
                 textOrNull(pinnedTlsNode.get("encodedBase64")));
-        validateOpenSearchAuthFieldCombination(
+        validateSearchAuthFieldCombination(
                 "sinks.database.openSearch.auth", authType, username, openSearchOptions);
 
         JsonNode awsNode = databaseNode.path("openSearchAmazon");
@@ -1023,7 +1023,7 @@ public final class Json {
 
         JsonNode elasticNode = databaseNode.path("elasticsearch");
         JsonNode elasticAuthNode = elasticNode.path("auth");
-        String elasticAuthType = validateAndResolveOpenSearchAuthType(
+        String elasticAuthType = validateAndResolveSearchAuthType(
                 elasticAuthNode,
                 "sinks.database.elasticsearch.auth.type");
         String elasticUsername = textOrNull(elasticAuthNode.get("username"));
@@ -1171,7 +1171,7 @@ public final class Json {
         return trimmed;
     }
 
-    private static String validateAndResolveOpenSearchAuthType(JsonNode authNode, String path) throws IOException {
+    private static String validateAndResolveSearchAuthType(JsonNode authNode, String path) throws IOException {
         String rawAuthType = textOrNull(authNode.get("type"));
         if (rawAuthType == null || rawAuthType.isBlank()) {
             return ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE;
@@ -1197,7 +1197,7 @@ public final class Json {
         return normalizedAuthType;
     }
 
-    private static void validateOpenSearchAuthFieldCombination(
+    private static void validateSearchAuthFieldCombination(
             String authPath,
             String authType,
             String username,

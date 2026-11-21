@@ -6,6 +6,19 @@ import org.junit.jupiter.api.Test;
 
 class ProxyTrafficSourceTooltipsTest {
     @Test
+    void groupHelpDistinguishesLiveMetadataAndCaptureLimits() {
+        assertThat(ExportFieldSectionTooltips.sectionTooltipFor("traffic", "burp.proxy"))
+                .contains("Live Proxy HTTP", "listener port", "History-backed")
+                .doesNotContain("not used for live");
+        assertThat(ExportFieldSectionTooltips.sectionTooltipFor("traffic", "websocket"))
+                .contains("live callbacks leave them unknown");
+        assertThat(ExportFieldSectionTooltips.sectionTooltipFor("traffic", "response.body"))
+                .contains("Video payloads are omitted in both destinations", "database size fitting");
+        assertThat(ExportFieldTooltipsTraffic.trafficTooltip("burp.timing.req_sent_to_res_start"))
+                .contains("History-backed live streams", "callback observations and WebSocket docs write null");
+    }
+
+    @Test
     void fieldSources_distinguishPayloadDirectionsAndAllIdNamespaces() {
         assertThat(ExportFieldTooltipsTraffic.trafficTooltip("burp.message_id"))
                 .contains("native Proxy messageId()", "general HTTP messageId()",

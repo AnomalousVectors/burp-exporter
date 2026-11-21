@@ -23,7 +23,7 @@ class SingleDocOutcomeRecorderTest {
     }
 
     @Test
-    void record_success_leavesCountersToOpenSearchClientWrapper() {
+    void record_success_leavesCountersToSearchClientWrapper() {
         SingleDocOutcomeRecorder.record("exporter", true, true, "should-be-ignored");
 
         assertThat(ExportStats.getSuccessCount("exporter")).isZero();

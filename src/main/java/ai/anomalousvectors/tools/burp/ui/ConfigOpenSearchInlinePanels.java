@@ -263,9 +263,9 @@ final class ConfigOpenSearchInlinePanels {
                 "Select how OpenSearch HTTPS server certificates are trusted.",
                 "",
                 "<b>Verify</b>",
-                "&nbsp;&nbsp;Use the JVM/system trust store. Recommended for production.",
+                "&nbsp;&nbsp;Use the JVM trust store. Recommended for production.",
                 "<b>Trust pinned certificate</b>",
-                "&nbsp;&nbsp;Trust only an imported X.509 server certificate for this Burp session.",
+                "&nbsp;&nbsp;Trust the imported X.509 server certificate for this Burp session; hostname verification remains enabled.",
                 "<b>Trust all certificates</b>",
                 "&nbsp;&nbsp;Disable verification. Lab/testing only; allows man-in-the-middle interception.");
         String importTip = Tooltips.htmlRaw(

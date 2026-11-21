@@ -1,0 +1,620 @@
+package ai.anomalousvectors.tools.burp.utils.search;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.GeneralSecurityException;
+import java.security.KeyFactory;
+import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+
+import javax.crypto.EncryptedPrivateKeyInfo;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.security.auth.DestroyFailedException;
+
+import org.apache.hc.core5.http.Header;
+import org.apache.hc.core5.http.HttpHeaders;
+import org.apache.hc.core5.http.HttpRequest;
+import org.apache.hc.core5.http.io.support.ClassicRequestBuilder;
+import org.apache.hc.core5.http.message.BasicHeader;
+import org.apache.hc.core5.ssl.SSLContextBuilder;
+
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
+
+/**
+ * Runtime search database authentication material resolved from UI config and session credentials.
+ *
+ * <p>Instances are immutable and safe to share across transport threads. They may retain raw
+ * passwords, tokens, private-key passphrases, and credential file paths; callers must not log,
+ * serialize, or persist an instance or values returned by secret-bearing methods.</p>
+ */
+public final class SearchAuth {
+    static final int MAX_CLIENT_AUTH_FILE_BYTES = 10 * 1024 * 1024;
+
+    /** Supported HTTP authentication modes for search database destinations. */
+    public enum Mode {
+        NONE,
+        BASIC,
+        API_KEY,
+        BEARER_TOKEN,
+        CERTIFICATE
+    }
+
+    private final Mode mode;
+    private final String username;
+    private final String password;
+    private final String token;
+    private final String certificatePath;
+    private final String keyPath;
+    private final String keyPassphrase;
+
+    private SearchAuth(
+            Mode mode,
+            String username,
+            String password,
+            String token,
+            String certificatePath,
+            String keyPath,
+            String keyPassphrase) {
+        this.mode = mode == null ? Mode.NONE : mode;
+        this.username = credentialValue(username);
+        this.password = credentialValue(password);
+        this.token = credentialValue(token);
+        this.certificatePath = normalizedPath(certificatePath);
+        this.keyPath = normalizedPath(keyPath);
+        this.keyPassphrase = credentialValue(keyPassphrase);
+    }
+
+    /**
+     * Returns an unauthenticated search database auth descriptor.
+     *
+     * @return complete descriptor with mode {@link Mode#NONE}
+     */
+    public static SearchAuth none() {
+        return new SearchAuth(Mode.NONE, "", "", "", "", "", "");
+    }
+
+    /**
+     * Returns a Basic authentication descriptor.
+     *
+     * @param username username; {@code null} is normalized to blank
+     * @param password sensitive password; {@code null} is normalized to blank
+     * @return immutable Basic authentication descriptor
+     */
+    public static SearchAuth basic(String username, String password) {
+        return new SearchAuth(Mode.BASIC, username, password, "", "", "", "");
+    }
+
+    /**
+     * Returns Basic authentication when both credential values are present, otherwise no auth.
+     *
+     * <p>Credentials are opaque: whitespace is preserved and counts as present. Only null or the
+     * empty string disables authentication.</p>
+     *
+     * @param username Basic username; {@code null} or empty disables authentication
+     * @param password sensitive Basic password; {@code null} or empty disables authentication
+     * @return immutable Basic descriptor or {@link Mode#NONE} descriptor
+     */
+    public static SearchAuth basicOrNone(String username, String password) {
+        return username == null || username.isEmpty() || password == null || password.isEmpty()
+                ? none()
+                : basic(username, password);
+    }
+
+    /**
+     * Returns an API-key authentication descriptor.
+     *
+     * @param token sensitive API-key token; {@code null} is normalized to blank
+     * @return immutable API-key authentication descriptor
+     */
+    public static SearchAuth apiKey(String token) {
+        return new SearchAuth(Mode.API_KEY, "", "", token, "", "", "");
+    }
+
+    /**
+     * Returns a bearer-token authentication descriptor.
+     *
+     * @param token sensitive bearer token; {@code null} is normalized to blank
+     * @return immutable bearer-token authentication descriptor
+     */
+    public static SearchAuth bearerToken(String token) {
+        return new SearchAuth(Mode.BEARER_TOKEN, "", "", token, "", "", "");
+    }
+
+    /**
+     * Returns a client-certificate authentication descriptor.
+     *
+     * @param certificatePath certificate path; {@code null} is normalized to blank
+     * @param keyPath private-key path; {@code null} is normalized to blank
+     * @param keyPassphrase sensitive private-key passphrase; {@code null} becomes blank
+     * @return immutable client-certificate authentication descriptor
+     */
+    public static SearchAuth certificate(String certificatePath, String keyPath, String keyPassphrase) {
+        return new SearchAuth(Mode.CERTIFICATE, "", "", "", certificatePath, keyPath, keyPassphrase);
+    }
+
+    /**
+     * Resolves upstream OpenSearch authentication from runtime and session state.
+     *
+     * @return immutable descriptor for the current upstream OpenSearch configuration
+     */
+    public static SearchAuth fromRuntime() {
+        return fromRuntime(ConfigState.SearchDestination.OPEN_SEARCH);
+    }
+
+    /**
+     * Resolves authentication for a database destination from runtime and session state.
+     *
+     * <p>The method reads credential material from {@link SecureCredentialStore}; it performs no
+     * network I/O and does not validate whether the resolved credentials are accepted.</p>
+     *
+     * @param destination destination to resolve; {@code null} selects upstream OpenSearch
+     * @return immutable descriptor, possibly incomplete when session credentials are absent
+     */
+    public static SearchAuth fromRuntime(ConfigState.SearchDestination destination) {
+        ConfigState.SearchDestination selected = destination == null
+                ? ConfigState.SearchDestination.OPEN_SEARCH
+                : destination;
+        if (selected == ConfigState.SearchDestination.ELASTICSEARCH) {
+            return elasticsearchFromRuntime();
+        }
+        if (selected == ConfigState.SearchDestination.OPEN_SEARCH_AMAZON) {
+            return amazonOpenSearchFromRuntime();
+        }
+        ConfigState.State state = RuntimeConfig.getState();
+        ConfigState.OpenSearchOptions options = state == null || state.sinks() == null
+                ? ConfigState.defaultOpenSearchOptions()
+                : state.sinks().openSearchOptions();
+        String authType = options == null ? ConfigState.DEFAULT_OPEN_SEARCH_AUTH_TYPE : options.authType();
+        return switch (ConfigState.normalizeSearchAuthType(authType)) {
+            case "Basic" -> new SearchAuth(
+                    Mode.BASIC,
+                    RuntimeConfig.openSearchUser(),
+                    RuntimeConfig.openSearchPassword(),
+                    "",
+                    "",
+                    "",
+                    "");
+            case "API key" -> {
+                SecureCredentialStore.ApiKeyCredentials apiKey = SecureCredentialStore.loadApiKeyCredentials();
+                yield new SearchAuth(Mode.API_KEY, "", "", apiKey.token(), "", "", "");
+            }
+            case "Bearer token" -> {
+                SecureCredentialStore.JwtCredentials jwt = SecureCredentialStore.loadJwtCredentials();
+                yield new SearchAuth(Mode.BEARER_TOKEN, "", "", jwt.token(), "", "", "");
+            }
+            case "Certificate" -> {
+                SecureCredentialStore.CertificateCredentials cert = SecureCredentialStore.loadCertificateCredentials();
+                yield new SearchAuth(
+                        Mode.CERTIFICATE,
+                        "",
+                        "",
+                        "",
+                        cert.certPath(),
+                        cert.keyPath(),
+                        cert.passphrase());
+            }
+            default -> none();
+        };
+    }
+
+    private static SearchAuth elasticsearchFromRuntime() {
+        ConfigState.State state = RuntimeConfig.getState();
+        ConfigState.ElasticsearchOptions options = state == null || state.sinks() == null
+                ? ConfigState.defaultElasticsearchOptions()
+                : state.sinks().elasticSearchOptions();
+        String destination = ConfigState.SearchDestination.ELASTICSEARCH.configKey();
+        return switch (ConfigState.normalizeElasticsearchAuthType(options.authType())) {
+            case "Basic" -> {
+                SecureCredentialStore.BasicCredentials basic =
+                        SecureCredentialStore.loadBasicCredentials(destination);
+                String username = options.username().isEmpty() ? basic.username() : options.username();
+                yield basic(username, basic.password());
+            }
+            case "API key" -> apiKey(SecureCredentialStore.loadApiKeyCredentials(destination).token());
+            case "Bearer token" -> bearerToken(SecureCredentialStore.loadJwtCredentials(destination).token());
+            case "Certificate" -> {
+                SecureCredentialStore.CertificateCredentials cert =
+                        SecureCredentialStore.loadCertificateCredentials(destination);
+                String certPath = options.certPath().isBlank() ? cert.certPath() : options.certPath();
+                String keyPath = options.certKeyPath().isBlank() ? cert.keyPath() : options.certKeyPath();
+                yield certificate(certPath, keyPath, cert.passphrase());
+            }
+            default -> none();
+        };
+    }
+
+    private static SearchAuth amazonOpenSearchFromRuntime() {
+        ConfigState.State state = RuntimeConfig.getState();
+        ConfigState.OpenSearchAmazonOptions options = state == null || state.sinks() == null
+                ? ConfigState.defaultOpenSearchAmazonOptions()
+                : state.sinks().openSearchAmazonOptions();
+        String destination = ConfigState.SearchDestination.OPEN_SEARCH_AMAZON.configKey();
+        return switch (ConfigState.normalizeOpenSearchAmazonAuthType(options.authType())) {
+            case "Basic" -> {
+                SecureCredentialStore.BasicCredentials basic =
+                        SecureCredentialStore.loadBasicCredentials(destination);
+                String username = options.username().isEmpty() ? basic.username() : options.username();
+                yield basic(username, basic.password());
+            }
+            default -> none();
+        };
+    }
+
+    /**
+     * Returns the selected authentication mode.
+     *
+     * @return non-null authentication mode
+     */
+    public Mode mode() {
+        return mode;
+    }
+
+    /**
+     * Returns whether this descriptor has the fields required by its selected mode.
+     *
+     * @return {@code true} when required credential values are non-empty and paths are non-blank
+     */
+    public boolean isComplete() {
+        return switch (mode) {
+            case NONE -> true;
+            case BASIC -> !username.isEmpty() && !password.isEmpty();
+            case API_KEY, BEARER_TOKEN -> !token.isEmpty();
+            case CERTIFICATE -> !certificatePath.isBlank() && !keyPath.isBlank();
+        };
+    }
+
+    /**
+     * Returns a validation message for missing authentication material.
+     *
+     * @return blank when {@link #isComplete()} is true; otherwise an operator-facing message
+     */
+    public String validationMessage() {
+        return switch (mode) {
+            case NONE -> "";
+            case BASIC -> isComplete() ? "" : "Basic auth requires username and password.";
+            case API_KEY -> isComplete() ? "" : "API key auth requires an API key.";
+            case BEARER_TOKEN -> isComplete() ? "" : "Bearer token auth requires a bearer token.";
+            case CERTIFICATE -> isComplete() ? "" : "Certificate auth requires a certificate path and private key path.";
+        };
+    }
+
+    /**
+     * Returns whether requests carry an {@code Authorization} header.
+     *
+     * @return {@code true} for Basic, API-key, and bearer-token modes
+     */
+    public boolean usesAuthorizationHeader() {
+        return mode == Mode.BASIC || mode == Mode.API_KEY || mode == Mode.BEARER_TOKEN;
+    }
+
+    /**
+     * Returns the redacted authorization label used in request logs.
+     *
+     * @return scheme and redaction marker, or blank for non-header modes; never a raw secret
+     */
+    public String redactedAuthorizationForLog() {
+        return switch (mode) {
+            case BASIC -> "Basic ***";
+            case API_KEY -> "ApiKey ***";
+            case BEARER_TOKEN -> "Bearer ***";
+            default -> "";
+        };
+    }
+
+    /**
+     * Returns the raw {@code Authorization} header value for header-based modes.
+     *
+     * <p>The result is sensitive credential material. Callers may attach it to an outbound request
+     * but must not log, serialize, cache separately, or expose it in UI text.</p>
+     *
+     * @return raw header value, or blank for modes without an Authorization header
+     */
+    public String authorizationHeaderValue() {
+        Header header = authorizationHeader();
+        return header == null ? "" : header.getValue();
+    }
+
+    /**
+     * Returns a cache-safe discriminator that never includes raw secret values.
+     *
+     * <p>Secret fields are represented by one-way fingerprints. Certificate and key paths remain
+     * visible in the result, so it is suitable for internal cache keys but not operator logs.</p>
+     *
+     * @return stable discriminator for transport-cache partitioning
+     */
+    public String cacheKey() {
+        return switch (mode) {
+            case NONE -> "auth=none";
+            case BASIC -> "auth=basic:" + fingerprint(username + ":" + password);
+            case API_KEY -> "auth=apikey:" + fingerprint(token);
+            case BEARER_TOKEN -> "auth=bearer:" + fingerprint(token);
+            case CERTIFICATE -> "auth=certificate:" + certificatePath + "|" + keyPath
+                    + "|pass=" + fingerprint(keyPassphrase);
+        };
+    }
+
+    /**
+     * Returns default HTTP headers for header-based authentication.
+     *
+     * <p>Returned header values contain sensitive credentials and must not be logged.</p>
+     *
+     * @return new header array, empty when the selected mode does not use a header
+     */
+    public Header[] defaultHeaders() {
+        return authorizationHeader() == null ? new Header[0] : new Header[] { authorizationHeader() };
+    }
+
+    /**
+     * Applies authentication headers to a classic request builder.
+     *
+     * @param builder mutable builder that receives the sensitive Authorization header
+     * @throws NullPointerException if {@code builder} is {@code null} and a header is required
+     */
+    public void applyTo(ClassicRequestBuilder builder) {
+        Header header = authorizationHeader();
+        if (header != null) {
+            builder.setHeader(header);
+        }
+    }
+
+    /**
+     * Applies authentication headers to a classic request.
+     *
+     * @param request mutable request that receives the sensitive Authorization header
+     * @throws NullPointerException if {@code request} is {@code null} and a header is required
+     */
+    public void applyTo(HttpRequest request) {
+        Header header = authorizationHeader();
+        if (header != null) {
+            request.setHeader(header);
+        }
+    }
+
+    /**
+     * Loads selected client-certificate key material into an SSL context builder.
+     *
+     * <p>The method performs blocking file and cryptographic I/O on the calling thread. It is a
+     * no-op for modes other than {@link Mode#CERTIFICATE}. Each selected certificate or private-key
+     * file is limited to 10 MiB before parsing.</p>
+     *
+     * @param builder mutable SSL context builder that receives key material
+     * @throws GeneralSecurityException if credentials are incomplete or key material is invalid
+     * @throws IOException if certificate or private-key files cannot be read
+     * @throws NullPointerException if {@code builder} is null in certificate mode
+     */
+    public void loadClientKeyMaterial(SSLContextBuilder builder) throws GeneralSecurityException, IOException {
+        if (mode != Mode.CERTIFICATE) {
+            return;
+        }
+        if (!isComplete()) {
+            throw new GeneralSecurityException(validationMessage());
+        }
+        Path selectedCertificate = Path.of(certificatePath);
+        Path selectedPrivateKey = Path.of(keyPath);
+        validateSelectedFileSize(selectedCertificate, "Client certificate");
+        validateSelectedFileSize(selectedPrivateKey, "Client private key");
+        KeyStore keyStore = KeyStore.getInstance("PKCS12");
+        char[] passphrase = keyPassphrase.toCharArray();
+        try {
+            keyStore.load(null, new char[0]);
+            Certificate certificate = readCertificate(selectedCertificate);
+            PrivateKey privateKey = readPrivateKey(selectedPrivateKey, passphrase);
+            keyStore.setKeyEntry("opensearch-client", privateKey, passphrase, new Certificate[] { certificate });
+            builder.loadKeyMaterial(keyStore, passphrase);
+        } finally {
+            Arrays.fill(passphrase, '\0');
+        }
+    }
+
+    private Header authorizationHeader() {
+        if (!isComplete()) {
+            return null;
+        }
+        return switch (mode) {
+            case BASIC -> new BasicHeader(HttpHeaders.AUTHORIZATION, basicHeaderValue());
+            case API_KEY -> new BasicHeader(HttpHeaders.AUTHORIZATION, "ApiKey " + token);
+            case BEARER_TOKEN -> new BasicHeader(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+            default -> null;
+        };
+    }
+
+    private String basicHeaderValue() {
+        byte[] credentialBytes = (username + ":" + password).getBytes(StandardCharsets.UTF_8);
+        try {
+            return "Basic " + Base64.getEncoder().encodeToString(credentialBytes);
+        } finally {
+            Arrays.fill(credentialBytes, (byte) 0);
+        }
+    }
+
+    private static Certificate readCertificate(Path path) throws IOException, GeneralSecurityException {
+        byte[] certificateBytes = readBoundedFile(path, "Client certificate");
+        try (var input = new ByteArrayInputStream(certificateBytes)) {
+            return CertificateFactory.getInstance("X.509").generateCertificate(input);
+        } finally {
+            Arrays.fill(certificateBytes, (byte) 0);
+        }
+    }
+
+    private static PrivateKey readPrivateKey(Path path, char[] passphrase) throws IOException, GeneralSecurityException {
+        byte[] keyBytes = readBoundedFile(path, "Client private key");
+        byte[] encoded = null;
+        try {
+            boolean rsaPkcs1 = isPemBlock(keyBytes, "RSA PRIVATE KEY");
+            encoded = decodePemOrDer(keyBytes);
+            if (rsaPkcs1) {
+                byte[] wrapped = wrapRsaPkcs1Key(encoded);
+                try {
+                    return KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(wrapped));
+                } catch (GeneralSecurityException e) {
+                    // Continue through the common failure path so callers get a consistent error.
+                } finally {
+                    Arrays.fill(wrapped, (byte) 0);
+                }
+            }
+            GeneralSecurityException last = null;
+            for (String algorithm : List.of("RSA", "EC", "DSA")) {
+                try {
+                    return KeyFactory.getInstance(algorithm).generatePrivate(new PKCS8EncodedKeySpec(encoded));
+                } catch (GeneralSecurityException e) {
+                    last = e;
+                }
+            }
+            if (passphrase != null && passphrase.length > 0) {
+                PBEKeySpec passwordSpec = new PBEKeySpec(passphrase);
+                SecretKey secretKey = null;
+                try {
+                    EncryptedPrivateKeyInfo encrypted = new EncryptedPrivateKeyInfo(encoded);
+                    SecretKeyFactory factory = SecretKeyFactory.getInstance(encrypted.getAlgName());
+                    secretKey = factory.generateSecret(passwordSpec);
+                    PKCS8EncodedKeySpec keySpec = encrypted.getKeySpec(secretKey);
+                    for (String algorithm : List.of("RSA", "EC", "DSA")) {
+                        try {
+                            return KeyFactory.getInstance(algorithm).generatePrivate(keySpec);
+                        } catch (GeneralSecurityException e) {
+                            last = e;
+                        }
+                    }
+                } catch (GeneralSecurityException e) {
+                    last = e;
+                } finally {
+                    passwordSpec.clearPassword();
+                    destroySecretKey(secretKey);
+                }
+            }
+            throw new GeneralSecurityException("Unsupported or unreadable PKCS#8 private key.", last);
+        } finally {
+            Arrays.fill(keyBytes, (byte) 0);
+            if (encoded != null && encoded != keyBytes) {
+                Arrays.fill(encoded, (byte) 0);
+            }
+        }
+    }
+
+    static byte[] readBoundedFile(Path path, String description) throws IOException {
+        validateSelectedFileSize(path, description);
+        try (var input = Files.newInputStream(path)) {
+            byte[] bytes = input.readNBytes(MAX_CLIENT_AUTH_FILE_BYTES + 1);
+            if (bytes.length > MAX_CLIENT_AUTH_FILE_BYTES) {
+                Arrays.fill(bytes, (byte) 0);
+                throw fileTooLarge(path, description);
+            }
+            return bytes;
+        }
+    }
+
+    private static void validateSelectedFileSize(Path path, String description) throws IOException {
+        if (Files.size(path) > MAX_CLIENT_AUTH_FILE_BYTES) {
+            throw fileTooLarge(path, description);
+        }
+    }
+
+    private static IOException fileTooLarge(Path path, String description) {
+        return new IOException(description + " exceeds the 10 MiB limit: " + path);
+    }
+
+    private static void destroySecretKey(SecretKey secretKey) {
+        if (secretKey == null) {
+            return;
+        }
+        try {
+            secretKey.destroy();
+        } catch (DestroyFailedException ignored) {
+            // Some JCA providers do not support active destruction of generated secret keys.
+        }
+    }
+
+    private static boolean isPemBlock(byte[] bytes, String label) {
+        String text = new String(bytes, StandardCharsets.US_ASCII);
+        return text.contains("-----BEGIN " + label + "-----");
+    }
+
+    private static byte[] decodePemOrDer(byte[] bytes) {
+        String text = new String(bytes, StandardCharsets.US_ASCII);
+        if (!text.contains("-----BEGIN")) {
+            return bytes;
+        }
+        String base64 = text.replaceAll("-----BEGIN [^-]+-----", "")
+                .replaceAll("-----END [^-]+-----", "")
+                .replaceAll("\\s+", "");
+        return Base64.getDecoder().decode(base64);
+    }
+
+    private static byte[] wrapRsaPkcs1Key(byte[] pkcs1) throws IOException {
+        byte[] version = new byte[] { 0x02, 0x01, 0x00 };
+        byte[] algorithmIdentifier = new byte[] {
+                0x30, 0x0d,
+                0x06, 0x09,
+                0x2a, (byte) 0x86, 0x48, (byte) 0x86, (byte) 0xf7, 0x0d, 0x01, 0x01, 0x01,
+                0x05, 0x00 };
+        byte[] privateKey = der(0x04, pkcs1);
+        return der(0x30, concat(version, algorithmIdentifier, privateKey));
+    }
+
+    private static byte[] der(int tag, byte[] payload) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        out.write(tag);
+        writeDerLength(out, payload.length);
+        out.write(payload);
+        return out.toByteArray();
+    }
+
+    private static void writeDerLength(ByteArrayOutputStream out, int length) {
+        if (length < 0x80) {
+            out.write(length);
+            return;
+        }
+        int bytes = Integer.BYTES - Integer.numberOfLeadingZeros(length) / Byte.SIZE;
+        out.write(0x80 | bytes);
+        for (int shift = (bytes - 1) * Byte.SIZE; shift >= 0; shift -= Byte.SIZE) {
+            out.write((length >> shift) & 0xff);
+        }
+    }
+
+    private static byte[] concat(byte[]... values) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        for (byte[] value : values) {
+            out.write(value);
+        }
+        return out.toByteArray();
+    }
+
+    private static String fingerprint(String value) {
+        byte[] bytes = value == null ? new byte[0] : value.getBytes(StandardCharsets.UTF_8);
+        byte[] digest = null;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+            return new BigInteger(1, digest).toString(16);
+        } catch (GeneralSecurityException e) {
+            return Integer.toHexString(java.util.Arrays.hashCode(bytes));
+        } finally {
+            Arrays.fill(bytes, (byte) 0);
+            if (digest != null) {
+                Arrays.fill(digest, (byte) 0);
+            }
+        }
+    }
+
+    private static String credentialValue(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String normalizedPath(String value) {
+        return value == null ? "" : value.trim();
+    }
+}

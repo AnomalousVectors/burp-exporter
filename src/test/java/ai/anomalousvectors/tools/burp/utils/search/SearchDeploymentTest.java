@@ -56,19 +56,19 @@ class SearchDeploymentTest {
     }
 
     @Test
-    void amazonOpenSearchAuthTypesForUrl_hidesBasicForServerless() {
-        assertThat(SearchDeployment.amazonOpenSearchAuthTypesForUrl(
+    void amazonSearchAuthTypesForUrl_hidesBasicForServerless() {
+        assertThat(SearchDeployment.amazonSearchAuthTypesForUrl(
                 "https://00000000000000abc123.us-east-1.aoss.amazonaws.com",
                 ConfigState.DEPLOYMENT_AUTO))
                 .containsExactly(
                         ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE,
                         ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC)
                 .doesNotContain("Basic");
-        assertThat(SearchDeployment.amazonOpenSearchAuthTypesForUrl(
+        assertThat(SearchDeployment.amazonSearchAuthTypesForUrl(
                 "https://search-example.us-east-1.es.amazonaws.com",
                 ConfigState.DEPLOYMENT_AUTO))
                 .contains("Basic", "None");
-        assertThat(SearchDeployment.amazonOpenSearchAuthTypesForUrl(
+        assertThat(SearchDeployment.amazonSearchAuthTypesForUrl(
                 "https://vpc-opensearch.example.internal",
                 ConfigState.DEPLOYMENT_SERVERLESS))
                 .containsExactly(

@@ -419,8 +419,8 @@ public final class ConfigControlPanel {
                 "Start exporting to the configured destination(s).",
                 "",
                 "<b>During export</b>",
-                "Repeated push failures trigger a health check. Authentication failures (HTTP 401/403) or connectivity failures can disable the database destination for the current run.",
-                "If Files remains enabled, file export continues; otherwise export stops.",
+                "Capacity and connectivity pressure pace database sends with cooldowns and retries.",
+                "Repeated authorization failures (HTTP 401/403) pause sends while automatic recovery probes retain queued work. Files can continue independently.",
                 "Live traffic overflow can spill under <code>" + spillPath + "</code> when the in-memory queue is full.");
     }
 
@@ -436,9 +436,9 @@ public final class ConfigControlPanel {
                 "Click Stop again to force-abort remaining remote waits",
                 "(retry drain, final stats, file validation, connection close).",
                 "",
-                "<b>If the database destination was disabled mid-run</b>",
-                "Authentication or connectivity failures can leave Files-only export running until Stop.",
-                "Update credentials or connectivity, then Start again to resume database export.");
+                "<b>If database sends are paused</b>",
+                "Check Log and Stats for authorization recovery or capacity backoff.",
+                "To change credentials or connection settings, Stop, update them, then Start again.");
     }
 
     private static String forceStopExportTooltip() {

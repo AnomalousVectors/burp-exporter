@@ -23,7 +23,7 @@ import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkNdjsonResponseParser;
+import ai.anomalousvectors.tools.burp.utils.search.BulkNdjsonResponseParser;
 
 class ExporterIndexLogForwarderTest {
 

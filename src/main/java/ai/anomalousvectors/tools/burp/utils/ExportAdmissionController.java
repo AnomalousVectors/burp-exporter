@@ -5,8 +5,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.BulkRateLimitBackoff;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /**
  * Closed-loop admission and capacity budgets for live traffic, retry, and spill.

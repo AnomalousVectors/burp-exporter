@@ -57,7 +57,7 @@ final class ExportFieldTooltipsTraffic {
         return tooltip;
     }
 
-    private static String trafficFieldTooltip(String fieldKey) {
+    static String trafficFieldTooltip(String fieldKey) {
         return switch (fieldKey) {
             case "request.url.raw" -> Tooltips.textWithSource(
                     "Full request URL.",
@@ -129,7 +129,7 @@ final class ExportFieldTooltipsTraffic {
                     "HTTP method.",
                     "RequestResponseDocBuilder.buildTrafficRequestDoc() uses HttpRequest.method().");
             case "response.status.code" -> Tooltips.textWithSource(
-                    "Obtain the HTTP status code contained in the response.",
+                    "HTTP response status code; 0 means no response was available for this observation.",
                     "RequestResponseDocBuilder.buildTrafficResponseDoc() uses HttpResponse.statusCode(); orphan docs use sentinel response.status.code=0.");
             case "response.status.description" -> Tooltips.textWithSource(
                     "Obtain the HTTP reason phrase contained in the response for HTTP 1 messages.",
@@ -185,7 +185,7 @@ final class ExportFieldTooltipsTraffic {
                     "Best-effort payload classification independent of the WebSocket opcode.",
                     "WebSocketTrafficDocumentBuilder.inferPayloadType() returns EMPTY for no bytes, TEXT for strict UTF-8 decodes, otherwise BINARY.");
             case "websocket.payload.b64" -> Tooltips.textWithSource(
-                    "Raw WebSocket payload stored as base64 (effective on-the-wire bytes).",
+                    "Selected effective WebSocket payload bytes stored as Base64.",
                     "WebSocketTrafficDocumentBuilder.buildPayloadDoc() encodes the selected final payload bytes. Proxy WebSocket History prefers editedPayload(); live handlers pass their final callback payload.");
             case "websocket.payload.text" -> Tooltips.textWithSource(
                     "UTF-8 text view of the effective WebSocket payload when valid.",
@@ -226,7 +226,7 @@ final class ExportFieldTooltipsTraffic {
                     "Explicit Proxy History and History-backed live streams use TimingData.timeRequestSent() when valid. Live HTTP observations use their source's request-to-be-sent callback timestamp, not exact socket-write timing. Historic WebSocket frames use ProxyWebSocketMessage.time(); live WebSocket frames use the final callback time.");
             case "burp.timing.req_sent_to_res_start" -> Tooltips.textWithSource(
                     "Time to first response byte in milliseconds: request sent to start of response.",
-                    "ProxyHistoryIndexReporter and RepeaterTabsIndexReporter use Burp TimingData.timeBetweenRequestSentAndStartOfResponse(); live HTTP callback observations and WebSocket docs write null.");
+                    "Explicit Proxy History, History-backed live streams, and Repeater Tabs use TimingData.timeBetweenRequestSentAndStartOfResponse(); live HTTP callback observations and WebSocket docs write null.");
             default -> ExportFieldTooltipsRequestResponse.requestResponseNestedTooltip(fieldKey);
         };
     }

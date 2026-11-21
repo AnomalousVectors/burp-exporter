@@ -317,7 +317,8 @@ class ConfigPanelAuthStorageHeadlessTest {
                 String tip = start.getToolTipText();
                 assertThat(tip).contains("Start exporting to the configured destination(s).");
                 assertThat(tip).contains("During export");
-                assertThat(tip).contains("health check");
+                assertThat(tip).contains("cooldowns and retries", "pause sends", "retain queued work");
+                assertThat(tip).doesNotContain("disable the database destination");
                 assertThat(tip).contains("spill");
             });
         });
@@ -346,7 +347,7 @@ class ConfigPanelAuthStorageHeadlessTest {
                 assertThat(filePathField.getToolTipText()).contains("/path/to/directory");
                 assertThat(filePathField.getToolTipText()).contains("c:\\path\\to\\directory");
                 assertThat(openSearchDestination.getToolTipText()).contains("OpenSearch");
-                assertThat(openSearchDestination.getToolTipText()).contains("wired");
+                assertThat(openSearchDestination.getToolTipText()).contains("shared database export, retry, and capacity controls");
                 assertThat(awsDestination.getToolTipText()).contains("Amazon OpenSearch");
                 assertThat(awsDestination.getToolTipText()).contains("IAM SigV4 - Profile");
                 assertThat(awsDestination.getToolTipText()).contains("not renewed");

@@ -14,9 +14,9 @@ import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.SystemMetrics;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkRateLimitBackoff;
-import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.BulkRateLimitBackoff;
+import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 
 /**
  * Builds the Stats panel clipboard text from live counters (no Swing table state).
@@ -103,20 +103,20 @@ public final class StatsClipboardSnapshot {
 
     private static Map<String, Map<String, String>> buildMiscSections() {
         boolean fileVisible = isFileSectionEnabled();
-        boolean openSearchVisible = isDatabaseSectionEnabled();
+        boolean databaseVisible = isDatabaseSectionEnabled();
         Map<String, Map<String, String>> sections = new LinkedHashMap<>();
-        sections.put("Overview", buildOverviewSection(fileVisible, openSearchVisible));
+        sections.put("Overview", buildOverviewSection(fileVisible, databaseVisible));
         sections.put("Process", buildProcessSection(SystemMetrics.snapshot()));
-        if (openSearchVisible) {
-            sections.put("Database Session", buildOpenSearchSessionSection());
+        if (databaseVisible) {
+            sections.put("Database Session", buildDatabaseSessionSection());
             sections.put("Parameter Integrity", buildParameterIntegritySection());
-            sections.put("Database Traffic", buildOpenSearchTrafficSection());
-            sections.put("Database Retry", buildOpenSearchRetrySection());
-            sections.put("Database Capacity", buildOpenSearchCapacitySection());
-            sections.put("Database Run Peaks", buildOpenSearchRunPeaksSection());
+            sections.put("Database Traffic", buildDatabaseTrafficSection());
+            sections.put("Database Retry", buildDatabaseRetrySection());
+            sections.put("Database Capacity", buildDatabaseCapacitySection());
+            sections.put("Database Run Peaks", buildDatabaseRunPeaksSection());
         }
         if (RuntimeConfig.isAnyTrafficExportEnabled()) {
-            sections.put("Traffic Spill", buildOpenSearchSpillSection());
+            sections.put("Traffic Spill", buildDatabaseSpillSection());
             sections.put("Streaming Recovery", Map.of("Status",
                     ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status()));
         }
@@ -126,10 +126,10 @@ public final class StatsClipboardSnapshot {
         return sections;
     }
 
-    private static Map<String, String> buildOverviewSection(boolean fileVisible, boolean openSearchVisible) {
+    private static Map<String, String> buildOverviewSection(boolean fileVisible, boolean databaseVisible) {
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Export Running", RuntimeConfig.isExportRunning() ? "Yes" : "No");
-        if (openSearchVisible) {
+        if (databaseVisible) {
             rows.put("Soft Outage", StatsPanelFormatters.formatSoftOutage(
                     IndexingRetryCoordinator.getInstance().isSoftCapacityOutage()));
             rows.put("Authorization Failures", StatsPanelFormatters.formatAuthorizationRecovery());
@@ -138,7 +138,7 @@ public final class StatsClipboardSnapshot {
             rows.put("Traffic Spill Status", StatsPanelFormatters.formatSpillStatus(
                     TrafficExportQueue.currentSpillStatus()));
         }
-        if (openSearchVisible) {
+        if (databaseVisible) {
             rows.put("Database Exported Size",
                     formatHumanReadableBytes(ExportStats.getTotalExportedBytes()));
         }
@@ -170,7 +170,7 @@ public final class StatsClipboardSnapshot {
         return rows;
     }
 
-    private static Map<String, String> buildOpenSearchSessionSection() {
+    private static Map<String, String> buildDatabaseSessionSection() {
         long totalSuccess = ExportStats.getTotalSuccessCount();
         long totalFailure = ExportStats.getTotalFailureCount();
         Map<String, String> rows = new LinkedHashMap<>();
@@ -179,8 +179,8 @@ public final class StatsClipboardSnapshot {
         rows.put("Exported Docs", formatWhole(totalSuccess) + " docs");
         rows.put("Exported Failures", formatWhole(totalFailure));
         rows.put("Count Basis", "Session counters; no Stop readback");
-        rows.put("Last Success", StatsPanelFormatters.formatRelativeTime(ExportStats.getOpenSearchLastSuccessAtMs()));
-        rows.put("Consecutive Failures", formatWhole(ExportStats.getOpenSearchConsecutiveFailures()));
+        rows.put("Last Success", StatsPanelFormatters.formatRelativeTime(ExportStats.getDatabaseLastSuccessAtMs()));
+        rows.put("Consecutive Failures", formatWhole(ExportStats.getDatabaseConsecutiveFailures()));
         rows.put("Permanent Drops", formatWhole(ExportStats.getTotalPermanentDrops()));
         rows.put("Permanent Drop Reasons", StatsPanelFormatters.formatPermanentDropReasons());
         rows.put("Body Truncations", formatWhole(ExportStats.getSearchBodyPrefixTruncations()));
@@ -203,7 +203,7 @@ public final class StatsClipboardSnapshot {
         return rows;
     }
 
-    private static Map<String, String> buildOpenSearchTrafficSection() {
+    private static Map<String, String> buildDatabaseTrafficSection() {
         int trafficQueueDocs = TrafficExportQueue.getCurrentSize();
         long trafficQueueBytes = TrafficExportQueue.getCurrentBytesEstimate();
         int proxyChunkTarget = ExportStats.getCurrentProxyHistoryChunkTarget();
@@ -226,7 +226,7 @@ public final class StatsClipboardSnapshot {
         return rows;
     }
 
-    private static Map<String, String> buildOpenSearchSpillSection() {
+    private static Map<String, String> buildDatabaseSpillSection() {
         int spillDocs = TrafficExportQueue.getCurrentSpillSize();
         long spillBytes = TrafficExportQueue.getCurrentSpillBytes();
         Map<String, String> rows = new LinkedHashMap<>();
@@ -250,14 +250,14 @@ public final class StatsClipboardSnapshot {
     }
 
 
-    private static Map<String, String> buildOpenSearchRetrySection() {
+    private static Map<String, String> buildDatabaseRetrySection() {
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Queue Depth", StatsPanelFormatters.formatRetryQueueDepthSummary());
         rows.put("Oldest Queued Age", StatsPanelFormatters.formatOldestQueuedAgeSummary());
         return rows;
     }
 
-    private static Map<String, String> buildOpenSearchCapacitySection() {
+    private static Map<String, String> buildDatabaseCapacitySection() {
         Map<String, String> rows = new LinkedHashMap<>();
         rows.put("Bulk Byte Budget",
                 StatsPanelFormatters.formatBytesHuman(StatsPanelFormatters.displayedBulkByteBudget()));
@@ -271,7 +271,7 @@ public final class StatsClipboardSnapshot {
         return rows;
     }
 
-    private static Map<String, String> buildOpenSearchRunPeaksSection() {
+    private static Map<String, String> buildDatabaseRunPeaksSection() {
         int peakChunkTarget = ExportStats.getPeakSnapshotChunkTarget();
         long peakFlushMs = ExportStats.getPeakSnapshotFlushMs();
         Map<String, String> rows = new LinkedHashMap<>();

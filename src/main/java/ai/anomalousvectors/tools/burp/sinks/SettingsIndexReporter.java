@@ -21,7 +21,7 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 import burp.api.montoya.MontoyaApi;
 
 /**
@@ -88,7 +88,7 @@ public final class SettingsIndexReporter {
             String userJson = safeUserOptionsJson(api);
             ConfigState.State state = RuntimeConfig.getState();
             Map<String, Object> doc = buildSettingsDoc(api, projectJson, userJson, state);
-            boolean ok = OpenSearchClientWrapper.pushDocument(baseUrl, settingsIndexName(), "settings", doc);
+            boolean ok = SearchClientWrapper.pushDocument(baseUrl, settingsIndexName(), "settings", doc);
             SingleDocOutcomeRecorder.record("settings", ok, openSearchActive, "Settings index push failed");
             if (ok) {
                 lastPushedHash = hashSettingsForEnabled(state, projectJson, userJson);
@@ -168,7 +168,7 @@ public final class SettingsIndexReporter {
                 return;
             }
             Map<String, Object> doc = buildSettingsDoc(api, projectJson, userJson, state);
-            boolean ok = OpenSearchClientWrapper.pushDocument(baseUrl, settingsIndexName(), "settings", doc);
+            boolean ok = SearchClientWrapper.pushDocument(baseUrl, settingsIndexName(), "settings", doc);
             SingleDocOutcomeRecorder.record("settings", ok, openSearchActive, "Settings index push failed");
             if (ok) {
                 lastPushedHash = currentHash;

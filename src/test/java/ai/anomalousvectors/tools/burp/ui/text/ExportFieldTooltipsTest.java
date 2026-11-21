@@ -9,6 +9,25 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.utils.config.ExportFieldRegistry;
 
 class ExportFieldTooltipsTest {
+    @Test
+    void bodyAndParameterHelpExplainsFittingAndCurrentProducers() {
+        assertThat(ExportFieldTooltips.tooltipFor("traffic", "request.body.b64"))
+                .contains("only when not search-truncated");
+        assertThat(ExportFieldTooltips.tooltipFor("traffic", "request.parameters.name"))
+                .contains("RequestResponseParametersSupport", "supplements parseable urlencoded");
+        assertThat(ExportFieldTooltips.tooltipFor("traffic", "request.body.markers.start_inclusive"))
+                .contains("HttpMessageDocSupport.trafficMarkersToList()");
+        assertThat(ExportFieldTooltips.tooltipFor("traffic", "response.body.text"))
+                .contains("Indexed as text by search databases");
+    }
+
+    @Test
+    void findingsEvidenceHelpDoesNotClaimLiveProxyCapture() {
+        assertThat(ExportFieldTooltips.tooltipFor("findings", "requests_responses.request.body.b64"))
+                .contains("HttpMessageDocSupport.buildBodyContent()")
+                .doesNotContain("Live Proxy uses", "finalRequest()", "meta.capture.source");
+    }
+
 
     @Test
     void everyToggleableField_hasNonBlankTooltip() {

@@ -11,7 +11,7 @@ import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.export.BulkOutcomeBreakdown;
-import ai.anomalousvectors.tools.burp.utils.opensearch.ChunkedBulkSender;
+import ai.anomalousvectors.tools.burp.utils.search.ChunkedBulkSender;
 
 /**
  * Unit tests for {@link TrafficExportQueue#applyBulkOutcome(ChunkedBulkSender.Result, long, int)},
@@ -39,7 +39,7 @@ class TrafficExportQueueBulkOutcomeTest {
 
     @Test
     void applyBulkOutcome_fullSuccess_updatesCountsAndDoesNotRecordLastError() {
-        ExportStats.recordOpenSearchFailure();
+        ExportStats.recordDatabaseFailure();
         ChunkedBulkSender.Result result = new ChunkedBulkSender.Result(
                 4,
                 4,
@@ -64,13 +64,13 @@ class TrafficExportQueueBulkOutcomeTest {
         assertThat(ExportStats.getTrafficToolTypeFailureCount("PROXY")).isZero();
         assertThat(ExportStats.getTrafficSourceSuccessCount("proxy_live_http")).isEqualTo(4);
         assertThat(ExportStats.getTrafficSourceFailureCount("proxy_live_http")).isZero();
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isPositive();
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isZero();
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isPositive();
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isZero();
     }
 
     @Test
     void applyBulkOutcome_partialFailure_recordsFailureMapsAndLastError() {
-        ExportStats.recordOpenSearchFailure();
+        ExportStats.recordDatabaseFailure();
         ChunkedBulkSender.Result result = new ChunkedBulkSender.Result(
                 3,
                 5,
@@ -92,8 +92,8 @@ class TrafficExportQueueBulkOutcomeTest {
         assertThat(ExportStats.getTrafficSourceFailureCount("proxy_live_http")).isEqualTo(2);
         assertThat(ExportStats.getLastLiveBulkDurationMs("traffic")).isEqualTo(300L);
         assertThat(ExportStats.getExportedBytes("traffic")).isEqualTo(1_200L);
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isPositive();
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isZero();
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isPositive();
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isZero();
     }
 
     @Test
@@ -116,13 +116,13 @@ class TrafficExportQueueBulkOutcomeTest {
         assertThat(ExportStats.getTrafficToolTypeSuccessCount("PROXY")).isEqualTo(1);
         assertThat(ExportStats.getTrafficToolTypeFailureCount("REPEATER")).isZero();
         assertThat(ExportStats.getTrafficSourceFailureCount("repeater_live_http")).isZero();
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isPositive();
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isZero();
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isPositive();
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isZero();
     }
 
     @Test
     void applyBulkOutcome_zeroAttempted_noCountersAdvance() {
-        ExportStats.recordOpenSearchFailure();
+        ExportStats.recordDatabaseFailure();
         ChunkedBulkSender.Result result = new ChunkedBulkSender.Result(
                 0,
                 0,
@@ -138,8 +138,8 @@ class TrafficExportQueueBulkOutcomeTest {
         assertThat(ExportStats.getSuccessCount("traffic")).isZero();
         assertThat(ExportStats.getFailureCount("traffic")).isZero();
         assertThat(ExportStats.getLastError("traffic")).isNull();
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isEqualTo(-1L);
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isEqualTo(1L);
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isEqualTo(-1L);
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isEqualTo(1L);
     }
 
     @Test
@@ -150,23 +150,23 @@ class TrafficExportQueueBulkOutcomeTest {
 
         TrafficExportQueue.applyBulkOutcome(result, 50L, 100);
 
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isPositive();
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isZero();
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isPositive();
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isZero();
         assertThat(ExportStats.getSuccessCount("traffic")).isZero();
         assertThat(ExportStats.getNoopCount("traffic")).isEqualTo(1L);
     }
 
     @Test
     void applyBulkOutcome_totalFailure_preservesLastSuccessAndAdvancesHealthFailures() {
-        ExportStats.recordOpenSearchSuccess();
-        long previousSuccess = ExportStats.getOpenSearchLastSuccessAtMs();
+        ExportStats.recordDatabaseSuccess();
+        long previousSuccess = ExportStats.getDatabaseLastSuccessAtMs();
         ChunkedBulkSender.Result result = failedResult();
 
         TrafficExportQueue.applyBulkOutcome(result, 50L, 100);
         TrafficExportQueue.applyBulkOutcome(result, 50L, 100);
 
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isEqualTo(previousSuccess);
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isEqualTo(2L);
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isEqualTo(previousSuccess);
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isEqualTo(2L);
         assertThat(ExportStats.getSuccessCount("traffic")).isZero();
         assertThat(ExportStats.getFailureCount("traffic")).isEqualTo(2L);
     }
@@ -177,8 +177,8 @@ class TrafficExportQueueBulkOutcomeTest {
 
         TrafficExportQueue.applyBulkOutcome(failedResult(), 50L, 100);
 
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isEqualTo(-1L);
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isZero();
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isEqualTo(-1L);
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isZero();
         assertThat(ExportStats.getFailureCount("traffic")).isZero();
     }
 
@@ -197,8 +197,8 @@ class TrafficExportQueueBulkOutcomeTest {
             return null;
         });
 
-        assertThat(ExportStats.getOpenSearchLastSuccessAtMs()).isEqualTo(-1L);
-        assertThat(ExportStats.getOpenSearchConsecutiveFailures()).isZero();
+        assertThat(ExportStats.getDatabaseLastSuccessAtMs()).isEqualTo(-1L);
+        assertThat(ExportStats.getDatabaseConsecutiveFailures()).isZero();
         assertThat(ExportStats.getSuccessCount("traffic")).isZero();
         assertThat(ExportStats.getFailureCount("traffic")).isZero();
     }

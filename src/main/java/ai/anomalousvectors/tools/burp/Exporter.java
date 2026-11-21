@@ -25,8 +25,8 @@ import ai.anomalousvectors.tools.burp.utils.ProductInfo;
 import ai.anomalousvectors.tools.burp.utils.Version;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchConnector;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.SearchConnector;
 import burp.api.montoya.BurpExtension;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Registration;
@@ -176,7 +176,7 @@ public class Exporter implements BurpExtension {
         // session caches, and transport-owned reactor/scheduler threads. Run synchronously so the
         // classloader can be GC'd cleanly; closeAll() is idempotent if a Stop-triggered async
         // closeAll() already ran.
-        OpenSearchConnector.closeAll();
+        SearchConnector.closeAll();
         ConfigPanel.shutdownStartupExecutor();
         ManagedDiskPaths.CleanupResult managedCleanup = ManagedDiskPaths.closeInstance();
         if (!managedCleanup.complete()) {

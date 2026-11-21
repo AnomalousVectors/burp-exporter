@@ -49,9 +49,9 @@ import org.slf4j.LoggerFactory;
  * </ul>
  * <p>Do not use {@link #logError} for recoverable per-document OpenSearch failures; record stats and
  * emit {@link #logWarnPanelOnly} at the reporter plus {@link #logDebug} in
- * {@link ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper}. User-initiated
+ * {@link ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper}. User-initiated
  * Stop treats in-flight push failures as cancellation ({@link #logTrace}, not WARN/ERROR) via
- * {@link ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchPushCancellation}.</p>
+ * {@link ai.anomalousvectors.tools.burp.utils.search.SearchPushCancellation}.</p>
  */
 public final class Logger {
 

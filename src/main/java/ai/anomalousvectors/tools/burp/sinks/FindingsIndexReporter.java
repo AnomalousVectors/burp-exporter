@@ -22,15 +22,15 @@ import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotScopeCache;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BatchSizeController;
-import ai.anomalousvectors.tools.burp.utils.opensearch.BulkByteBudget;
+import ai.anomalousvectors.tools.burp.utils.search.BatchSizeController;
+import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.collaborator.DnsDetails;
 import burp.api.montoya.collaborator.HttpDetails;
@@ -732,7 +732,7 @@ public final class FindingsIndexReporter {
         String activeBaseUrl = RuntimeConfig.searchBaseUrl();
         boolean openSearchActive = RuntimeConfig.isSearchActive();
         String indexName = findingsIndexName();
-        var outcome = OpenSearchClientWrapper.pushPreparedBulk(activeBaseUrl, indexName, "findings", batchDocs);
+        var outcome = SearchClientWrapper.pushPreparedBulk(activeBaseUrl, indexName, "findings", batchDocs);
         BulkOutcomeRecorder.record("findings", "Findings", "Bulk push", outcome, openSearchActive);
     }
 

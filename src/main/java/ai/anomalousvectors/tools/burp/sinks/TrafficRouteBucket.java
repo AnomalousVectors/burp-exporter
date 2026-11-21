@@ -211,7 +211,7 @@ public final class TrafficRouteBucket {
     }
 
     /** Records {@code count} successful OpenSearch pushes for {@code route}. */
-    public static void recordOpenSearchSuccess(Route route, long count) {
+    public static void recordDatabaseSuccess(Route route, long count) {
         if (route == null || count <= 0) {
             return;
         }
@@ -223,7 +223,7 @@ public final class TrafficRouteBucket {
     }
 
     /** Records {@code count} failed OpenSearch pushes for {@code route}. */
-    public static void recordOpenSearchFailure(Route route, long count) {
+    public static void recordDatabaseFailure(Route route, long count) {
         if (route == null || count <= 0) {
             return;
         }
@@ -240,7 +240,7 @@ public final class TrafficRouteBucket {
      * @param route traffic attribution route; {@code null} is ignored
      * @param count recovered document count; non-positive values are ignored
      */
-    public static void recordOpenSearchRecovery(Route route, long count) {
+    public static void recordDatabaseRecovery(Route route, long count) {
         if (route == null || count <= 0) {
             return;
         }
@@ -257,7 +257,7 @@ public final class TrafficRouteBucket {
      * @param route traffic attribution route; {@code null} is ignored
      * @param count dropped document count; non-positive values are ignored
      */
-    public static void recordOpenSearchRetryQueueDrop(Route route, long count) {
+    public static void recordDatabaseRetryQueueDrop(Route route, long count) {
         if (route == null || count <= 0) {
             return;
         }
@@ -274,7 +274,7 @@ public final class TrafficRouteBucket {
      * @param route traffic attribution route; {@code null} is ignored
      * @param count dropped document count; non-positive values are ignored
      */
-    public static void recordOpenSearchPermanentDrop(Route route, long count) {
+    public static void recordDatabasePermanentDrop(Route route, long count) {
         if (route == null || count <= 0) {
             return;
         }
@@ -291,8 +291,8 @@ public final class TrafficRouteBucket {
      * <p>Delegates the index-key totals and panel/error reporting to
      * {@link BulkOutcomeRecorder#record(String, String, String, int, int, boolean)} so traffic
      * and non-traffic reporters share the same log and error shape, then adds the
-     * per-route counter updates on top via {@link #recordOpenSearchSuccess(Route, long)} /
-     * {@link #recordOpenSearchFailure(Route, long)}.</p>
+     * per-route counter updates on top via {@link #recordDatabaseSuccess(Route, long)} /
+     * {@link #recordDatabaseFailure(Route, long)}.</p>
      *
      * <p>Counts are clamped so {@code sent} is bounded to {@code [0, max(0, attempted)]} by
      * {@link BulkOutcomeRecorder#record}; per-route counters derived here inherit that clamping
@@ -374,11 +374,11 @@ public final class TrafficRouteBucket {
             return;
         }
         if (recorded.sent() > 0) {
-            recordOpenSearchSuccess(route, recorded.sent());
+            recordDatabaseSuccess(route, recorded.sent());
         }
         int failure = Math.max(0, attempted) - recorded.sent();
         if (!recorded.failuresSuppressed() && failure > 0) {
-            recordOpenSearchFailure(route, failure);
+            recordDatabaseFailure(route, failure);
         }
     }
 
@@ -419,7 +419,7 @@ public final class TrafficRouteBucket {
     }
 
     /** Returns the current successful OpenSearch push count for {@code route}. */
-    public static long openSearchSuccessCount(Route route) {
+    public static long databaseSuccessCount(Route route) {
         if (route == null) {
             return 0L;
         }
@@ -429,7 +429,7 @@ public final class TrafficRouteBucket {
     }
 
     /** Returns the current failed OpenSearch push count for {@code route}. */
-    public static long openSearchFailureCount(Route route) {
+    public static long databaseFailureCount(Route route) {
         if (route == null) {
             return 0L;
         }

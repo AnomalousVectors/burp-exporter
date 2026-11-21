@@ -40,9 +40,9 @@ public final class ScopeGrid extends JPanel {
     /**
      * Tooltip for adding another custom scope row.
      */
-    private static final String TIP_ADD_ROW     = Tooltips.html("Add new row.");
-    private static final String TIP_SCOPE_ENTRY = Tooltips.html("Scope entry.", "Enter a plain string or regular expression.");
-    private static final String TIP_REGEX_TOGGLE = Tooltips.html("Interpret value as a regular expression.");
+    private static final String TIP_ADD_ROW     = Tooltips.html("Add a custom scope entry; matching any entry includes the target.");
+    private static final String TIP_SCOPE_ENTRY = Tooltips.html("Match the URL host, or the full URL only when no host can be parsed.", "Plain text uses substring matching; regex uses a partial match. Matching is case-sensitive.");
+    private static final String TIP_REGEX_TOGGLE = Tooltips.html("Interpret this entry as a regular expression; use anchors for an exact host match.");
     private static final String TIP_DELETE_ROW  = Tooltips.html("Delete this row.");
 
     /**

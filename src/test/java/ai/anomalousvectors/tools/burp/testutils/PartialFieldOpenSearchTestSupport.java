@@ -24,14 +24,14 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
-import ai.anomalousvectors.tools.burp.sinks.OpenSearchSink;
+import ai.anomalousvectors.tools.burp.sinks.SearchSink;
 import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.BulkPushOutcome;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 
 /**
  * Shared helpers for integration tests that index partially field-filtered documents
@@ -71,13 +71,13 @@ public final class PartialFieldOpenSearchTestSupport {
     }
 
     private static void createIndexLocked(String indexShortName) {
-        List<OpenSearchSink.IndexResult> results =
+        List<SearchSink.IndexResult> results =
                 OpenSearchReachable.createSelectedIndexes(List.of(indexShortName));
         assertThat(results).isNotEmpty();
         boolean created = results.stream()
                 .anyMatch(r -> r.shortName().equals(indexShortName)
-                        && (r.status() == OpenSearchSink.IndexResult.Status.CREATED
-                                || r.status() == OpenSearchSink.IndexResult.Status.EXISTS));
+                        && (r.status() == SearchSink.IndexResult.Status.CREATED
+                                || r.status() == SearchSink.IndexResult.Status.EXISTS));
         assertThat(created).as(indexShortName + " index created or exists").isTrue();
     }
 
@@ -146,7 +146,7 @@ public final class PartialFieldOpenSearchTestSupport {
         String indexName = IndexNaming.indexNameForShortName(indexShortName);
         PreparedExportDocument prepared =
                 ExportDocumentIdentity.prepare(indexName, indexShortName, built);
-        BulkPushOutcome outcome = OpenSearchClientWrapper.pushPreparedBulk(
+        BulkPushOutcome outcome = SearchClientWrapper.pushPreparedBulk(
                 baseUrl(), indexName, indexShortName, List.of(prepared));
         assertThat(outcome.exportedCount())
                 .as("OpenSearch exported docs for " + indexShortName)

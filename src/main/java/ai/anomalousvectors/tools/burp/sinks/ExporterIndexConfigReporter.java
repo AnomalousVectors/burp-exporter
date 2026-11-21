@@ -9,7 +9,7 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
-import ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper;
+import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 
 /**
  * Pushes the current runtime configuration to the Exporter index.
@@ -48,7 +48,7 @@ public final class ExporterIndexConfigReporter {
             String baseUrl = RuntimeConfig.searchBaseUrl();
             boolean openSearchActive = RuntimeConfig.isSearchActive();
             Map<String, Object> doc = buildConfigDoc(RuntimeConfig.getState());
-            boolean ok = OpenSearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
+            boolean ok = SearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
             SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive,
                     "Exporter config snapshot push failed");
             if (!ok && openSearchActive) {

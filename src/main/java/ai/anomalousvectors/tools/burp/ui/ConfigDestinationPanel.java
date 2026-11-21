@@ -339,7 +339,7 @@ public final class ConfigDestinationPanel {
                 Tooltips.htmlRaw(
                         "<b>Format</b>",
                         "Select the on-disk export format used when Files is enabled.",
-                        "Only <b>NDJSON</b> can be imported directly into OpenSearch later.",
+                        "<b>NDJSON</b> provides bulk action/source pairs for OpenSearch and Elasticsearch; later import is managed separately.",
                         "<b>JSONL</b> writes one document per line for local analysis.",
                         "<b>NDJSON</b> writes bulk action + document pairs for later <code>_bulk</code> re-import."));
         formatsLabel.setName("files.format.label");
