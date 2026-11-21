@@ -184,6 +184,33 @@ final class RepeaterTabMetadataHeuristics {
     }
 
     /**
+     * Recognizes a group-only header by its custom header's separate child-count badge.
+     *
+     * <p>Caller must invoke on the EDT. Burp keeps group headers and their request tabs in the
+     * same pane, including children hidden by a collapsed group. The badge must fit the remaining
+     * sibling slots. A numeric request-tab title alone is not a badge, and group names need not
+     * contain letters. This is a best-effort Swing heuristic, not a Montoya group contract.</p>
+     */
+    static boolean isGroupHeader(JTabbedPane pane, int index) {
+        return groupChildCount(pane, index) > 0;
+    }
+
+    /** Returns the validated separate child-count badge, or {@code -1}; invoke on the EDT. */
+    static int groupChildCount(JTabbedPane pane, int index) {
+        if (pane == null || index < 0 || index >= pane.getTabCount()
+                || pane.getTabComponentAt(index) == null) {
+            return -1;
+        }
+        String primary = primaryTabLabelFor(pane, index);
+        if (primary == null) {
+            return -1;
+        }
+        return explicitGroupChildCount(
+                new PaneTabSnapshot(primary, tabLabelCandidatesFor(pane, index)),
+                pane.getTabCount() - index - 1);
+    }
+
+    /**
      * Captures the best-effort label snapshot for one tab index in a pane.
      *
      * <p>Caller must invoke on the EDT.</p>

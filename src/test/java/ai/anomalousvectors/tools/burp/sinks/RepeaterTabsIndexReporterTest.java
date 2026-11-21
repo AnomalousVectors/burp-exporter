@@ -281,13 +281,18 @@ class RepeaterTabsIndexReporterTest {
             when(context.toolSource()).thenReturn(toolSource);
             when(toolSource.toolType()).thenReturn(ToolType.REPEATER);
 
-            RepeaterTabsIndexReporter.captureFromEditorContext(
+            SwingUtilities.invokeAndWait(() -> RepeaterTabsIndexReporter.captureFromEditorContext(
                     context,
                     repeaterRequestResponse("GET /repeat HTTP/1.1\r\nHost: example.test\r\n\r\n"),
                     "request_editor",
-                    null);
+                    null));
 
             assertThat(RepeaterTabsIndexReporter.capturedItemCount()).isZero();
+            assertThat(getStatic(RepeaterTabsIndexReporter.class, "STARTUP_OBSERVED_SLOTS"))
+                    .isEqualTo(java.util.Set.of("startup-slot-partial"));
+            RepeaterTabsIndexReporter.clearRunState();
+            assertThat(getStatic(RepeaterTabsIndexReporter.class, "STARTUP_OBSERVED_SLOTS"))
+                    .isEqualTo(java.util.Set.of());
         } finally {
             RepeaterTabsIndexReporter.closeCaptureWindowForCurrentRun();
             startupSelectionField.set(null, null);

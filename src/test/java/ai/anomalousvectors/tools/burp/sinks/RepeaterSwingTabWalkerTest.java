@@ -5,8 +5,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.awt.BorderLayout;
 import java.awt.Component;
 import java.awt.GridLayout;
+import java.awt.event.MouseEvent;
 import java.io.Serial;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -14,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import javax.swing.JPanel;
+import javax.swing.JLabel;
 import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 
@@ -38,14 +43,13 @@ class RepeaterSwingTabWalkerTest {
     }
 
     @Test
-    void cancelAndRestore_stopsPendingSecondPass() throws Exception {
+    void cancelAndRestore_stopsPendingRetryForUnavailableRoot() throws Exception {
         TestDelegate delegate = new TestDelegate();
-        SwingTree tree = swingTreeWithRepeaterRoot(new JPanel());
         RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
-                "Repeater", 1, 60_000, 60_000, () -> List.of(tree.root()), delegate);
+                "Repeater", 1, 60_000, 60_000, List::of, delegate);
 
         SwingUtilities.invokeAndWait(() -> walker.schedule(1));
-        assertThat(delegate.passCompleted.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(delegate.unavailable.await(2, TimeUnit.SECONDS)).isTrue();
         SwingUtilities.invokeAndWait(() -> {
             assertThat(walker.hasOwnedWork()).isTrue();
             walker.cancelAndRestore();
@@ -120,14 +124,14 @@ class RepeaterSwingTabWalkerTest {
     }
 
     @Test
-    void selectionFailure_stopsPassAndRestoresSelectionsWithoutFollowUpPass() throws Exception {
+    void transientSelectionFailure_restoresSelectionsAndRetriesOnlyOnce() throws Exception {
         TestDelegate delegate = new TestDelegate();
         FailingTabbedPane requestTabs = new FailingTabbedPane();
         requestTabs(requestTabs);
         requestTabs.failAfterSelecting(1);
         SwingTree tree = swingTreeWithRepeaterRoot(requestTabs);
         RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
-                "Repeater", 1, 60_000, 1, () -> List.of(tree.root()), delegate);
+                "Repeater", 1, 1, 1, () -> List.of(tree.root()), delegate);
 
         SwingUtilities.invokeAndWait(() -> walker.schedule(1));
         assertThat(delegate.failed.await(2, TimeUnit.SECONDS)).isTrue();
@@ -140,7 +144,7 @@ class RepeaterSwingTabWalkerTest {
 
         assertThat(delegate.failures.get()).isOne();
         assertThat(delegate.walkCompleted.get()).isOne();
-        assertThat(delegate.passCompletions.get()).isZero();
+        assertThat(delegate.passCompletions.get()).isOne();
         assertThat(delegate.lastFailure.get().phase()).isEqualTo("selecting Repeater request tab");
     }
 
@@ -163,6 +167,7 @@ class RepeaterSwingTabWalkerTest {
         SwingUtilities.invokeAndWait(() -> walker.schedule(1));
         assertThat(delegate.failed.await(2, TimeUnit.SECONDS)).isTrue();
         SwingUtilities.invokeAndWait(() -> {
+            walker.cancelAndRestore();
             assertThat(walker.hasOwnedWork()).isFalse();
             assertThat(tree.toolTabs().getSelectedIndex()).isZero();
             assertThat(requestTabs.getTabCount()).isOne();
@@ -171,6 +176,355 @@ class RepeaterSwingTabWalkerTest {
         assertThat(delegate.failures.get()).isOne();
         assertThat(delegate.lastFailure.get().primaryFailure())
                 .hasMessageContaining("changed before it could be selected");
+    }
+
+    @Test
+    void observedTabs_completeAfterOnePassAndRestoreSelections() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        delegate.assumeObserved = false;
+        JTabbedPane tabs = requestTabs(new JTabbedPane());
+        tabs.addChangeListener(ignored -> delegate.observeActiveSlot());
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        AtomicInteger plans = new AtomicInteger();
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 5, () -> {
+                    plans.incrementAndGet();
+                    return List.of(tree.root());
+                }, delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> {
+            assertThat(walker.hasOwnedWork()).isFalse();
+            assertThat(tree.toolTabs().getSelectedIndex()).isZero();
+            assertThat(tabs.getSelectedIndex()).isZero();
+        });
+        assertThat(plans.get()).isOne();
+        assertThat(delegate.passCompletions.get()).isOne();
+        assertThat(delegate.observedSlots).containsExactlyInAnyOrder("0:0", "0:1");
+        assertThat(delegate.lastResult.get().unobservedSlotCount()).isZero();
+    }
+
+    @Test
+    void missingBinding_retriesOnlyTheUnobservedTab() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        delegate.assumeObserved = false;
+        JTabbedPane tabs = requestTabs(new JTabbedPane());
+        AtomicInteger missingTabVisits = new AtomicInteger();
+        List<String> activeSelections = new ArrayList<>();
+        tabs.addChangeListener(ignored -> {
+            if (delegate.activeMetadata == null) {
+                return;
+            }
+            activeSelections.add(delegate.activeMetadata);
+            if ("0:1".equals(delegate.activeMetadata) && missingTabVisits.incrementAndGet() == 1) {
+                return;
+            }
+            delegate.observeActiveSlot();
+        });
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 5, () -> List.of(tree.root()), delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> {
+            assertThat(walker.hasOwnedWork()).isFalse();
+            assertThat(tabs.getSelectedIndex()).isZero();
+            assertThat(tree.toolTabs().getSelectedIndex()).isZero();
+        });
+        assertThat(activeSelections).containsExactly("0:1", "0:0", "0:1");
+        assertThat(delegate.passCompletions.get()).isEqualTo(2);
+        assertThat(delegate.lastResult.get().unobservedSlotCount()).isZero();
+    }
+
+    @Test
+    void groupHeaders_areNeitherVisitedNorCountedAsMissingBindings() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        delegate.assumeObserved = false;
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("CurrentCreds", new JPanel());
+        JPanel header = new JPanel();
+        header.add(new JLabel("CurrentCreds"));
+        header.add(new JLabel("2"));
+        tabs.setTabComponentAt(0, header);
+        tabs.addTab("Access", new JPanel());
+        tabs.addTab("Open", new JPanel());
+        tabs.addTab("123", new JPanel());
+        tabs.setSelectedIndex(3);
+        List<Integer> selected = new ArrayList<>();
+        tabs.addChangeListener(ignored -> {
+            if (delegate.activeMetadata != null) {
+                selected.add(tabs.getSelectedIndex());
+                delegate.observeActiveSlot();
+            }
+        });
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 5, () -> List.of(tree.root()), delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> {
+            assertThat(tabs.getSelectedIndex()).isEqualTo(3);
+            assertThat(tree.toolTabs().getSelectedIndex()).isZero();
+            assertThat(walker.hasOwnedWork()).isFalse();
+        });
+        assertThat(selected).containsExactly(1, 2, 3);
+        assertThat(delegate.passCompletions.get()).isOne();
+        assertThat(delegate.lastResult.get().unobservedSlotCount()).isZero();
+    }
+
+    @Test
+    void permanentlyMissingBinding_stopsAfterOneRetry() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        delegate.assumeObserved = false;
+        SwingTree tree = swingTreeWithRepeaterRoot(requestTabs(new JTabbedPane()));
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 1, () -> List.of(tree.root()), delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> assertThat(walker.hasOwnedWork()).isFalse());
+        assertThat(delegate.passCompletions.get()).isEqualTo(2);
+        assertThat(delegate.walkCompleted.get()).isOne();
+        assertThat(delegate.lastResult.get().unobservedSlotCount()).isEqualTo(2);
+    }
+
+    @Test
+    void collapsedGroup_isRestoredAfterOnePassWithoutVisitingItsHeader() throws Exception {
+        assertGroupPresentationAfterWalk(true);
+    }
+
+    @Test
+    void expandedGroup_isNotToggledAfterOnePass() throws Exception {
+        assertGroupPresentationAfterWalk(false);
+    }
+
+    @Test
+    void twoCollapsedGroups_restoreChildrenAtDifferentHorizontalOffsets() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        CollapsibleTabbedPane tabs = new CollapsibleTabbedPane(true, true);
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 5, () -> List.of(tree.root()), delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> {
+            assertThat(tabs.collapsed).isTrue();
+            assertThat(tabs.secondCollapsed).isTrue();
+            assertThat(tabs.toggles).isEqualTo(2);
+            assertThat(tabs.getSelectedIndex()).isEqualTo(5);
+            assertThat(tree.toolTabs().getSelectedIndex()).isZero();
+        });
+        assertThat(delegate.failures.get()).isZero();
+        assertThat(delegate.passCompletions.get()).isOne();
+    }
+
+    private static void assertGroupPresentationAfterWalk(boolean collapsed) throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        CollapsibleTabbedPane tabs = new CollapsibleTabbedPane(collapsed);
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 5, () -> List.of(tree.root()), delegate);
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> {
+            assertThat(tabs.collapsed).isEqualTo(collapsed);
+            assertThat(tabs.toggles).isEqualTo(collapsed ? 1 : 0);
+            assertThat(tabs.getSelectedIndex()).isEqualTo(3);
+            assertThat(tree.toolTabs().getSelectedIndex()).isZero();
+        });
+        assertThat(delegate.failures.get()).isZero();
+        assertThat(delegate.passCompletions.get()).isOne();
+    }
+
+    @Test
+    void cancellation_restoresCollapsedGroupAfterSelectingAChild() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        CollapsibleTabbedPane tabs = new CollapsibleTabbedPane(true);
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        AtomicReference<RepeaterSwingTabWalker<String>> owner = new AtomicReference<>();
+        tabs.addChangeListener(ignored -> {
+            if (tabs.getSelectedIndex() == 1) {
+                SwingUtilities.invokeLater(() -> owner.get().cancelAndRestore());
+            }
+        });
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 5, () -> List.of(tree.root()), delegate);
+        owner.set(walker);
+        CountDownLatch cancelled = new CountDownLatch(1);
+        tabs.addChangeListener(ignored -> {
+            if (tabs.getSelectedIndex() == 3 && delegate.activeMetadata == null) {
+                cancelled.countDown();
+            }
+        });
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(cancelled.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> {
+            assertThat(walker.hasOwnedWork()).isFalse();
+            assertThat(tabs.collapsed).isTrue();
+            assertThat(tabs.toggles).isOne();
+            assertThat(tree.toolTabs().getSelectedIndex()).isZero();
+        });
+        assertThat(delegate.failures.get()).isZero();
+    }
+
+    private static final class CollapsibleTabbedPane extends JTabbedPane {
+        @Serial
+        private static final long serialVersionUID = 1L;
+        private boolean collapsed;
+        private boolean secondCollapsed;
+        private int toggles;
+        private final JPanel groupHeader = new JPanel(null);
+        private final JPanel firstChildHeader = new JPanel();
+        private final JPanel secondChildHeader = new JPanel();
+        private JPanel secondGroupHeader;
+        private JPanel thirdChildHeader;
+
+        private CollapsibleTabbedPane(boolean initiallyCollapsed) {
+            this(initiallyCollapsed, false);
+        }
+
+        private CollapsibleTabbedPane(boolean initiallyCollapsed, boolean secondGroup) {
+            addTab("CurrentCreds", new JPanel());
+            JLabel name = new JLabel("CurrentCreds");
+            name.setBounds(0, 0, 100, 24);
+            groupHeader.add(name);
+            JLabel badge = new JLabel("2");
+            badge.setBounds(100, 0, 20, 24);
+            groupHeader.add(badge);
+            JPanel chevron = new JPanel();
+            addMouseListener(new java.awt.event.MouseAdapter() {
+                /** {@inheritDoc} */
+                @Override
+                public void mouseClicked(MouseEvent event) {
+                    if (event.getX() == 142 && event.getY() == 22) {
+                        collapsed = !collapsed;
+                        toggles++;
+                        CollapsibleTabbedPane.this.doLayout();
+                    } else if (secondGroupHeader != null && event.getX() == 492 && event.getY() == 22) {
+                        secondCollapsed = !secondCollapsed;
+                        toggles++;
+                        CollapsibleTabbedPane.this.doLayout();
+                    }
+                }
+            });
+            chevron.setBounds(120, 0, 20, 24);
+            groupHeader.add(chevron);
+            setTabComponentAt(0, groupHeader);
+            addTab("Access", new JPanel());
+            setTabComponentAt(1, firstChildHeader);
+            addTab("Open", new JPanel());
+            setTabComponentAt(2, secondChildHeader);
+            if (secondGroup) {
+                secondGroupHeader = new JPanel(null);
+                JLabel secondName = new JLabel("Open-Findings");
+                secondName.setBounds(0, 0, 100, 24);
+                secondGroupHeader.add(secondName);
+                JLabel secondBadge = new JLabel("1");
+                secondBadge.setBounds(100, 0, 20, 24);
+                secondGroupHeader.add(secondBadge);
+                addTab("Open-Findings", new JPanel());
+                setTabComponentAt(3, secondGroupHeader);
+                thirdChildHeader = new JPanel();
+                addTab("VersionDisclosure1", new JPanel());
+                setTabComponentAt(4, thirdChildHeader);
+                secondCollapsed = true;
+            }
+            addTab("123", new JPanel());
+            setSelectedIndex(secondGroup ? 5 : 3);
+            collapsed = initiallyCollapsed;
+            addChangeListener(ignored -> {
+                if (getSelectedIndex() == 1 || getSelectedIndex() == 2) {
+                    collapsed = false;
+                    doLayout();
+                } else if (secondGroupHeader != null && getSelectedIndex() == 4) {
+                    secondCollapsed = false;
+                    doLayout();
+                }
+            });
+            doLayout();
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void doLayout() {
+            if (groupHeader == null) {
+                return;
+            }
+            groupHeader.setBounds(10, 10, 140, 24);
+            firstChildHeader.setBounds(collapsed ? -33 : 160, collapsed ? -5 : 10, 80, 24);
+            secondChildHeader.setBounds(collapsed ? -33 : 250, collapsed ? -5 : 10, 80, 24);
+            if (secondGroupHeader != null) {
+                secondGroupHeader.setBounds(360, 10, 140, 24);
+                thirdChildHeader.setBounds(secondCollapsed ? 150 : 510,
+                        secondCollapsed ? -5 : 10, 173, 24);
+            }
+        }
+    }
+
+    @Test
+    void singleTab_observesBindingDuringToolActivationWithoutAnotherWalk() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        delegate.assumeObserved = false;
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("Only", new JPanel());
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        tree.toolTabs().addChangeListener(ignored -> {
+            if (tree.toolTabs().getSelectedComponent() == tree.repeaterRoot()) {
+                delegate.observeActiveSlot();
+            }
+        });
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 1, () -> List.of(tree.root()), delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(delegate.observedSlots).containsExactly("0:0");
+        assertThat(delegate.passCompletions.get()).isOne();
+    }
+
+    @Test
+    void unavailableRoot_isRetriedOnceAndCanRecover() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        SwingTree tree = swingTreeWithRepeaterRoot(requestTabs(new JTabbedPane()));
+        AtomicInteger plans = new AtomicInteger();
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 1,
+                () -> plans.incrementAndGet() == 1 ? List.of() : List.of(tree.root()), delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        assertThat(plans.get()).isEqualTo(2);
+        assertThat(delegate.passCompletions.get()).isOne();
+        assertThat(delegate.unavailablePasses.get()).isOne();
+    }
+
+    @Test
+    void restorationFailure_doesNotScheduleAnotherSelectionPass() throws Exception {
+        TestDelegate delegate = new TestDelegate();
+        FailingTabbedPane tabs = requestTabs(new FailingTabbedPane());
+        tabs.addChangeListener(ignored -> {
+            if (tabs.getSelectedIndex() == 1) {
+                tabs.failBeforeSelecting(0);
+            }
+        });
+        SwingTree tree = swingTreeWithRepeaterRoot(tabs);
+        AtomicInteger plans = new AtomicInteger();
+        RepeaterSwingTabWalker<String> walker = new RepeaterSwingTabWalker<>(
+                "Repeater", 1, 1, 1, () -> {
+                    plans.incrementAndGet();
+                    return List.of(tree.root());
+                }, delegate);
+
+        SwingUtilities.invokeAndWait(() -> walker.schedule(1));
+        assertThat(delegate.completed.await(2, TimeUnit.SECONDS)).isTrue();
+        SwingUtilities.invokeAndWait(() -> assertThat(walker.hasOwnedWork()).isFalse());
+        assertThat(plans.get()).isOne();
+        assertThat(delegate.lastFailure.get().restorationFailureCount()).isOne();
+        assertThat(tree.toolTabs().getSelectedIndex()).isZero();
     }
 
     @Test
@@ -297,6 +651,12 @@ class RepeaterSwingTabWalkerTest {
         private final AtomicInteger activeGeneration = new AtomicInteger(1);
         private final AtomicInteger failures = new AtomicInteger();
         private final AtomicInteger passCompletions = new AtomicInteger();
+        private final AtomicInteger unavailablePasses = new AtomicInteger();
+        private final CountDownLatch unavailable = new CountDownLatch(1);
+        private final Set<String> observedSlots = ConcurrentHashMap.newKeySet();
+        private final AtomicReference<RepeaterSwingTabWalker.PassResult> lastResult = new AtomicReference<>();
+        private boolean assumeObserved = true;
+        private String activeMetadata;
         private final AtomicInteger walkCompleted = new AtomicInteger();
         private final AtomicReference<RepeaterSwingTabWalker.WalkFailure> lastFailure =
                 new AtomicReference<>();
@@ -320,10 +680,26 @@ class RepeaterSwingTabWalkerTest {
         }
 
         @Override
-        public void setActiveMetadata(String metadata) { }
+        public void setActiveMetadata(String metadata) {
+            activeMetadata = metadata;
+        }
 
         @Override
-        public void onPassUnavailable(int passNumber, int delayMs) { }
+        public boolean hasObservedBinding(String metadata) {
+            return assumeObserved || observedSlots.contains(metadata);
+        }
+
+        private void observeActiveSlot() {
+            if (activeMetadata != null) {
+                observedSlots.add(activeMetadata);
+            }
+        }
+
+        @Override
+        public void onPassUnavailable(int passNumber, int delayMs) {
+            unavailablePasses.incrementAndGet();
+            unavailable.countDown();
+        }
 
         @Override
         public void onPassCompleted(
@@ -331,6 +707,7 @@ class RepeaterSwingTabWalkerTest {
                 int delayMs,
                 RepeaterSwingTabWalker.PassResult result) {
             passCompletions.incrementAndGet();
+            lastResult.set(result);
             passCompleted.countDown();
         }
 

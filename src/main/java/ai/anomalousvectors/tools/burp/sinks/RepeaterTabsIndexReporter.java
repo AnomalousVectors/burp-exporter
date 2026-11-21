@@ -68,7 +68,7 @@ public final class RepeaterTabsIndexReporter {
     private static final String TOOL_TYPE = "REPEATER_TABS";
     private static final String TOOL_TYPE_KEY = "repeater_tabs";
     private static final int STARTUP_TAB_WALK_DELAY_MS = 350;
-    private static final int STARTUP_TAB_WALK_SECOND_PASS_DELAY_MS = 1_600;
+    private static final int STARTUP_TAB_WALK_RETRY_DELAY_MS = 1_600;
     private static final int STARTUP_TAB_WALK_STEP_DELAY_MS = 25;
     private static final int STARTUP_EXPORT_SUMMARY_WAIT_MS = 5_000;
     private static final int STARTUP_DUPLICATE_SLOT_TRACE_LIMIT = 3;
@@ -76,6 +76,7 @@ public final class RepeaterTabsIndexReporter {
     private static final Set<String> QUEUED_FOR_EXPORT = ConcurrentHashMap.newKeySet();
     private static final Set<String> SCOPE_FILTERED_FOR_EXPORT = ConcurrentHashMap.newKeySet();
     private static final Set<String> STARTUP_TRACE_LOGGED = ConcurrentHashMap.newKeySet();
+    private static final Set<String> STARTUP_OBSERVED_SLOTS = ConcurrentHashMap.newKeySet();
     private static final Map<String, String> STARTUP_SLOT_TO_FINGERPRINT = new ConcurrentHashMap<>();
     private static final Map<String, AtomicInteger> STARTUP_DUPLICATE_SLOT_TRACE_COUNTS = new ConcurrentHashMap<>();
     private static final RepeaterTabsStartupMetadataSummary STARTUP_METADATA_SUMMARY =
@@ -96,7 +97,7 @@ public final class RepeaterTabsIndexReporter {
             new RepeaterSwingTabWalker<>(
                     REPEATER_TOOL_TITLE,
                     STARTUP_TAB_WALK_DELAY_MS,
-                    STARTUP_TAB_WALK_SECOND_PASS_DELAY_MS,
+                    STARTUP_TAB_WALK_RETRY_DELAY_MS,
                     STARTUP_TAB_WALK_STEP_DELAY_MS,
                     () -> List.of(Frame.getFrames()),
                     new StartupTabWalkDelegate());
@@ -242,6 +243,7 @@ public final class RepeaterTabsIndexReporter {
         CAPTURE_WINDOW_GENERATION.set(-1);
         CAPTURED.clear();
         STARTUP_TRACE_LOGGED.clear();
+        STARTUP_OBSERVED_SLOTS.clear();
         STARTUP_METADATA_SUMMARY.clear();
         STARTUP_SLOT_TO_FINGERPRINT.clear();
         STARTUP_DUPLICATE_SLOT_TRACE_COUNTS.clear();
@@ -276,6 +278,12 @@ public final class RepeaterTabsIndexReporter {
             return;
         }
         RepeaterTabMetadata metadata = currentRepeaterTabMetadata(uiAnchor);
+        // An unsent/request-only tab is still an observed editor, not a failed capture.
+        // Keep only slot receipts; callback payloads remain owned by the existing capture path.
+        if (requestResponse != null && isStartupCaptureWindowOpen()
+                && metadata.slotIdentityKey() != null) {
+            STARTUP_OBSERVED_SLOTS.add(metadata.slotIdentityKey());
+        }
         RepeaterLiveMetadataTracker.observe(requestResponse, metadata.asSharedMetadata());
         // Historic Repeater Tabs capture only while that source is enabled for the run.
         if (!RuntimeConfig.isTrafficToolTypeEnabled(TOOL_TYPE_KEY)) {
@@ -336,6 +344,7 @@ public final class RepeaterTabsIndexReporter {
     /** Opens the startup-only Repeater-tab capture window for the current run generation. */
     static void openCaptureWindowForCurrentRun() {
         int generation = RUN_GENERATION.get();
+        STARTUP_OBSERVED_SLOTS.clear();
         CAPTURE_WINDOW_GENERATION.set(generation);
         startupExportStatsSnapshot = StartupExportStatsSnapshot.capture(CAPTURED.size());
         currentStartupSessionId = RepeaterMetadataTraceLabels.startupSessionId(
@@ -350,7 +359,7 @@ public final class RepeaterTabsIndexReporter {
     }
 
     /**
-     * Schedules delayed unsupported Swing walks that try to visit existing Repeater tabs on Start.
+     * Schedules one unsupported Swing walk, with a bounded retry for unobserved tabs or failures.
      *
      * <p>This method is thread-safe to call from either the EDT or a background thread. The actual
      * tab walking is always deferred onto the EDT because Swing tab selection must happen there.</p>
@@ -867,8 +876,13 @@ public final class RepeaterTabsIndexReporter {
                 + "Capture count before=" + result.captureCountBefore()
                 + ", after=" + result.captureCountAfter()
                 + ", newly captured=" + newCaptures
+                + ", unobserved slots=" + result.unobservedSlotCount()
                 + ", startup metadata summary=" + metadataSummary
                 + ".");
+        if (passNumber == 2 && result.unobservedSlotCount() > 0) {
+            Logger.logWarnPanelOnly("[RepeaterTabs] Editor bindings remained unavailable for "
+                    + result.unobservedSlotCount() + " tab slot(s) after one retry; available captures will be exported.");
+        }
     }
 
     private static void logStartupTabWalkFailure(
@@ -1316,6 +1330,12 @@ public final class RepeaterTabsIndexReporter {
         @Override
         public void setActiveMetadata(RepeaterTabMetadata metadata) {
             setCurrentStartupSelectionMetadata(metadata);
+        }
+
+        @Override
+        public boolean hasObservedBinding(RepeaterTabMetadata metadata) {
+            return metadata != null && metadata.slotIdentityKey() != null
+                    && STARTUP_OBSERVED_SLOTS.contains(metadata.slotIdentityKey());
         }
 
         @Override

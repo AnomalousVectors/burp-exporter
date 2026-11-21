@@ -36,6 +36,49 @@ import burp.api.montoya.ui.editor.extension.EditorCreationContext;
 
 class RepeaterTabsIndexReporterSwingWalkTest {
 
+    @ParameterizedTest
+    @ValueSource(strings = {"CurrentCreds", "123", "Notes"})
+    void startupTabWalkPlan_excludesGroupHeadersButKeepsEveryChild(String groupName) throws Exception {
+        AtomicReference<List<String>> slots = new AtomicReference<>();
+        SwingUtilities.invokeAndWait(() -> {
+            JTabbedPane tabs = new JTabbedPane();
+            tabs.addTab(groupName, new JPanel());
+            tabs.setTabComponentAt(0, groupHeader(groupName, "2"));
+            tabs.addTab("Access", new JPanel());
+            tabs.addTab("Open", new JPanel());
+            tabs.addTab("123", new JPanel());
+            tabs.setSelectedIndex(3);
+            JPanel repeaterRoot = new JPanel(new BorderLayout());
+            repeaterRoot.add(tabs);
+            repeaterRoot.add(new JButton("Send"), BorderLayout.NORTH);
+            JTabbedPane tools = new JTabbedPane();
+            tools.addTab("Repeater", repeaterRoot);
+            RepeaterSwingTabWalker.WalkPlan<?> plan = RepeaterSwingTabWalker.buildPlanForInspection(
+                    RepeaterSwingTabWalker.findToolTabLocation(List.of(tools), "Repeater"),
+                    RepeaterTabsIndexReporter::topLevelRepeaterTabMetadata,
+                    0);
+            slots.set(planSlotKeys(plan));
+        });
+        assertThat(slots.get()).containsExactly(
+                "top-level:0:javax.swing.JTabbedPane#1",
+                "top-level:0:javax.swing.JTabbedPane#2",
+                "top-level:0:javax.swing.JTabbedPane#3");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "999999999999999999999999999", "bad", "8"})
+    void groupHeaderHeuristic_doesNotSkipAnUnprovenRequestSlot(String badge) throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            JTabbedPane tabs = new JTabbedPane();
+            tabs.addTab("Request", new JPanel());
+            tabs.setTabComponentAt(0, groupHeader("Request", badge));
+            tabs.addTab("123", new JPanel());
+            tabs.setTabComponentAt(1, new JLabel("123"));
+            assertThat(RepeaterTabMetadataHeuristics.isGroupHeader(tabs, 0)).isFalse();
+            assertThat(RepeaterTabMetadataHeuristics.isGroupHeader(tabs, 1)).isFalse();
+        });
+    }
+
     @Test
     void inferRepeaterTabName_returnsSelectedTabLabel_whenGroupedHeaderAlsoContainsGroupName() throws Exception {
         AtomicReference<String> tabNameRef = new AtomicReference<>();

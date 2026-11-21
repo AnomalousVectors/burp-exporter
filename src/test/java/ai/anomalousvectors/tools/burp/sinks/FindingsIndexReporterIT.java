@@ -11,9 +11,9 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
@@ -88,7 +88,7 @@ class FindingsIndexReporterIT {
                 "Dismissed", "https://b.example/", AuditIssueSeverity.FALSE_POSITIVE, 2, "fp detail");
         mockApiWithIssues(List.of(high, falsePositive));
 
-        List<String> infoLines = new ArrayList<>();
+        List<String> infoLines = new CopyOnWriteArrayList<>();
         Logger.LogListener listener = (level, message) -> {
             if ("INFO".equals(level)) {
                 infoLines.add(message);
@@ -118,7 +118,7 @@ class FindingsIndexReporterIT {
         AuditIssue issue = mockIssue("XSS", "https://example.test/xss", AuditIssueSeverity.HIGH, 5, "Reflected");
         mockApiWithIssues(List.of(issue));
 
-        List<String> lines = new ArrayList<>();
+        List<String> lines = new CopyOnWriteArrayList<>();
         Logger.LogListener listener = (level, message) -> {
             if ("INFO".equals(level) || "DEBUG".equals(level)) {
                 lines.add(message);
@@ -153,7 +153,7 @@ class FindingsIndexReporterIT {
         AuditIssue second = mockIssue("XSS", "https://example.test/", AuditIssueSeverity.HIGH, 7, "detail beta");
         mockApiWithIssues(List.of(first, second));
 
-        List<String> infoLines = new ArrayList<>();
+        List<String> infoLines = new CopyOnWriteArrayList<>();
         Logger.LogListener listener = (level, message) -> {
             if ("INFO".equals(level)) {
                 infoLines.add(message);

@@ -2,6 +2,9 @@ package ai.anomalousvectors.tools.burp.sinks;
 
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Point;
+import java.awt.event.InputEvent;
+import java.awt.event.MouseEvent;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
 import java.util.List;
@@ -25,7 +28,7 @@ final class RepeaterSwingTabWalker<M> {
 
     private final String toolTitle;
     private final int firstPassDelayMs;
-    private final int secondPassDelayMs;
+    private final int retryDelayMs;
     private final int stepDelayMs;
     private final Supplier<? extends Iterable<? extends Component>> rootsSupplier;
     private final Delegate<M> delegate;
@@ -35,26 +38,26 @@ final class RepeaterSwingTabWalker<M> {
     RepeaterSwingTabWalker(
             String toolTitle,
             int firstPassDelayMs,
-            int secondPassDelayMs,
+            int retryDelayMs,
             int stepDelayMs,
             Supplier<? extends Iterable<? extends Component>> rootsSupplier,
             Delegate<M> delegate) {
         this.toolTitle = toolTitle;
         this.firstPassDelayMs = firstPassDelayMs;
-        this.secondPassDelayMs = secondPassDelayMs;
+        this.retryDelayMs = retryDelayMs;
         this.stepDelayMs = stepDelayMs;
         this.rootsSupplier = rootsSupplier;
         this.delegate = delegate;
     }
 
-    /** Schedules both startup passes on the EDT for one export-run generation. */
+    /** Schedules one startup pass, with at most one retry for an observed problem. */
     void schedule(int generation) {
         runOnEdt(() -> {
             if (!delegate.isWalkValid(generation)) {
                 return;
             }
             cancelOwnedWork(true);
-            schedulePass(generation, 1, firstPassDelayMs);
+            schedulePass(generation, 1, firstPassDelayMs, false);
         });
     }
 
@@ -71,20 +74,20 @@ final class RepeaterSwingTabWalker<M> {
         return pendingPassTimer != null || activeSession != null;
     }
 
-    private void schedulePass(int generation, int passNumber, int delayMs) {
+    private void schedulePass(int generation, int passNumber, int delayMs, boolean unresolvedOnly) {
         if (!delegate.isWalkValid(generation)) {
             return;
         }
         Timer timer = new Timer(delayMs, ignored -> {
             pendingPassTimer = null;
-            runPass(generation, passNumber, delayMs);
+            runPass(generation, passNumber, delayMs, unresolvedOnly);
         });
         timer.setRepeats(false);
         pendingPassTimer = timer;
         timer.start();
     }
 
-    private void runPass(int generation, int passNumber, int delayMs) {
+    private void runPass(int generation, int passNumber, int delayMs, boolean unresolvedOnly) {
         if (!delegate.isWalkValid(generation)) {
             return;
         }
@@ -93,7 +96,7 @@ final class RepeaterSwingTabWalker<M> {
             ToolTabLocation location = findToolTabLocation(rootsSupplier.get(), toolTitle);
             if (location == null) {
                 delegate.onPassUnavailable(passNumber, delayMs);
-                scheduleFollowUp(generation, passNumber);
+                scheduleFollowUp(generation, passNumber, true, false);
                 return;
             }
             plan = buildPlan(location, delegate::metadataFor, delegate.captureCount());
@@ -102,20 +105,21 @@ final class RepeaterSwingTabWalker<M> {
                     passNumber,
                     delayMs,
                     new WalkFailure("planning", exception, 0, null));
-            completeWalk(generation);
+            scheduleFollowUp(generation, passNumber, true, false);
             return;
         }
-        WalkSession session = new WalkSession(generation, passNumber, delayMs, plan);
+        WalkSession session = new WalkSession(generation, passNumber, delayMs, plan, unresolvedOnly);
         activeSession = session;
         session.start();
     }
 
-    private void scheduleFollowUp(int generation, int completedPassNumber) {
+    private void scheduleFollowUp(
+            int generation, int completedPassNumber, boolean retryNeeded, boolean unresolvedOnly) {
         if (!delegate.isWalkValid(generation)) {
             return;
         }
-        if (completedPassNumber < 2) {
-            schedulePass(generation, completedPassNumber + 1, secondPassDelayMs);
+        if (retryNeeded && completedPassNumber < 2) {
+            schedulePass(generation, completedPassNumber + 1, retryDelayMs, unresolvedOnly);
         } else {
             completeWalk(generation);
         }
@@ -133,7 +137,7 @@ final class RepeaterSwingTabWalker<M> {
         }
         activeSession = null;
         delegate.onPassCompleted(session.passNumber, session.delayMs, result);
-        scheduleFollowUp(session.generation, session.passNumber);
+        scheduleFollowUp(session.generation, session.passNumber, result.unobservedSlotCount() > 0, true);
     }
 
     private void sessionFailed(WalkSession session, WalkFailure failure) {
@@ -142,7 +146,9 @@ final class RepeaterSwingTabWalker<M> {
         }
         activeSession = null;
         delegate.onPassFailed(session.passNumber, session.delayMs, failure);
-        completeWalk(session.generation);
+        // Never change selections again when restoration itself failed. Otherwise one fresh
+        // plan can recover a transient selection failure without an unbounded retry loop.
+        scheduleFollowUp(session.generation, session.passNumber, failure.restorationFailureCount() == 0, false);
     }
 
     private void cancelOwnedWork(boolean reportRestorationFailure) {
@@ -321,8 +327,10 @@ final class RepeaterSwingTabWalker<M> {
         IdentityHashMap<JTabbedPane, SelectionStep<T>> originalSelections =
                 new IdentityHashMap<>();
         List<SelectionStep<T>> steps = new ArrayList<>();
+        List<CollapsedGroup> collapsedGroups = new ArrayList<>();
         for (int paneOrdinal = 0; paneOrdinal < visitedOrder.size(); paneOrdinal++) {
             JTabbedPane pane = visitedOrder.get(paneOrdinal);
+            rememberCollapsedGroups(pane, collapsedGroups);
             int originalIndex = pane.getSelectedIndex();
             if (originalIndex >= 0 && originalIndex < pane.getTabCount()) {
                 originalSelections.put(
@@ -340,6 +348,7 @@ final class RepeaterSwingTabWalker<M> {
                 List.copyOf(visitedOrder),
                 originalSelections,
                 List.copyOf(steps),
+                List.copyOf(collapsedGroups),
                 metadataFactory,
                 captureCountBefore);
     }
@@ -371,11 +380,14 @@ final class RepeaterSwingTabWalker<M> {
         int originalIndex = pane.getSelectedIndex();
         List<Integer> order = new ArrayList<>(pane.getTabCount());
         for (int index = 0; index < pane.getTabCount(); index++) {
-            if (index != originalIndex) {
+            // Group headers occupy Swing slots but never bind a request editor. Visiting one
+            // toggles group presentation and would also manufacture a missing-binding retry.
+            if (index != originalIndex && !RepeaterTabMetadataHeuristics.isGroupHeader(pane, index)) {
                 order.add(index);
             }
         }
-        if (originalIndex >= 0 && originalIndex < pane.getTabCount()) {
+        if (originalIndex >= 0 && originalIndex < pane.getTabCount()
+                && !RepeaterTabMetadataHeuristics.isGroupHeader(pane, originalIndex)) {
             order.add(originalIndex);
         }
         return order;
@@ -445,8 +457,39 @@ final class RepeaterSwingTabWalker<M> {
             JTabbedPane pane = plan.visitedOrder().get(index);
             restoreSelection(plan, plan.originalSelections().get(pane), failures);
         }
+        for (CollapsedGroup group : plan.collapsedGroups()) {
+            try {
+                group.restore();
+            } catch (RuntimeException exception) {
+                failures.record(exception);
+            }
+        }
         restoreSelection(plan.toolTabs(), plan.originalToolComponent(), failures);
         return failures;
+    }
+
+    /** Remembers collapsed headers before selecting their hidden request tabs on the EDT. */
+    private static void rememberCollapsedGroups(JTabbedPane pane, List<CollapsedGroup> groups) {
+        for (int index = 0; index < pane.getTabCount(); index++) {
+            if (!RepeaterTabMetadataHeuristics.isGroupHeader(pane, index)) {
+                continue;
+            }
+            int count = RepeaterTabMetadataHeuristics.groupChildCount(pane, index);
+            List<Component> children = new ArrayList<>();
+            for (int offset = 1; offset <= count; offset++) {
+                children.add(pane.getTabComponentAt(index + offset));
+            }
+            if (children.stream().allMatch(RepeaterSwingTabWalker::hasCollapsedHeaderBounds)) {
+                groups.add(new CollapsedGroup(pane, pane.getTabComponentAt(index), List.copyOf(children)));
+            }
+        }
+    }
+
+    /** Recognizes children lifted above Burp's horizontal strip when their group is collapsed. */
+    private static boolean hasCollapsedHeaderBounds(Component header) {
+        // Hidden children retain an x coordinate relative to their group; only the vertical
+        // displacement is consistent. Horizontal tab-strip scrolling must not count as collapse.
+        return header != null && header.getY() < 0;
     }
 
     static <T> WalkFailure restoreSelections(WalkPlan<T> plan) {
@@ -557,6 +600,17 @@ final class RepeaterSwingTabWalker<M> {
         void setActiveMetadata(T metadata);
 
         /**
+         * Reports whether Burp supplied an editor binding for this slot during startup.
+         *
+         * <p>A request-only binding counts as observed. This checks callback availability,
+         * not whether a response exists or whether a captured payload is final.</p>
+         *
+         * @param metadata metadata of the planned slot
+         * @return {@code true} after an editor binding was observed for the slot
+         */
+        boolean hasObservedBinding(T metadata);
+
+        /**
          * Reports that a scheduled pass found no usable Repeater root.
          *
          * @param passNumber scheduled pass ordinal
@@ -590,7 +644,8 @@ final class RepeaterSwingTabWalker<M> {
             int tabbedPaneCount,
             int selectionChangeCount,
             int captureCountBefore,
-            int captureCountAfter) { }
+            int captureCountAfter,
+            int unobservedSlotCount) { }
 
     static record WalkFailure(
             String phase,
@@ -637,8 +692,59 @@ final class RepeaterSwingTabWalker<M> {
             List<JTabbedPane> visitedOrder,
             IdentityHashMap<JTabbedPane, SelectionStep<T>> originalSelections,
             List<SelectionStep<T>> steps,
+            List<CollapsedGroup> collapsedGroups,
             MetadataFactory<T> metadataFactory,
             int captureCountBefore) { }
+
+    /** Restores one recognized group using its public Swing mouse control, never private state. */
+    static record CollapsedGroup(JTabbedPane pane, Component header, List<Component> children) {
+        private void restore() {
+            if (children.stream().allMatch(RepeaterSwingTabWalker::hasCollapsedHeaderBounds)) {
+                return;
+            }
+            int index = -1;
+            for (int candidate = 0; candidate < pane.getTabCount(); candidate++) {
+                if (pane.getTabComponentAt(candidate) == header) {
+                    index = candidate;
+                    break;
+                }
+            }
+            if (index < 0 || index + children.size() >= pane.getTabCount()) {
+                throw new IllegalStateException("Original Repeater group changed before restoration");
+            }
+            for (int offset = 0; offset < children.size(); offset++) {
+                if (pane.getTabComponentAt(index + offset + 1) != children.get(offset)) {
+                    throw new IllegalStateException("Original Repeater group children changed before restoration");
+                }
+            }
+            // The header's trailing chevron is the same public UI control used by a mouse click.
+            // Do not toggle an unrecognized/rebuilt header or guess from a group name alone.
+            int x = header.getWidth() - 8;
+            int y = header.getHeight() / 2;
+            Component target = header instanceof Container container
+                    ? SwingUtilities.getDeepestComponentAt(container, x, y) : header;
+            if (target == null || x < 0 || y <= 0) {
+                throw new IllegalStateException("Repeater group collapse control is unavailable");
+            }
+            // Native mouse dispatch retargets passive header children to a listening ancestor.
+            // The tabbed pane can own the control even when the painted chevron has no listener.
+            while (target != pane && target.getMouseListeners().length == 0
+                    && target.getParent() != null) {
+                target = target.getParent();
+            }
+            Point point = SwingUtilities.convertPoint(header, x, y, target);
+            long when = System.currentTimeMillis();
+            for (int event : new int[]{MouseEvent.MOUSE_PRESSED, MouseEvent.MOUSE_RELEASED, MouseEvent.MOUSE_CLICKED}) {
+                int modifiers = event == MouseEvent.MOUSE_PRESSED ? InputEvent.BUTTON1_DOWN_MASK : 0;
+                target.dispatchEvent(new MouseEvent(target, event, when, modifiers, point.x, point.y,
+                        1, false, MouseEvent.BUTTON1));
+            }
+            pane.doLayout();
+            if (!children.stream().allMatch(RepeaterSwingTabWalker::hasCollapsedHeaderBounds)) {
+                throw new IllegalStateException("Repeater group did not return to its collapsed state");
+            }
+        }
+    }
 
     private static final class RestorationFailures {
         private int count;
@@ -657,6 +763,7 @@ final class RepeaterSwingTabWalker<M> {
         private final int passNumber;
         private final int delayMs;
         private final WalkPlan<M> plan;
+        private final boolean unresolvedOnly;
         private final Timer timer;
         private int nextStepIndex;
         private int selectionChanges;
@@ -665,21 +772,30 @@ final class RepeaterSwingTabWalker<M> {
                 int generation,
                 int passNumber,
                 int delayMs,
-                WalkPlan<M> plan) {
+                WalkPlan<M> plan,
+                boolean unresolvedOnly) {
             this.generation = generation;
             this.passNumber = passNumber;
             this.delayMs = delayMs;
             this.plan = plan;
+            this.unresolvedOnly = unresolvedOnly;
             this.timer = new Timer(stepDelayMs, ignored -> processNextStep());
             this.timer.setRepeats(true);
         }
 
         private void start() {
-            if (plan.steps().isEmpty()) {
+            if (plan.steps().isEmpty()
+                    || (unresolvedOnly && plan.steps().stream()
+                            .allMatch(step -> delegate.hasObservedBinding(step.metadata())))) {
                 finish();
                 return;
             }
             try {
+                // A single request tab need not change its selection. Attribute editor
+                // callbacks caused by opening Repeater to that sole slot before activation.
+                if (plan.steps().size() == 1) {
+                    delegate.setActiveMetadata(plan.steps().getFirst().metadata());
+                }
                 selectionChanges += selectPlannedComponent(
                         plan.toolTabs(), plan.repeaterComponent(), "Repeater tool tab");
                 timer.start();
@@ -698,6 +814,10 @@ final class RepeaterSwingTabWalker<M> {
                     delegate.onPassFailed(passNumber, delayMs, failure);
                 }
                 return;
+            }
+            while (unresolvedOnly && nextStepIndex < plan.steps().size()
+                    && delegate.hasObservedBinding(plan.steps().get(nextStepIndex).metadata())) {
+                nextStepIndex++;
             }
             if (nextStepIndex >= plan.steps().size()) {
                 finish();
@@ -727,7 +847,10 @@ final class RepeaterSwingTabWalker<M> {
                     plan.visitedOrder().size(),
                     selectionChanges,
                     plan.captureCountBefore(),
-                    delegate.captureCount()));
+                    delegate.captureCount(),
+                    (int) plan.steps().stream()
+                            .filter(step -> !delegate.hasObservedBinding(step.metadata()))
+                            .count()));
         }
 
         private void fail(String phase, RuntimeException exception) {

@@ -124,6 +124,29 @@ class RepeaterTabsStartupSummaryTest {
         invokeStatic("logStartupExportCompletionSummary", sessionId, true);
     }
 
+    @Test
+    void unobservedSlots_warnOnceOnlyAfterRetryWithoutPerTabDetails() throws Exception {
+        List<String> warnings = new ArrayList<>();
+        Logger.LogListener warningListener = (level, message) -> {
+            if ("WARN".equals(level) && message.startsWith("[RepeaterTabs]")) {
+                warnings.add(message);
+            }
+        };
+        Method method = RepeaterTabsIndexReporter.class.getDeclaredMethod(
+                "logStartupTabWalkResult", int.class, int.class, RepeaterSwingTabWalker.PassResult.class);
+        method.setAccessible(true);
+        Logger.registerListener(warningListener);
+        try {
+            method.invoke(null, 1, 350, new RepeaterSwingTabWalker.PassResult(1, 3, 0, 2, 1));
+            method.invoke(null, 2, 1600, new RepeaterSwingTabWalker.PassResult(1, 1, 2, 2, 1));
+            drainEventDispatchThread();
+            assertThat(warnings).containsExactly(
+                    "[RepeaterTabs] Editor bindings remained unavailable for 1 tab slot(s) after one retry; available captures will be exported.");
+        } finally {
+            Logger.unregisterListener(warningListener);
+        }
+    }
+
     private static void invokeStatic(String methodName) throws Exception {
         Method method = RepeaterTabsIndexReporter.class.getDeclaredMethod(methodName);
         method.setAccessible(true);
