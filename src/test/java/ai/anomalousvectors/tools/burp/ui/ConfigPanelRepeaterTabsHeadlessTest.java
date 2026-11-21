@@ -29,7 +29,8 @@ class ConfigPanelRepeaterTabsHeadlessTest {
         assertThat(repeaterTabsCheckbox.isSelected()).isFalse();
         assertThat(repeaterTabsCheckbox.getToolTipText()).contains("Historic traffic from Repeater tabs");
         assertThat(repeaterTabsCheckbox.getToolTipText()).contains("one-time snapshot when Start is clicked");
-        assertThat(repeaterTabsCheckbox.getToolTipText()).contains("best-effort Repeater tab and group labels");
+        assertThat(repeaterTabsCheckbox.getToolTipText())
+                .contains("Repeater tab and group labels are included when readable in Burp.");
         assertThat(repeaterTabsCheckbox.getToolTipText()).contains("For ongoing and future Repeater traffic, select Repeater");
         assertThat(repeaterTabsCheckbox.getToolTipText()).doesNotContain("may miss");
         assertThat(repeaterTabsCheckbox.getToolTipText()).doesNotContain("enable or disable each one independently");
@@ -42,7 +43,7 @@ class ConfigPanelRepeaterTabsHeadlessTest {
     }
 
     @Test
-    void repeaterTabsInfoNotice_isVisible_withStartupFreezeWarningTooltip() throws Exception {
+    void repeaterTabsInfoNotice_isVisible_withStartupUiControlTooltip() throws Exception {
         ConfigPanel panel = createPanel();
 
         JPanel notice = findByName(panel, "src.traffic.repeater_tabs.infoNotice", JPanel.class);
@@ -54,9 +55,13 @@ class ConfigPanelRepeaterTabsHeadlessTest {
         assertThat(icon.getToolTipText()).contains("Repeater Tabs startup");
         assertThat(icon.getToolTipText()).contains("Montoya API");
         assertThat(icon.getToolTipText()).contains("EDT");
-        assertThat(icon.getToolTipText()).contains("After start, Burp may appear frozen or unresponsive while the walk runs");
+        assertThat(icon.getToolTipText()).contains("temporarily controls Burp's UI to walk the Repeater tabs");
+        assertThat(icon.getToolTipText()).contains("restored on a best-effort basis");
+        assertThat(icon.getToolTipText()).doesNotContain("frozen", "unresponsive");
         assertThat(icon.getToolTipText()).contains("10-30 seconds");
-        assertThat(icon.getToolTipText()).contains("walk runs twice");
+        assertThat(icon.getToolTipText()).contains("One startup pass runs normally");
+        assertThat(icon.getToolTipText()).contains("at most one retry");
+        assertThat(icon.getToolTipText()).doesNotContain("walk runs twice");
         assertThat(icon.getToolTipText()).contains("correlated");
         assertThat(icon.getToolTipText()).doesNotContain("officially expose");
         assertThat(icon.getToolTipText()).doesNotContain("Live Repeater traffic is separate");

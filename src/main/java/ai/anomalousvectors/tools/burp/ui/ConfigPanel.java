@@ -3396,10 +3396,12 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 "<b>Repeater Tabs startup</b>",
                 "Burp does not expose Repeater tabs through the Montoya API. On Start, the exporter will walk "
                         + "existing Repeater tabs with a synchronous Swing UI pass on the EDT (Event Dispatch "
-                        + "Thread). The walk runs twice, then captured tabs are correlated for export.",
+                        + "Thread). One startup pass runs normally, with at most one retry for unavailable tabs "
+                        + "or editor bindings. Captured tabs are then correlated for export.",
                 "",
                 "What to expect:",
-                "&nbsp;&nbsp;- After start, Burp may appear frozen or unresponsive while the walk runs",
+                "&nbsp;&nbsp;- The extension temporarily controls Burp's UI to walk the Repeater tabs and capture their traffic",
+                "&nbsp;&nbsp;- Your previous tool, selected tab, and expanded/collapsed groups are restored on a best-effort basis",
                 "&nbsp;&nbsp;- A common duration is about 10-30 seconds; large tab sets can take longer"
         );
     }
@@ -3878,8 +3880,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         Tooltips.apply(trafficRepeaterTabsCheckbox, Tooltips.html(
                 "Historic traffic from Repeater tabs.",
                 "This exports a one-time snapshot when Start is clicked.",
-                "When Burp exposes readable tab headers, the snapshot also writes best-effort "
-                        + "Repeater tab and group labels.",
+                "Repeater tab and group labels are included when readable in Burp.",
                 "For ongoing and future Repeater traffic, select Repeater."
         ));
         Tooltips.apply(trafficScannerCheckbox, Tooltips.html("All in-scope traffic sent from Scanner."));
