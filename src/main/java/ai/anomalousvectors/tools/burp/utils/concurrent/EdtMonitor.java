@@ -278,13 +278,19 @@ public final class EdtMonitor {
         lastTopFrame.set(topFrame);
     }
 
-    /** Test seam: small wallclock helper exposed for symmetry with chunk-log embedding. */
+    /** Formats epoch timestamps for local-time snapshot diagnostics. */
     public static final class WallClock {
         private static final java.time.format.DateTimeFormatter FORMATTER =
                 java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss.SSS");
 
         private WallClock() {}
 
+        /**
+         * Formats one epoch-millisecond timestamp in the system default time zone.
+         *
+         * @param epochMs epoch milliseconds to format
+         * @return local time in {@code HH:mm:ss.SSS} form
+         */
         public static String format(long epochMs) {
             return java.time.LocalDateTime.ofInstant(
                             java.time.Instant.ofEpochMilli(epochMs),

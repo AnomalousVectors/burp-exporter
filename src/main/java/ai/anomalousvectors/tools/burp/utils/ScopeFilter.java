@@ -11,9 +11,9 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 /**
  * Decides whether a URL is in scope for export based on the extension's scope configuration.
  *
- * <p>Used by traffic and other exporters to skip out-of-scope items. Not thread-safe when
- * state is mutated elsewhere; callers typically pass a snapshot from {@link
- * ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig#getState()}.</p>
+ * <p>Stateless and safe for concurrent callers using immutable {@link ConfigState.State}
+ * snapshots, such as those returned by
+ * {@link ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig#getState()}.</p>
  *
  * <p>Scope type is normalized to lowercase and trimmed so that {@code "Custom"} and
  * {@code "custom"} are treated identically.</p>
@@ -26,11 +26,12 @@ public final class ScopeFilter {
      * Returns whether the given request should be exported according to the current scope.
      *
      * <p>Scope type "all" exports everything; "burp" uses Burp's in-scope flag; "custom"
-     * matches the URL against custom regex/string entries (any match includes the URL).
+     * matches the host, or the full URL when no host can be parsed, against custom regex/string
+     * entries (any match includes the URL).
      * Scope type is normalized to lowercase before comparison.</p>
      *
      * @param state       current config state; {@code null} is treated as no export
-     * @param url         full request URL to test; {@code null} is treated as out of scope
+     * @param url         request URL for custom matching; {@code null} cannot match custom scope
      * @param burpInScope Burp's {@code request.isInScope()} result; used only when
      *                    {@code state.scopeType()} is {@link ConfigKeys#SCOPE_BURP}
      * @return {@code true} if the request is in scope and should be exported

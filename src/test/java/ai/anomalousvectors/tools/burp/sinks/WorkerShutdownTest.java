@@ -77,7 +77,7 @@ class WorkerShutdownTest {
     /**
      * Lifecycle contracts represented by the factory census.
      *
-     * <p>Periodic LazyScheduler owners (stats, settings, findings, sitemap, Proxy History,
+     * <p>LazyScheduler owners (stats, settings, findings, sitemap, Proxy History,
      * orphan export, and both parameter-integrity flushers) start lazily,
      * stop through their owner or {@link ExportReporterLifecycle}, unload through that lifecycle,
      * restart lazily, wait at most {@link Workers#DEFAULT_SHUTDOWN_TIMEOUT_MS}, and interrupt their

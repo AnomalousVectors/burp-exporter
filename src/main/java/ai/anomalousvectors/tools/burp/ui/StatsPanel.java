@@ -1394,7 +1394,7 @@ public final class StatsPanel extends JPanel {
 
     private void updateDashboardSectionSizing() {
         // Each per-sink card hosts a single merged counts table. A shared Copy toolbar sits above
-        // the cards; {@link #updateTablePreferredHeight} keeps table body height in sync with rows.
+        // the cards; updateTablePreferredHeight keeps table body height in sync with rows.
         int sinkOuterPadding = 28;
 
         int openSearchHeight = sinkOuterPadding

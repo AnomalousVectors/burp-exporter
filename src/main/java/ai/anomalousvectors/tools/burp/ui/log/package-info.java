@@ -1,9 +1,13 @@
 /**
- * UI-internal logging components used by {@link ai.anomalousvectors.tools.burp.ui.LogPanel}.
+ * Stores, filters, and renders entries for the extension's Log panel.
  *
  * <p>{@link ai.anomalousvectors.tools.burp.ui.log.LogStore} holds a bounded in-memory log model,
- * and {@link ai.anomalousvectors.tools.burp.ui.log.LogRenderer} renders entries into the panel's
- * {@code JTextPane}. These types are EDT-aware: rendering occurs on the EDT; callers must avoid
- * mutating Swing state off the EDT.</p>
+ * compacts consecutive duplicates, and derives filtered aggregates.
+ * {@link ai.anomalousvectors.tools.burp.ui.log.LogRenderer} applies incremental appends,
+ * replacements, and trims to the panel's {@code JTextPane}. Log production and listener delivery
+ * remain in {@link ai.anomalousvectors.tools.burp.utils.Logger}.</p>
+ *
+ * <p>The model is not thread-safe. The Log panel confines model access and Swing rendering to
+ * the EDT; callers must not concurrently mutate the store or its rendered document.</p>
  */
 package ai.anomalousvectors.tools.burp.ui.log;

@@ -16,6 +16,13 @@ public final class IndentedWrappedPlainView extends WrappedPlainView {
 
     private static final int CONTINUATION_INDENT = 16;
 
+    /**
+     * Creates a word-wrapping view for one document element.
+     *
+     * <p>Caller must invoke on the EDT when attaching the view to a Swing text component.</p>
+     *
+     * @param elem document element represented by this view
+     */
     public IndentedWrappedPlainView(Element elem) {
         super(elem, true);
     }

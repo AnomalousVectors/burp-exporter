@@ -1,15 +1,16 @@
 /**
- * Small, reusable Swing primitives used across the extension UI:
+ * Provides reusable Swing controls, layout helpers, and input bindings.
  *
  * <ul>
- *   <li>{@code AutoSizingTextField}: width tracks content within clamps</li>
- *   <li>{@code TextFieldUndo}: installs undo/redo key bindings</li>
- *   <li>{@code ThickSeparator}: compact 2px separator</li>
- *   <li>{@code StatusViews}: helpers for status areas and message updates</li>
- *   <li>{@code ScrollPanes}: consistent scroll pane creation and scroll speed configuration</li>
+ *   <li>{@link AutoSizingTextField} and {@link AutoSizingPasswordField} size input controls.</li>
+ *   <li>{@link TriStateCheckBox} represents selected, deselected, and partial selections.</li>
+ *   <li>{@link ScopeGrid} edits ordered custom-scope rows.</li>
+ *   <li>{@link TextFieldUndo}, {@link ButtonStyles}, {@link StatusViews}, {@link ScrollPanes},
+ *       and {@link ThickSeparator} supply shared interaction and presentation behavior.</li>
  * </ul>
  *
- * <p>These utilities contain no business logic and are safe to reuse from any panel. All Swing
- * mutations must occur on the EDT.</p>
+ * <p>These components do not perform destination I/O or own export lifecycle work. Caller must
+ * construct and mutate Swing components on the EDT. Serializable controls document how their
+ * transient listeners and bindings are restored.</p>
  */
 package ai.anomalousvectors.tools.burp.ui.primitives;

@@ -83,7 +83,7 @@ class OpenSearchSinkIT {
     /**
      * Verifies the lifecycle for the traffic and exporter source combination.
      *
-     * <p>The exporter source is included because traffic-only selection now omits the Exporter index.
+     * <p>The exporter source is included because traffic-only selection omits the Exporter index.
      * This test ensures both reported indices can be deleted and recreated cleanly.</p>
      */
     @Test

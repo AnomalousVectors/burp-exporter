@@ -326,6 +326,12 @@ public final class RetryQueue {
      * @param documents dequeued documents; never null or empty
      */
     public record PolledBatch(String indexName, List<PreparedExportDocument> documents) {
+        /**
+         * Validates the batch identity and takes an immutable list snapshot.
+         *
+         * @throws IllegalArgumentException if the index name is blank or the batch is empty
+         * @throws NullPointerException if a supplied document element is {@code null}
+         */
         public PolledBatch {
             if (indexName == null || indexName.isBlank()) {
                 throw new IllegalArgumentException("indexName must not be blank");

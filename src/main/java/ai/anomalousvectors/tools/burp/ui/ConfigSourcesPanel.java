@@ -57,6 +57,26 @@ public final class ConfigSourcesPanel {
     private final int indentPx;
     private static final String GAPLEFT = "gapleft ";
 
+    /**
+     * Stores the shared source controls for later panel assembly on the EDT.
+     *
+     * @param settingsCheckbox Settings source selection
+     * @param sitemapCheckbox Sitemap source selection
+     * @param issuesCheckbox Issues source selection
+     * @param trafficCheckbox Traffic source selection
+     * @param exporterCheckbox Exporter source selection
+     * @param settingsExpandButton Settings sub-option toggle
+     * @param settingsSubPanel Settings sub-options
+     * @param issuesExpandButton Issues sub-option toggle
+     * @param issuesSubPanel Issues sub-options
+     * @param trafficExpandButton Traffic sub-option toggle
+     * @param trafficSubPanel Traffic sub-options
+     * @param exporterExpandButton Exporter sub-option toggle
+     * @param exporterSubPanel Exporter sub-options
+     * @param issuesCommunityIndicator optional Community Edition notice; may be {@code null}
+     * @param indentPx horizontal indentation in pixels
+     * @throws NullPointerException if a required control is {@code null}
+     */
     public ConfigSourcesPanel(JCheckBox settingsCheckbox,
                               JCheckBox sitemapCheckbox,
                               JCheckBox issuesCheckbox,

@@ -192,6 +192,11 @@ public final class SnapshotExportEngine {
         return Math.max(0L, permits) * BUILD_AHEAD_PERMIT_BYTES;
     }
 
+    /**
+     * Prepares source items for delivery from the engine's parallel build workers.
+     *
+     * @param <T> snapshot source item type
+     */
     @FunctionalInterface
     public interface ItemPreparer<T> {
         /**

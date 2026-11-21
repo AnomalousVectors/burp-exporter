@@ -91,7 +91,7 @@ final class BurpTimingFields {
                     }
                 }
             } catch (RuntimeException ignored) {
-                // Same optional-timing contract as {@link #from(HttpRequestResponse)}.
+            // Same optional-timing contract as from(HttpRequestResponse).
             }
         }
         return timingMap(timeRequestSent, timeEnd, timeToFirstByteMs, durationMs);

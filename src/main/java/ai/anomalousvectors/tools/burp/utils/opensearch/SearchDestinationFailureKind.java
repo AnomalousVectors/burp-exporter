@@ -7,12 +7,12 @@ import java.util.regex.Pattern;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionStatus;
 
 /**
- * Classifies search-destination probe or push failures for outage vs auto-disable policy.
+ * Classifies search-destination failures for authorization recovery, capacity pacing, or shutdown.
  *
- * <p>{@link #AUTH} failures may disable the database destination. {@link #CAPACITY} failures
- * (gateway timeouts, rate limits, transport pressure) keep export enabled and rely on queueing plus
- * shared backoff. {@link #HARD} covers blank/unusable configuration that cannot recover without
- * operator changes.</p>
+ * <p>During an active run, {@link #AUTH} enters authorization recovery with retained queued work
+ * and automatic health probes. {@link #CAPACITY} failures (gateway timeouts, rate limits, transport
+ * pressure) keep export enabled and rely on queueing plus shared backoff. {@link #HARD} covers
+ * unusable configuration that requires user changes and may disable the database destination.</p>
  *
  * <p>Stateless and safe for concurrent callers.</p>
  */

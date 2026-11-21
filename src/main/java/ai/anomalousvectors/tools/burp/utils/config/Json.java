@@ -203,6 +203,12 @@ public final class Json {
             Map<String, Set<String>> enabledExportFieldsByIndex,
             ConfigState.UiPreferences uiPreferences) {
 
+        /**
+         * Normalizes parsed selections and snapshots imported collections.
+         *
+         * <p>Parameters follow the record-component contract above. Secret values are retained
+         * only in this in-memory result; export serialization excludes them.</p>
+         */
         public ImportedConfig(
                 List<String> dataSources,
                 String scopeType,

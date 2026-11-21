@@ -1,11 +1,13 @@
 /**
- * Pure text utilities (no Swing) for searching and describing queries.
+ * Describes text queries and finds regex or substring match ranges without Swing dependencies.
  *
  * <ul>
- *   <li>{@code TextQuery} – immutable query descriptor (case/regex flags)</li>
- *   <li>{@code TextSearchEngine} – regex/substring search producing index ranges</li>
+ *   <li>{@link TextQuery} carries immutable query text and case, regex, and multiline choices.</li>
+ *   <li>{@link TextSearchEngine} computes match ranges for callers to render or inspect.</li>
  * </ul>
  *
- * <p>These helpers are stateless and thread-safe.</p>
+ * <p>Search operations are stateless and safe for concurrent callers. Invalid regular
+ * expressions propagate as {@link java.util.regex.PatternSyntaxException}; UI validation and
+ * highlighting belong to {@link ai.anomalousvectors.tools.burp.ui.text}.</p>
  */
 package ai.anomalousvectors.tools.burp.utils.text;

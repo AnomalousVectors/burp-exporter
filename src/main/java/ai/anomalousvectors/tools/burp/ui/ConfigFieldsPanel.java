@@ -32,6 +32,15 @@ public final class ConfigFieldsPanel {
     private final JPanel namingDefaultsPanel;
     private final int indentPx;
 
+    /**
+     * Stores the field controls used when assembling the section on the EDT.
+     *
+     * @param expandButtonsByIndex non-null map of index names to existing expand buttons
+     * @param subPanelsByIndex non-null map of index names to existing field panels
+     * @param namingDefaultsPanel optional index-naming controls; {@code null} omits that row
+     * @param indentPx horizontal indentation in pixels
+     * @throws NullPointerException if either control map is {@code null}
+     */
     public ConfigFieldsPanel(
             Map<String, JButton> expandButtonsByIndex,
             Map<String, JPanel> subPanelsByIndex,

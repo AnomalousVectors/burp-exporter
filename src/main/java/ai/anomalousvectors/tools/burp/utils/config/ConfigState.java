@@ -144,6 +144,7 @@ public final class ConfigState {
      * @param kind matching kind; {@code null} normalizes to {@link Kind#REGEX}
      */
     public record ScopeEntry(String value, Kind kind) {
+        /** Normalizes an absent scope expression and matching kind. */
         public ScopeEntry {
             value = value == null ? "" : value;
             kind  = kind == null ? Kind.REGEX : kind;
@@ -191,6 +192,7 @@ public final class ConfigState {
                         OpenSearchAmazonOptions openSearchAmazonOptions,
                         String elasticSearchUrl,
                         ElasticsearchOptions elasticSearchOptions) {
+        /** Normalizes destination values, file limits, TLS modes, and absent product options. */
         public Sinks {
             filesPath = filesPath != null ? filesPath : "";
             fileTotalCapGb = normalizeFileTotalCapGb(fileTotalCapGb);
@@ -248,6 +250,7 @@ public final class ConfigState {
             };
         }
 
+        /** Creates upstream OpenSearch settings with explicit formats and default file safety limits. */
         public Sinks(boolean filesEnabled, String filesPath,
                      boolean fileJsonlEnabled, boolean fileBulkNdjsonEnabled,
                      boolean osEnabled, String openSearchUrl, String openSearchUser, String openSearchPassword,
@@ -259,6 +262,7 @@ public final class ConfigState {
                     defaultOpenSearchOptions());
         }
 
+        /** Creates upstream OpenSearch settings with explicit file limits and default authentication options. */
         public Sinks(boolean filesEnabled, String filesPath, boolean fileJsonlEnabled, boolean fileBulkNdjsonEnabled,
                      boolean fileTotalCapEnabled, double fileTotalCapGb,
                      boolean fileDiskUsagePercentEnabled, int fileDiskUsagePercent,
@@ -271,6 +275,7 @@ public final class ConfigState {
                     openSearchTlsMode, defaultOpenSearchOptions());
         }
 
+        /** Maps the boolean trust-all selection to a TLS mode while retaining explicit file limits. */
         public Sinks(boolean filesEnabled, String filesPath, boolean fileJsonlEnabled, boolean fileBulkNdjsonEnabled,
                      boolean fileTotalCapEnabled, double fileTotalCapGb,
                      boolean fileDiskUsagePercentEnabled, int fileDiskUsagePercent,
@@ -284,6 +289,7 @@ public final class ConfigState {
                     defaultOpenSearchOptions());
         }
 
+        /** Maps the boolean trust-all selection to a TLS mode and uses default file safety limits. */
         public Sinks(boolean filesEnabled, String filesPath,
                      boolean fileJsonlEnabled, boolean fileBulkNdjsonEnabled,
                      boolean osEnabled, String openSearchUrl, String openSearchUser, String openSearchPassword,
@@ -309,6 +315,7 @@ public final class ConfigState {
                     defaultOpenSearchOptions());
         }
 
+        /** Creates upstream OpenSearch settings without file formats and with boolean TLS selection. */
         public Sinks(boolean filesEnabled, String filesPath,
                      boolean osEnabled, String openSearchUrl, String openSearchUser, String openSearchPassword,
                      boolean openSearchInsecureSsl) {
@@ -316,6 +323,7 @@ public final class ConfigState {
                     openSearchInsecureSsl ? OPEN_SEARCH_TLS_INSECURE : OPEN_SEARCH_TLS_VERIFY);
         }
 
+        /** Creates upstream OpenSearch settings while defaulting the other database destinations. */
         public Sinks(boolean filesEnabled, String filesPath, boolean fileJsonlEnabled, boolean fileBulkNdjsonEnabled,
                      boolean fileTotalCapEnabled, double fileTotalCapGb,
                      boolean fileDiskUsagePercentEnabled, int fileDiskUsagePercent,
@@ -351,6 +359,7 @@ public final class ConfigState {
             String pinnedTlsCertificateSourcePath,
             String pinnedTlsCertificateFingerprintSha256,
             String pinnedTlsCertificateEncodedBase64) {
+        /** Normalizes the authentication type and replaces absent non-secret strings with empty values. */
         public OpenSearchOptions {
             authType = normalizeOpenSearchAuthType(authType);
             apiKeyId = apiKeyId == null ? "" : apiKeyId;
@@ -395,6 +404,7 @@ public final class ConfigState {
             String pinnedTlsCertificateSourcePath,
             String pinnedTlsCertificateFingerprintSha256,
             String pinnedTlsCertificateEncodedBase64) {
+        /** Normalizes Amazon options while preserving the Basic username exactly as supplied. */
         public OpenSearchAmazonOptions {
             authType = normalizeOpenSearchAmazonAuthType(authType);
             username = username == null ? "" : username;
@@ -439,6 +449,7 @@ public final class ConfigState {
             String pinnedTlsCertificateSourcePath,
             String pinnedTlsCertificateFingerprintSha256,
             String pinnedTlsCertificateEncodedBase64) {
+        /** Normalizes Elasticsearch options while preserving the Basic username exactly as supplied. */
         public ElasticsearchOptions {
             authType = normalizeElasticsearchAuthType(authType);
             username = username == null ? "" : username;
@@ -465,6 +476,7 @@ public final class ConfigState {
             String searchText,
             boolean searchCase,
             boolean searchRegex) {
+        /** Normalizes the visible log level and replaces absent filter and search text with empty strings. */
         public LogPanelPreferences {
             minLevel = normalizeLogMinLevel(minLevel);
             filterText = filterText == null ? "" : filterText;
@@ -474,6 +486,7 @@ public final class ConfigState {
 
     /** Persisted UI preferences that should survive save/export/import. */
     public record UiPreferences(int statsChartStyle, LogPanelPreferences logPanel) {
+        /** Clamps the chart style and supplies default Log preferences when absent. */
         public UiPreferences {
             statsChartStyle = Math.clamp(statsChartStyle, 1, 3);
             logPanel = logPanel == null ? defaultLogPanelPreferences() : logPanel;
@@ -483,14 +496,15 @@ public final class ConfigState {
     /**
      * Captures the full persisted exporter configuration.
      *
-     * <p>Collection components are normalized to immutable snapshots. Missing exporter settings are
-     * normalized to the current defaults so legacy imports retain the intended Exporter-index behavior.</p>
+     * <p>Collection components are normalized to immutable snapshots. The canonical constructor
+     * normalizes null selection lists to empty selections. Convenience constructors supply defaults
+     * for omitted Exporter, naming, and UI components.</p>
      *
      * @param dataSources selected top-level source keys such as {@code settings} or
      *                    {@code exporter}
      * @param scopeType scope mode: {@code all}, {@code burp}, or {@code custom}
      * @param customEntries ordered custom-scope entries used when {@code scopeType=custom}
-     * @param sinks destination configuration for Files and OpenSearch
+     * @param sinks destination configuration for Files and Database
      * @param settingsSub selected Settings source sub-options
      * @param trafficToolTypes selected traffic-producing Burp tool types
      * @param findingsSeverities selected finding severities
@@ -506,14 +520,15 @@ public final class ConfigState {
                         List<ScopeEntry> customEntries, // ordered; used when scopeType=custom
                         Sinks sinks,
                         List<String> settingsSub,       // "project", "user"; default both
-                        List<String> trafficToolTypes,  // ToolType names; default empty (no traffic)
-                        List<String> findingsSeverities, // AuditIssueSeverity names; default all five
+                        List<String> trafficToolTypes,  // normalized traffic tool configuration IDs
+                        List<String> findingsSeverities, // lowercase configured severity IDs
                         List<String> exporterSubOptions, // trace/debug/info/warn/error/stats/config
                         int exporterStatsIntervalSeconds, // seconds; default 30
                         String indexNameBaseTemplate, // global base template used for default index names
                         Map<String, Set<String>> enabledExportFieldsByIndex, // index shortName -> enabled toggleable field keys; null = all enabled
                         UiPreferences uiPreferences) {
 
+        /** Normalizes selection values and takes immutable snapshots of configuration collections. */
         public State {
             dataSources       = normalizeDataSources(dataSources);
             scopeType         = normalizeScopeType(scopeType);
@@ -528,6 +543,7 @@ public final class ConfigState {
             uiPreferences = uiPreferences == null ? defaultUiPreferences() : uiPreferences;
         }
 
+        /** Creates configuration with explicit naming and field selection, using default UI preferences. */
         public State(List<String> dataSources,
                      String scopeType,
                      List<ScopeEntry> customEntries,
@@ -545,6 +561,7 @@ public final class ConfigState {
                     defaultUiPreferences());
         }
 
+        /** Creates configuration with explicit Exporter options, using default naming and UI preferences. */
         public State(List<String> dataSources,
                      String scopeType,
                      List<ScopeEntry> customEntries,
@@ -561,6 +578,7 @@ public final class ConfigState {
                     defaultUiPreferences());
         }
 
+        /** Creates configuration with explicit UI preferences and Exporter options, using default naming. */
         public State(List<String> dataSources,
                      String scopeType,
                      List<ScopeEntry> customEntries,
@@ -577,6 +595,7 @@ public final class ConfigState {
                     DEFAULT_INDEX_NAME_BASE_TEMPLATE, enabledExportFieldsByIndex, uiPreferences);
         }
 
+        /** Creates configuration with explicit field and UI choices, using default Exporter and naming options. */
         public State(List<String> dataSources,
                      String scopeType,
                      List<ScopeEntry> customEntries,
@@ -591,6 +610,7 @@ public final class ConfigState {
                     DEFAULT_INDEX_NAME_BASE_TEMPLATE, enabledExportFieldsByIndex, uiPreferences);
         }
 
+        /** Creates configuration with explicit field choices, using default Exporter, naming, and UI options. */
         public State(List<String> dataSources,
                      String scopeType,
                      List<ScopeEntry> customEntries,

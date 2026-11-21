@@ -32,8 +32,17 @@ public final class WholeFileSave {
         REPLACE_EXISTING
     }
 
+    /** Injectable filesystem move used to verify transactional replacement behavior. */
     @FunctionalInterface
     interface MoveOperation {
+        /**
+         * Moves a complete temporary file according to the selected replacement options.
+         *
+         * @param source completed sibling temporary file
+         * @param target final destination path
+         * @param options atomic-move and replacement options selected by the save policy
+         * @throws IOException when the move cannot complete
+         */
         void move(Path source, Path target, CopyOption... options) throws IOException;
     }
 

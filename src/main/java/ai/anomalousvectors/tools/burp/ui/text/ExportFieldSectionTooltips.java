@@ -8,6 +8,13 @@ public final class ExportFieldSectionTooltips {
 
     private ExportFieldSectionTooltips() {}
 
+    /**
+     * Builds the HTML tooltip for an export-field group.
+     *
+     * @param indexShortName non-null logical index key; unknown keys use the generic description
+     * @param sectionPath dotted group path within that index
+     * @return HTML tooltip describing the group
+     */
     public static String sectionTooltipFor(String indexShortName, String sectionPath) {
         return Tooltips.html(descriptionFor(indexShortName, sectionPath));
     }

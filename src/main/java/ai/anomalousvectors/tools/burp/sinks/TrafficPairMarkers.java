@@ -7,10 +7,21 @@ import ai.anomalousvectors.tools.burp.utils.StringKeyedMaps;
 import burp.api.montoya.core.Marker;
 import burp.api.montoya.http.message.HttpRequestResponse;
 
+/** Copies pair-level marker ranges into exported body maps without changing Burp annotations. */
 final class TrafficPairMarkers {
 
     private TrafficPairMarkers() {}
 
+    /**
+     * Overlays available request and response ranges independently.
+     *
+     * <p>Mutates only the supplied export maps. A runtime failure from one marker accessor omits
+     * that side's markers without preventing capture of the other side.</p>
+     *
+     * @param requestDoc mutable request document; {@code null} is ignored
+     * @param responseDoc mutable response document; {@code null} is ignored
+     * @param pair pair exposing marker ranges; {@code null} supplies no ranges
+     */
     static void overlayPairMarkers(
             Map<String, Object> requestDoc, Map<String, Object> responseDoc, HttpRequestResponse pair) {
         try {

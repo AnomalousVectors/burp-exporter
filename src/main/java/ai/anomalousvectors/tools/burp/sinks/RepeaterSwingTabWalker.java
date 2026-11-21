@@ -501,31 +501,88 @@ final class RepeaterSwingTabWalker<M> {
         return new WalkFailure(phase, effectivePrimary, restoration.count, restoration.first);
     }
 
+    /** Creates slot metadata while the walker observes Swing selection on the EDT. */
     @FunctionalInterface
     interface MetadataFactory<T> {
+        /**
+         * Describes the currently selected slot without changing its selection.
+         *
+         * @param pane observed tabbed pane
+         * @param selectedIndex selected tab index
+         * @param paneOrdinal ordinal assigned to the pane within this walk
+         * @return slot metadata
+         */
         T create(JTabbedPane pane, int selectedIndex, int paneOrdinal);
     }
 
+    /** Publishes the slot context used by editor callbacks during an EDT selection change. */
     @FunctionalInterface
     interface ActiveMetadataConsumer<T> {
+        /**
+         * Replaces the active slot context for the current capture step.
+         *
+         * @param metadata active metadata, or {@code null} when clearing the context
+         */
         void accept(T metadata);
     }
 
+    /** Supplies capture state and receives walk outcomes on the EDT. */
     interface Delegate<T> {
+        /**
+         * Checks whether delayed work still belongs to the active run.
+         *
+         * @param generation run generation captured when the walk was scheduled
+         * @return {@code true} when selection and capture may continue
+         */
         boolean isWalkValid(int generation);
 
+        /** Returns the current captured-item count for pass-delta accounting. */
         int captureCount();
 
+        /**
+         * Resolves metadata for one selected tab slot.
+         *
+         * @param pane observed tabbed pane
+         * @param selectedIndex selected tab index
+         * @param paneOrdinal ordinal assigned within this walk
+         * @return metadata to associate with editor observations for the slot
+         */
         T metadataFor(JTabbedPane pane, int selectedIndex, int paneOrdinal);
 
+        /**
+         * Publishes or clears the slot context consumed by editor capture hooks.
+         *
+         * @param metadata active metadata, or {@code null} to clear it
+         */
         void setActiveMetadata(T metadata);
 
+        /**
+         * Reports that a scheduled pass found no usable Repeater root.
+         *
+         * @param passNumber scheduled pass ordinal
+         * @param delayMs delay assigned to that pass
+         */
         void onPassUnavailable(int passNumber, int delayMs);
 
+        /**
+         * Reports a completed pass after its selection-restoration attempts.
+         *
+         * @param passNumber scheduled pass ordinal
+         * @param delayMs delay assigned to that pass
+         * @param result observed pane, selection, and capture counts
+         */
         void onPassCompleted(int passNumber, int delayMs, PassResult result);
 
+        /**
+         * Reports a pass failure and any accompanying restoration failures.
+         *
+         * @param passNumber scheduled pass ordinal
+         * @param delayMs delay assigned to that pass
+         * @param failure failure details retained by the walker
+         */
         void onPassFailed(int passNumber, int delayMs, WalkFailure failure);
 
+        /** Reports that the owned walk has reached its completion boundary. */
         void onWalkCompleted();
     }
 

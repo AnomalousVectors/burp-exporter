@@ -60,10 +60,11 @@ public final class SettingsIndexReporter {
     }
 
     /**
-     * Pushes one settings snapshot immediately (e.g. initial push on Start).
-     * Always pushes and logs; does not compare to last pushed hash. Safe to call
-     * from any thread. No-op if export is not running, no sink is enabled,
-     * or Settings is not in the selected data sources.
+     * Pushes one selected Settings snapshot without comparing the last successful hash.
+     *
+     * <p>Performs synchronous Burp reads and destination I/O; caller must invoke off the EDT.
+     * No-op if export is stopped, no sink is enabled, Settings is not selected, or the Burp API
+     * is unavailable. An attempted push records and logs its outcome.</p>
      */
     public static void pushSnapshotNow() {
         try {

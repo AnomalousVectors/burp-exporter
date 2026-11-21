@@ -14,8 +14,9 @@ import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
 import net.miginfocom.swing.MigLayout;
 
 /**
- * Builds the "Export Scope" section panel used by ConfigPanel.
- * Components are owned by ConfigPanel and injected to keep a single source of state.
+ * Builds the "Export Scope" section panel used by {@link ConfigPanel}.
+ *
+ * <p>Components are owned by {@link ConfigPanel} and injected to keep a single source of state.</p>
  */
 public final class ConfigScopePanel {
 
@@ -28,6 +29,16 @@ public final class ConfigScopePanel {
     private static final String GAPLEFT = "gapleft ";
     private static final String ALIGN_LEFT_TOP = "alignx left, top";
 
+    /**
+     * Stores the shared scope controls for later panel assembly on the EDT.
+     *
+     * @param allRadio all-traffic selection control
+     * @param burpRadio Burp-scope selection control
+     * @param customRadio custom-scope selection control
+     * @param grid custom scope-rule editor
+     * @param indentPx horizontal indentation in pixels
+     * @throws NullPointerException if any control is {@code null}
+     */
     public ConfigScopePanel(
             JRadioButton allRadio,
             JRadioButton burpRadio,

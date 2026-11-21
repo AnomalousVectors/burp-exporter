@@ -568,6 +568,7 @@ public class OpenSearchClientWrapper {
      * @param reason server or local failure reason; {@code null} becomes {@code unknown}
      */
     public record FailedItem(int index, String type, String reason) {
+        /** Replaces absent error labels with stable diagnostic fallback values. */
         public FailedItem {
             type = type == null ? "unknown" : type;
             reason = reason == null ? "unknown" : reason;

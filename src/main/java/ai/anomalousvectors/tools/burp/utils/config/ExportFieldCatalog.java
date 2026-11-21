@@ -44,6 +44,7 @@ public final class ExportFieldCatalog {
             return new Node("", "", Kind.DIRECTORY, new ArrayList<>());
         }
 
+        /** Returns this path segment, or an empty string for the synthetic root. */
         public String segment() {
             return segment;
         }
@@ -53,14 +54,17 @@ public final class ExportFieldCatalog {
             return path;
         }
 
+        /** Returns whether this node is structural, toggleable, or required. */
         public Kind kind() {
             return kind;
         }
 
+        /** Returns immutable child nodes in catalog order. */
         public List<Node> children() {
             return children;
         }
 
+        /** Returns whether this node groups child fields rather than representing a leaf. */
         public boolean isDirectory() {
             return kind == Kind.DIRECTORY;
         }

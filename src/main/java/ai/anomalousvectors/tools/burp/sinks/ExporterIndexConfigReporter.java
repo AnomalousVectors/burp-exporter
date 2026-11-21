@@ -29,8 +29,10 @@ public final class ExporterIndexConfigReporter {
     /**
      * Pushes one configuration snapshot to the enabled sinks.
      *
-     * <p>Safe to call from any thread. Returns immediately when export is stopped, the exporter
-     * config sub-option is disabled, or no sink is enabled. Delivery is fire-and-forget.</p>
+     * <p>Safe for concurrent callers, but performs synchronous file/network work. Caller must
+     * invoke off the EDT. Returns immediately when export is stopped, the exporter config
+     * sub-option is disabled, or no sink is enabled. Delivery outcomes are recorded and logged
+     * rather than returned.</p>
      */
     public static void pushConfigSnapshot() {
         try {

@@ -66,9 +66,9 @@ public final class ExporterIndexStatsReporter {
     /**
      * Pushes one stats snapshot immediately while export is running.
      *
-     * <p>Safe to call from any thread. Returns immediately when export is stopped, the exporter
-     * stats sub-option is disabled, or no sink is enabled. This is an on-demand push, not the
-     * scheduled periodic ticker.</p>
+     * <p>Safe for concurrent callers, but performs synchronous destination I/O. Caller must invoke
+     * off the EDT. Returns immediately when export is stopped, the exporter stats sub-option is
+     * disabled, or no sink is enabled. This is an on-demand push, not the periodic ticker.</p>
      */
     public static void pushSnapshotNow() {
         if (!ENABLED) {
@@ -82,7 +82,8 @@ public final class ExporterIndexStatsReporter {
      *
      * <p>Bypasses the export-running gate and the retry coordinator {@code isExportReady} check
      * via {@link OpenSearchClientWrapper#pushDocumentDuringShutdown}. Returns a skip outcome when
-     * exporter stats are disabled or no sink is enabled.</p>
+     * exporter stats are disabled or no sink is enabled. Performs synchronous destination I/O;
+     * caller must invoke off the EDT.</p>
      *
      * @return push outcome for logging at Stop or unload
      */
@@ -97,8 +98,8 @@ public final class ExporterIndexStatsReporter {
      * Returns whether a final stats snapshot should be attempted on extension unload.
      *
      * <p>True only while an export run is still active and unload must substitute for normal Stop.
-     * A completed Stop already wrote its final snapshot; writing another during a later extension
-     * unload could auto-create a deleted Exporter index with destination defaults.</p>
+     * A completed Stop already handled its final snapshot attempt; writing another during a later
+     * extension unload could auto-create a deleted Exporter index with destination defaults.</p>
      *
      * @return {@code true} when {@link #pushFinalSnapshotNow()} is worth attempting before pool close
      */

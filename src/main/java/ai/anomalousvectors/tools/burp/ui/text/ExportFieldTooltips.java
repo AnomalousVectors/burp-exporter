@@ -11,8 +11,13 @@ public final class ExportFieldTooltips {
     private ExportFieldTooltips() {}
 
     /**
-     * Checkbox/label text for a leaf under a top-level section (e.g. {@code comment} under Burp).
-     * Tooltips still use the full dotted {@code fieldKey}.
+     * Returns a leaf label relative to its enclosing field group.
+     *
+     * <p>Tooltips still use the full dotted {@code fieldKey}.</p>
+     *
+     * @param sectionPath enclosing group path; null or blank leaves the full field key
+     * @param fieldKey dotted export-field path; null or blank produces an empty label
+     * @return capitalized display label with underscores replaced by spaces
      */
     public static String checkboxLabelUnderSection(String sectionPath, String fieldKey) {
         String rawLabel;
@@ -35,6 +40,13 @@ public final class ExportFieldTooltips {
         return Character.toUpperCase(label.charAt(0)) + label.substring(1);
     }
 
+    /**
+     * Returns the display name for a field without changing its export path.
+     *
+     * @param indexShortName logical index key used for index-specific labels
+     * @param fieldKey dotted export-field path
+     * @return index-specific label, or the field key when no override exists
+     */
     public static String displayNameFor(String indexShortName, String fieldKey) {
         if (isMetaField(fieldKey)) {
             return fieldKey;
@@ -55,6 +67,13 @@ public final class ExportFieldTooltips {
         };
     }
 
+    /**
+     * Builds a field tooltip that includes its exact exported path.
+     *
+     * @param indexShortName logical index key used for index-specific descriptions
+     * @param fieldKey dotted export-field path
+     * @return HTML field description, with a path prefix when the key is non-blank
+     */
     public static String tooltipFor(String indexShortName, String fieldKey) {
         return withFieldPathPrefix(fieldKey, tooltipBodyFor(indexShortName, fieldKey));
     }

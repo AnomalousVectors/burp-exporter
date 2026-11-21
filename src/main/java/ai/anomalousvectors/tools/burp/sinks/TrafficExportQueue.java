@@ -25,18 +25,19 @@ import ai.anomalousvectors.tools.burp.utils.opensearch.ChunkedBulkSender;
 import ai.anomalousvectors.tools.burp.utils.opensearch.IndexingRetryCoordinator;
 
 /**
- * Bounded queue for traffic documents so the HTTP thread can enqueue and return immediately.
+ * Offloads prepared traffic documents to bounded memory and spill queues for destination delivery.
  *
  * <p>Documents are prepared once at {@link #offer(Map)} into {@link TrafficQueueEntry}. A
- * dedicated worker thread drains the queue and pushes via the OpenSearch Bulk API using chunked
- * request body (NDJSON written incrementally; no full batch list in memory). In-memory capacity is
- * heap-headroom byte-based ({@link ExportAdmissionController}); when memory pressure rises or the
- * destination is in Soft Outage/cooldown, documents spill to a temp-dir file queue. New live
- * traffic is rejected only when spill is actually full or low on disk, preserving the earliest
- * backlog. Batches
- * are limited by count ({@link BatchSizeController}), payload size
- * ({@link BulkByteBudget}, typically 5 MiB; Amazon starts near 1 MiB), and time (flush after
- * 100 ms). Used by live HTTP and live non-proxy WebSocket export paths.</p>
+ * dedicated worker drains bounded batches; {@link ChunkedBulkSender} materializes each database
+ * NDJSON request body before transport. Callback threads do not wait for destination HTTP
+ * completion, but document preparation and spill admission still run on the offering thread.</p>
+ *
+ * <p>In-memory capacity is heap-headroom byte-based ({@link ExportAdmissionController}). Memory
+ * pressure, Soft Outage, or cooldown routes admitted work to the managed file-backed spill queue,
+ * preserving earlier backlog when capacity is exhausted. Batches are limited by count
+ * ({@link BatchSizeController}), adaptive payload budget ({@link BulkByteBudget}, initially about
+ * 1 MiB and capped at 5 MiB), and a 100-millisecond flush-age target. Shared
+ * live HTTP, WebSocket, and streaming-recovery producers use this delivery path.</p>
  */
 public final class TrafficExportQueue {
     /** Serializes run-fenced admission with Stop's discard, never document preparation. */
@@ -233,11 +234,12 @@ public final class TrafficExportQueue {
     }
 
     /**
-     * Offers a traffic document to the queue. Non-blocking.
+     * Prepares and offers a traffic document without waiting for destination HTTP completion.
      *
      * <p>When memory pressure rises the document is spilled. When spill rejects it (Full / low
      * disk), the new document is rejected so the earliest backlog stays contiguous. Starts the
-     * drain worker on first use. Thread-safe.</p>
+     * drain worker on first use. Thread-safe, but preparation and spill-file I/O run on the
+     * offering thread.</p>
      *
      * @param document the document to enqueue; {@code null} is ignored
      */
@@ -247,6 +249,8 @@ public final class TrafficExportQueue {
 
     /**
      * Offers a traffic document when export sinks are active.
+     *
+     * <p>Uses the same synchronous preparation and spill admission as {@link #offer(Map)}.</p>
      *
      * @param document document to enqueue; {@code null} is ignored
      * @return {@code true} when the document was queued or spilled; {@code false} when it was dropped

@@ -41,8 +41,9 @@ import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
  * thread periodically retries queued work.</p>
  *
  * <p>Thread-safe. Public push methods may block on offered-load pacing, retry backoff, and HTTP
- * completion. Lifecycle methods coordinate the background drain through an ownership lock; Stop
- * and stale-run cancellation leave current-run accounting unchanged.</p>
+ * completion. Lifecycle methods coordinate the background drain through an ownership lock.
+ * Canceled push outcomes do not become destination failures; Stop separately accounts for
+ * undrained retry work discarded at the run boundary.</p>
  */
 public final class IndexingRetryCoordinator {
 

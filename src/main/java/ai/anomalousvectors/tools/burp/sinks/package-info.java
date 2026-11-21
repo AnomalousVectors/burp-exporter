@@ -1,61 +1,37 @@
 /**
- * Turns Burp sources into exporter output for search database and file destinations.
+ * Captures Burp sources and delivers prepared documents to database and file destinations.
  *
- * <p>This package houses:</p>
+ * <p>The main responsibilities are:</p>
  * <ul>
- *   <li><b>Traffic reporters</b> — {@link ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler},
- *       {@link ai.anomalousvectors.tools.burp.sinks.TrafficProxyHttpHandler},
- *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyHistoryIndexReporter},
- *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketIndexReporter},
- *       {@link ai.anomalousvectors.tools.burp.sinks.ProxyWebSocketLiveHandler},
- *       {@link ai.anomalousvectors.tools.burp.sinks.ToolWebSocketLiveHandler},
- *       {@link ai.anomalousvectors.tools.burp.sinks.RepeaterTabsIndexReporter} — that feed
- *       the shared {@code traffic} index.</li>
- *   <li><b>Non-traffic reporters</b> —
- *       {@link ai.anomalousvectors.tools.burp.sinks.SitemapIndexReporter},
- *       {@link ai.anomalousvectors.tools.burp.sinks.FindingsIndexReporter},
- *       {@link ai.anomalousvectors.tools.burp.sinks.ExporterIndexConfigReporter},
- *       {@link ai.anomalousvectors.tools.burp.sinks.ExporterIndexStatsReporter} — that write
- *       their own domain indices.</li>
- *   <li><b>Parameter integrity</b> — {@link ai.anomalousvectors.tools.burp.sinks.BodyContentEncodingSupport},
- *       session-boundary rollups ({@link ai.anomalousvectors.tools.burp.sinks.ParameterIntegritySessionLog},
- *       {@link ai.anomalousvectors.tools.burp.sinks.BodyEnumerationSkippedLog},
- *       {@link ai.anomalousvectors.tools.burp.sinks.CompressedWireBodyParamsLog}), and Stats /
- *       exporter {@code stats_snapshot} stats for operator reconciliation.</li>
- *   <li><b>Shared infrastructure</b> —
- *       {@link ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue} bounded queue and spill,
- *       {@link ai.anomalousvectors.tools.burp.sinks.FileExportService} file-sink writer,
- *       {@link ai.anomalousvectors.tools.burp.sinks.SearchRecoveryBootstrap} search authorization
- *       recovery and reproducible snapshot replay,
- *       {@link ai.anomalousvectors.tools.burp.sinks.TrafficRouteBucket} route mapping for
- *       traffic counters, {@link ai.anomalousvectors.tools.burp.sinks.BulkOutcomeRecorder}
- *       bulk success/failure accounting,
- *       {@link ai.anomalousvectors.tools.burp.sinks.SingleDocOutcomeRecorder} single-document
- *       success/failure accounting, and
- *       {@link ai.anomalousvectors.tools.burp.sinks.SnapshotSummary} one-shot run summaries.</li>
+ *   <li>Live HTTP and WebSocket capture, explicit Proxy History export, retained streaming
+ *       response observation, and startup Repeater-tab capture for the {@code traffic} index.</li>
+ *   <li>Settings, Sitemap, Findings, and Exporter reporters for their respective indexes.</li>
+ *   <li>Shared HTTP document construction, body decoding and omission policies, parameter
+ *       integrity diagnostics, and source-attributed delivery accounting.</li>
+ *   <li>Bounded traffic queuing and spill, file append integrity, and database index validation
+ *       and snapshot replay through {@link SearchRecoveryBootstrap}.</li>
  * </ul>
  *
  * <p>Native Proxy callbacks capture live Proxy traffic with its own listener metadata; general HTTP
  * callbacks capture other tools. Both use the initiating sent request and original server response.
- * Native Proxy and general HTTP message IDs are separate namespaces, neither a UI History row ID. Live export
- * does not join callbacks to History or write Notes to enrich those IDs. A separate
- * {@link ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery} worker observes retained
- * streaming responses for up to five minutes and publishes immutable snapshots from each exact
- * History row. Database snapshots replace that capture's document with strict revision ordering;
- * file sinks append observations. Explicit Proxy History snapshots use
- * each row's own ID, finalRequest(), and documented received server response. Notes and highlights are read-only
- * metadata on every path.</p>
+ * Native Proxy and general HTTP message IDs are separate namespaces, neither a UI History row ID.
+ * Live export does not join callbacks to History. {@link StreamingProxyRecovery} independently
+ * observes retained streaming responses and publishes snapshots identified by their exact History
+ * row. Its bounded observation window is not proof of HTTP completion. Database revisions replace
+ * that capture's document; file sinks append observations. Explicit Proxy History exports use each
+ * row's own ID, {@code finalRequest()}, and received server response. Notes and highlights remain
+ * read-only metadata on every path.</p>
  *
  * <p>One-shot snapshot backlogs (Proxy History, Sitemap initial, Findings backlog, Proxy WebSocket
  * historic) run in cooperative slices through
  * {@link ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator} and use
  * {@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine} with
- * {@link ai.anomalousvectors.tools.burp.utils.opensearch.OpenSearchClientWrapper#pushPreparedBulk}
- * (pre-serialized NDJSON). Live traffic uses
- * {@link ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue} and
- * {@link ai.anomalousvectors.tools.burp.utils.opensearch.ChunkedBulkSender}. Incremental reporters
- * (Sitemap 30s, Findings 30s) batch prepared documents directly. All paths converge on
- * {@link ai.anomalousvectors.tools.burp.sinks.FileExportService} for file output, where run-scoped
- * directory ownership and artifact identity/size checks protect append integrity.</p>
+ * prepared bulk delivery. Live traffic uses {@link TrafficExportQueue}; incremental reporters
+ * prepare their own batches. {@link FileExportService} protects file appends through run-scoped
+ * directory ownership and artifact identity/size checks.</p>
+ *
+ * <p>Destination writes, History reads, and snapshot work belong off the EDT. Queue admission
+ * still performs synchronous preparation and may write to spill storage; it does not wait for
+ * destination HTTP completion. {@link ExportReporterLifecycle} coordinates Stop and unload.</p>
  */
 package ai.anomalousvectors.tools.burp.sinks;

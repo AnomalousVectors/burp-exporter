@@ -36,7 +36,7 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 
 /**
  * Pushes Burp sitemap items to the sitemap index when export is running and
- * "Sitemap" is selected. Initial push on Start exports every site-map row returned
+ * "Sitemap" is selected. Initial push on Start considers every in-scope site-map row returned
  * by Montoya (background); every 30 seconds exports only in-scope rows whose
  * {@link SnapshotExportFingerprints#sitemapEntryFingerprint} was not yet seen this run.
  */

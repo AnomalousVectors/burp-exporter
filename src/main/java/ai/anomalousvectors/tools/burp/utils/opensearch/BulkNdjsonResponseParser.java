@@ -16,7 +16,7 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 
 /**
- * Parses search database bulk NDJSON HTTP response bodies into success and per-item failure details.
+ * Parses search database bulk JSON responses into success and per-item failure details.
  *
  * <p>Shared by {@link PreparedBulkSender} and {@link ChunkedBulkSender} so snapshot, live, and
  * retry paths emit identical failure logging.</p>
@@ -65,6 +65,7 @@ public final class BulkNdjsonResponseParser {
                     failedItems != null && !failedItems.isEmpty(), List.of());
         }
 
+        /** Normalizes absent outcomes and snapshots failure and acknowledgment lists. */
         public ParsedBulk {
             breakdown = breakdown != null ? breakdown : BulkOutcomeBreakdown.empty();
             failedItems = failedItems != null ? List.copyOf(failedItems) : List.of();

@@ -10,7 +10,9 @@ import ai.anomalousvectors.tools.burp.utils.StringKeyedMaps;
 
 /**
  * Filters a document map to only include keys allowed for export for the given index.
- * Used before push so disabled fields (Fields panel) are not sent to OpenSearch.
+ *
+ * <p>Runs during shared document preparation so disabled optional fields are omitted from both
+ * Files and Database output. Required fields remain governed by {@link ExportFieldRegistry}.</p>
  */
 public final class ExportFieldFilter {
 

@@ -1,5 +1,9 @@
 /**
- * OpenSearch transport utilities shared by all sinks that push to OpenSearch.
+ * Delivers search bulk requests with authentication, adaptive capacity control, and retries.
+ *
+ * <p>Despite the package name, these shared transport paths serve OpenSearch, Amazon OpenSearch,
+ * and Elasticsearch. Destination-neutral endpoint, deployment, and mapping adaptation helpers
+ * live in {@link ai.anomalousvectors.tools.burp.utils.search}.</p>
  *
  * <p>Three bulk entry paths serve different workloads:</p>
  * <ul>
@@ -21,28 +25,21 @@
  *       delegates to the same byte-budgeted sender used by prepared bulk operations.</li>
  * </ul>
  *
- * <p>Batch sizing is governed by
- * {@link BatchSizeController} for live traffic and
- * most incremental reporters. Startup snapshots use shared 50–1500-document chunk targets with
- * a separate live byte ceiling, live-queue and GC backpressure; cooperative startup slice sizes
- * are independently controlled by
- * {@link ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator}.
- * All search destinations share
- * {@link BulkByteBudget} AIMD control (all adaptive
- * destinations start at 1 MiB with one in-flight flush; floor 512 KiB; grow/shrink under pressure;
- * asymmetric restore after soft-outage clear; metric-driven ceiling climb and up to three in-flight
- * snapshot flushes after a healthy success streak) and may briefly serialize snapshot flushes after
- * hard capacity pressure.
- * {@link BulkRateLimitBackoff} keeps hard
- * gateway/transport cooldowns cluster-wide, scopes mild per-item capacity cooldowns per index, and
- * caps Stop-drain cooldown waits so shutdown can still attempt recovery. Soft-outage drain keeps
- * the normal cadence while work is queued. Gateway/timeout health-probe failures enter soft outage
- * (queue + back off) instead of auto-disabling the destination.</p>
+ * <p>{@link BatchSizeController}, {@link BulkByteBudget}, and {@link OfferedLoadGovernor} bound
+ * batch count, request bytes, in-flight work, and offered load. {@link BulkRateLimitBackoff}
+ * coordinates shared or per-index cooldowns. {@link IndexingRetryCoordinator} retains transient
+ * failures, pauses for authorization recovery, and distinguishes permanent item rejection from
+ * recoverable destination pressure. Startup snapshot scheduling remains in
+ * {@link ai.anomalousvectors.tools.burp.utils.concurrent}.</p>
  *
  * <p>Bulk paths share {@link BulkNdjsonResponseParser} for item-outcome parsing and failure logging.
  * Senders reconcile those outcomes with the attempted batch before retry or accounting. Initial
  * dual-destination delivery also gives the original prepared documents to
  * {@link ai.anomalousvectors.tools.burp.sinks.FileExportService}; database retries never append
  * those documents to Files again.</p>
+ *
+ * <p>Network calls, credential-provider resolution, cooldown waits, and retry drains can block
+ * and must run off the EDT. Shared clients and background owners have explicit close/reset
+ * contracts; callers must preserve prepared operation identities and export-run fences.</p>
  */
 package ai.anomalousvectors.tools.burp.utils.opensearch;

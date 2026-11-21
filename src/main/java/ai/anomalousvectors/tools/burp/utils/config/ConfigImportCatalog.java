@@ -72,6 +72,9 @@ public final class ConfigImportCatalog {
 
     /**
      * Returns every data source available in the running Burp edition.
+     *
+     * @param communityEdition whether Community Edition capability limits apply
+     * @return immutable source keys in export order
      */
     public static List<String> allDataSourcesForEdition(boolean communityEdition) {
         List<String> out = new ArrayList<>();
@@ -88,6 +91,10 @@ public final class ConfigImportCatalog {
      * Returns {@code null} to omit {@code dataSources} from exported JSON when every source for
      * this edition is selected; otherwise returns the selected sources in export order. An empty
      * list means explicit none.
+     *
+     * @param sources selected source keys; null or empty means explicit none
+     * @param communityEdition whether Community Edition defaults apply
+     * @return ordered selected keys, or {@code null} when the edition default can be omitted
      */
     public static List<String> compactDataSourcesForExport(
             List<String> sources,
@@ -137,6 +144,9 @@ public final class ConfigImportCatalog {
 
     /**
      * Returns traffic tool types selected by default for the running Burp edition.
+     *
+     * @param communityEdition whether Community Edition capability limits apply
+     * @return immutable default tool configuration IDs
      */
     public static List<String> defaultTrafficToolTypesForEdition(boolean communityEdition) {
         return TrafficToolCatalog.defaultConfigurationIdsForEdition(communityEdition);
@@ -145,6 +155,14 @@ public final class ConfigImportCatalog {
     /**
      * Returns non-default {@code dataSourceOptions} fields for export, or {@code null} when the
      * whole object can be omitted.
+     *
+     * @param settingsSub selected Settings branches
+     * @param trafficToolTypes selected traffic tool IDs
+     * @param findingsSeverities selected finding severities
+     * @param exporterSubOptions selected Exporter branches and log levels
+     * @param exporterStatsIntervalSeconds configured stats interval
+     * @param communityEdition whether Community Edition defaults apply
+     * @return non-default selections, or {@code null} when all branches use their defaults
      */
     public static CompactDataSourceOptions compactDataSourceOptionsForExport(
             List<String> settingsSub,
@@ -176,6 +194,13 @@ public final class ConfigImportCatalog {
         return compact.isEntireSectionOmittable() ? null : compact;
     }
 
+    /**
+     * Compares normalized source keys with the complete set available in this Burp edition.
+     *
+     * @param sources selected source keys; null or empty returns {@code false}
+     * @param communityEdition whether Community Edition capability limits apply
+     * @return {@code true} when the selected set exactly matches the edition's available sources
+     */
     public static boolean isAllDataSourcesSelected(List<String> sources, boolean communityEdition) {
         if (sources == null || sources.isEmpty()) {
             return false;
@@ -189,6 +214,12 @@ public final class ConfigImportCatalog {
         return selected.equals(Set.copyOf(allDataSourcesForEdition(communityEdition)));
     }
 
+    /**
+     * Adds warnings for unrecognized top-level configuration keys.
+     *
+     * @param root parsed root object; null or a non-object is ignored
+     * @param report mutable warning destination; {@code null} is ignored
+     */
     public static void collectUnknownRootKeys(JsonNode root, ConfigImportReport report) {
         if (root == null || !root.isObject() || report == null) {
             return;
@@ -196,6 +227,14 @@ public final class ConfigImportCatalog {
         collectUnknownObjectKeys(root, "", ROOT_KEYS, report);
     }
 
+    /**
+     * Adds warnings for object keys outside a branch's allowlist without changing the JSON tree.
+     *
+     * @param node object to inspect; null, missing, and non-object values are ignored
+     * @param path dotted parent path; null or blank denotes the root
+     * @param allowedKeys non-null allowed key names
+     * @param report mutable warning destination; {@code null} is ignored
+     */
     public static void collectUnknownObjectKeys(
             JsonNode node,
             String path,
@@ -213,6 +252,14 @@ public final class ConfigImportCatalog {
         }
     }
 
+    /**
+     * Retains recognized, edition-supported data sources and records skipped values.
+     *
+     * @param raw non-null source list; null and blank entries are ignored
+     * @param report non-null destination for unknown-value and edition warnings
+     * @param communityEdition whether Community Edition capability limits apply
+     * @return immutable normalized keys in input order, preserving repeated recognized values
+     */
     public static List<String> filterKnownDataSources(
             List<String> raw,
             ConfigImportReport report,
@@ -236,6 +283,15 @@ public final class ConfigImportCatalog {
         return List.copyOf(accepted);
     }
 
+    /**
+     * Retains normalized list values in the supplied allowlist and records unrecognized values.
+     *
+     * @param raw non-null input list; null and blank entries are ignored
+     * @param knownValues non-null allowed normalized values
+     * @param jsonPath JSON path used in skipped-value warnings
+     * @param report non-null warning destination
+     * @return immutable normalized values in input order
+     */
     public static List<String> filterKnownListValues(
             List<String> raw,
             Set<String> knownValues,
@@ -256,6 +312,14 @@ public final class ConfigImportCatalog {
         return List.copyOf(accepted);
     }
 
+    /**
+     * Retains recognized, edition-supported traffic tool IDs and records skipped values.
+     *
+     * @param raw non-null tool list; null and blank entries are ignored
+     * @param report non-null destination for unknown-value and edition warnings
+     * @param communityEdition whether Community Edition capability limits apply
+     * @return immutable normalized IDs in input order
+     */
     public static List<String> filterTrafficToolTypes(
             List<String> raw,
             ConfigImportReport report,
@@ -279,6 +343,12 @@ public final class ConfigImportCatalog {
         return List.copyOf(accepted);
     }
 
+    /**
+     * Tests an index key against the export-field catalog after trimming and case normalization.
+     *
+     * @param indexName candidate logical index key; {@code null} is unrecognized
+     * @return {@code true} when the key identifies a supported export index
+     */
     public static boolean isKnownExportIndex(String indexName) {
         return indexName != null
                 && KNOWN_EXPORT_INDEXES.contains(indexName.trim().toLowerCase(Locale.ROOT));
@@ -287,6 +357,11 @@ public final class ConfigImportCatalog {
     /**
      * Returns a toggleable export field key when recognized; otherwise records a warning and
      * returns {@code null}.
+     *
+     * @param indexName logical index key; {@code null} returns {@code null}
+     * @param fieldKey candidate field path; null or blank returns {@code null}
+     * @param report non-null warning destination when a non-blank field is unrecognized
+     * @return trimmed toggleable field path, or {@code null} when not accepted
      */
     public static String normalizeExportFieldKey(
             String indexName,

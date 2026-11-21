@@ -1,12 +1,17 @@
 /**
- * Swing-based text helpers:
+ * Provides text presentation, tooltip content, and document bindings for Swing views.
+ *
  * <ul>
- *   <li>{@code ValidationIndicator} – shared ✓/✖ glyph styling for compact inline validation</li>
- *   <li>{@code RegexIndicatorBinder} – keeps a ✓/✖ regex validity glyph in sync with field/toggles</li>
- *   <li>{@code HighlighterManager} – applies/clears highlight ranges on a text component</li>
- *   <li>{@code Doc} – minimal adapter for document change callbacks</li>
+ *   <li>{@link Tooltips} supplies shared HTML formatting, popup placement, and component hooks.</li>
+ *   <li>{@link ExportFieldTooltips} and {@link ExportFieldSectionTooltips} describe export fields
+ *       and groups without changing their schema paths.</li>
+ *   <li>{@link ValidationIndicator} and {@link RegexIndicatorBinder} present inline validity.</li>
+ *   <li>{@link HighlighterManager}, {@link Doc}, and the wrapping editor/view helpers manage
+ *       text-component presentation and document notifications.</li>
  * </ul>
  *
- * <p>All classes are Swing-oriented and expect to be used on the EDT.</p>
+ * <p>Caller must access Swing components and documents on the EDT. Pure label and HTML-formatting
+ * methods can be used without a component. Shared tooltip-manager and popup-factory setup has
+ * process-wide effects; follow {@link Tooltips}' initialization and restoration contracts.</p>
  */
 package ai.anomalousvectors.tools.burp.ui.text;

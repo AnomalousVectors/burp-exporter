@@ -18,11 +18,11 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 /**
  * Base class for per-index line-oriented file sinks that append to one file per format.
  *
- * <p>Each append opens the target path, writes the payload, and returns immediately. Transient I/O
- * failures receive bounded retries only after the sink restores the file to its pre-attempt size,
+ * <p>Each append performs synchronous disk I/O under the sink's monitor. Transient I/O failures
+ * receive bounded retries only after the sink restores the file to its pre-attempt size,
  * preventing a partial append from becoming a duplicate NDJSON record. These sinks do not keep a
  * long-lived writer open, so they do not require separate flush/close lifecycle hooks between
- * export runs.</p>
+ * export runs. Callers must keep append work off the EDT.</p>
  */
 abstract class RotatingLineFileSink implements FileSink {
 
@@ -208,8 +208,16 @@ abstract class RotatingLineFileSink implements FileSink {
         return rootDirectory.resolve(indexName + extension);
     }
 
+    /** Injectable synchronous append operation used by the bounded retry path. */
     @FunctionalInterface
     interface FileAppendOperation {
+        /**
+         * Appends the supplied bytes or reports an I/O failure to the retry owner.
+         *
+         * @param target existing or new output file
+         * @param bytes encoded payload to append
+         * @throws IOException when the append cannot complete
+         */
         void append(Path target, byte[] bytes) throws IOException;
     }
 }

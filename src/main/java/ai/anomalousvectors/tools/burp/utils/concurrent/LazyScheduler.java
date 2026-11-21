@@ -8,7 +8,7 @@ import java.util.concurrent.TimeUnit;
  * Lazily-started single-thread daemon {@link ScheduledExecutorService} owned by one class.
  *
  * <p>Centralizes the "{@code volatile} field + {@code synchronized} ensure-started + {@link Workers}
- * shutdown" pattern that every reporter and the orphan-flush path previously duplicated. Each
+ * shutdown" pattern shared by reporters and the orphan-flush path. Each
  * owner declares a {@code static final LazyScheduler} whose executor is created on first
  * {@link #getOrStart()} call and torn down by {@link #stop()} during UI stop or extension unload;
  * a subsequent {@link #getOrStart()} transparently recreates a fresh executor, preserving the
@@ -144,9 +144,9 @@ public final class LazyScheduler {
      * {@link Workers#awaitExecutorShutdown}.
      *
      * <p>Safe to call from any thread and safe to call more than once. A subsequent
-     * {@link #getOrStart()} creates a fresh executor. If shutdown does not complete within the
-     * configured timeout, the current thread's interrupt flag is restored; otherwise returns
-     * without throwing.</p>
+     * {@link #getOrStart()} creates a fresh executor. The termination wait is bounded by the
+     * configured timeout. If that wait is interrupted, the current thread's interrupt flag is
+     * restored before returning.</p>
      */
     public void stop() {
         ScheduledExecutorService current;

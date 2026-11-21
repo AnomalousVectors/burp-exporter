@@ -52,16 +52,39 @@ public final class ConfigController implements AutoCloseable {
 
     @FunctionalInterface
     interface ConfigImporter {
+        /**
+         * Reads and parses one file on an import worker.
+         *
+         * @param path selected configuration file
+         * @return parsed state and non-fatal warnings
+         * @throws Exception when reading or parsing fails
+         */
         ConfigParseResult importConfig(Path path) throws Exception;
     }
 
     @FunctionalInterface
     interface ConfigExporter {
+        /**
+         * Writes one complete configuration file on an export worker.
+         *
+         * @param path normalized output path
+         * @param json serialized configuration
+         * @param replacement confirmed overwrite policy
+         * @throws Exception when the transactional save fails
+         */
         void exportConfig(Path path, String json, WholeFileSave.Replacement replacement) throws Exception;
     }
 
     @FunctionalInterface
     interface ConnectionProbe {
+        /**
+         * Probes a destination on a connection-test worker.
+         *
+         * @param destination selected database product
+         * @param url destination root endpoint
+         * @return connection, authentication, and trust result
+         * @throws Exception when the probe cannot produce a result
+         */
         SearchConnectionStatus test(ConfigState.SearchDestination destination, String url) throws Exception;
     }
 

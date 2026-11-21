@@ -31,40 +31,62 @@ import ai.anomalousvectors.tools.burp.ui.text.Tooltips;
  * <p>Based on the robust model approach described by Heinz Kabutz (TristateCheckBox Revisited),
  * adapted so user interaction toggles only between SELECTED and DESELECTED; INDETERMINATE is
  * set programmatically.</p>
+ *
+ * <p>Caller must invoke on the EDT for construction and UI mutation. Transient listeners and
+ * action bindings are rebuilt after deserialization and attachment to the component hierarchy.</p>
  */
 public final class TriStateCheckBox extends JCheckBox {
 
     @Serial private static final long serialVersionUID = 1L;
 
+    /** Logical selection states, including a programmatic mixed-child state. */
     public enum State {
         SELECTED,
         INDETERMINATE,
         DESELECTED
     }
 
+    /**
+     * Maps logical selection onto Swing's selected, armed, and pressed flags.
+     *
+     * <p>Caller must invoke on the EDT when this model is attached to a component.</p>
+     */
     public static final class TriStateButtonModel extends javax.swing.JToggleButton.ToggleButtonModel {
         @Serial private static final long serialVersionUID = 1L;
 
         private State state = State.DESELECTED;
 
+        /**
+         * Creates a model with the requested logical state.
+         *
+         * @param initial initial state; {@code null} selects {@link State#DESELECTED}
+         */
         public TriStateButtonModel(State initial) {
             setState(initial == null ? State.DESELECTED : initial);
         }
 
+        /**
+         * Updates the logical state, refreshes Swing flags, and notifies change listeners.
+         *
+         * @param s requested state; {@code null} selects {@link State#DESELECTED}
+         */
         public void setState(State s) {
             this.state = s == null ? State.DESELECTED : s;
             displayState();
             fireStateChanged();
         }
 
+        /** Returns the current non-null logical selection state. */
         public State getState() {
             return state;
         }
 
+        /** Returns whether the model represents a mixed child selection. */
         public boolean isIndeterminate() {
             return state == State.INDETERMINATE;
         }
 
+        /** Selects the programmatic mixed-child state and notifies change listeners. */
         public void setIndeterminate() {
             setState(State.INDETERMINATE);
         }
@@ -100,10 +122,23 @@ public final class TriStateCheckBox extends JCheckBox {
         return enableListener;
     }
 
+    /**
+     * Creates a checkbox with the standard tri-state icon.
+     *
+     * @param text checkbox label
+     * @param initial initial state; {@code null} selects {@link State#DESELECTED}
+     */
     public TriStateCheckBox(String text, State initial) {
         this(text, null, initial);
     }
 
+    /**
+     * Creates a checkbox with a tri-state model and an optional custom icon.
+     *
+     * @param text checkbox label
+     * @param icon custom icon; {@code null} installs the standard tri-state icon
+     * @param initial initial state; {@code null} selects {@link State#DESELECTED}
+     */
     public TriStateCheckBox(String text, Icon icon, State initial) {
         super(text, icon);
         putClientProperty("html.disable", Boolean.FALSE);
@@ -118,18 +153,26 @@ public final class TriStateCheckBox extends JCheckBox {
         return Tooltips.createHtmlToolTip(this);
     }
 
+    /**
+     * Updates selection through the installed tri-state model.
+     *
+     * @param state requested state; {@code null} selects {@link State#DESELECTED}
+     */
     public void setState(State state) {
         getTriStateModel().setState(state);
     }
 
+    /** Returns the installed model's non-null logical selection state. */
     public State getState() {
         return getTriStateModel().getState();
     }
 
+    /** Displays a mixed child selection without adding it to the user-toggle cycle. */
     public void setIndeterminate() {
         getTriStateModel().setIndeterminate();
     }
 
+    /** Returns whether the checkbox displays a mixed child selection. */
     public boolean isIndeterminate() {
         return getTriStateModel().isIndeterminate();
     }
@@ -166,6 +209,12 @@ public final class TriStateCheckBox extends JCheckBox {
         }
     }
 
+    /**
+     * Returns the installed tri-state model.
+     *
+     * @return model used for logical selection and mixed-state rendering
+     * @throws ClassCastException if a caller replaced the model with another model type
+     */
     public TriStateButtonModel getTriStateModel() {
         return (TriStateButtonModel) super.getModel();
     }

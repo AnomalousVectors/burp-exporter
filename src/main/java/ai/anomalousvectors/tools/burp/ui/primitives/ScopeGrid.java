@@ -23,10 +23,13 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigImportPolicy;
 import net.miginfocom.swing.MigLayout;
 
 /**
- * Custom scope entries grid:
- * - Col 1: text field (size-grouped)
- * - Col 2: ".*" toggle + ✓/✖ indicator
- * - Col 3: action button (Add on row 1, Delete on rows > 1)
+ * Edits custom scope expressions in a three-column grid.
+ *
+ * <ul>
+ *   <li>Column 1: size-grouped expression field.</li>
+ *   <li>Column 2: regex toggle and validity indicator.</li>
+ *   <li>Column 3: Add on the first row, Delete on later rows.</li>
+ * </ul>
  *
  * <p><strong>EDT:</strong> Public mutators expect to be called on the EDT.</p>
  */
@@ -35,7 +38,7 @@ public final class ScopeGrid extends JPanel {
     @Serial private static final long serialVersionUID = 1L;
 
     /**
-     * Max number of rows permitted. The Add button disables at this limit.
+     * Tooltip for adding another custom scope row.
      */
     private static final String TIP_ADD_ROW     = Tooltips.html("Add new row.");
     private static final String TIP_SCOPE_ENTRY = Tooltips.html("Scope entry.", "Enter a plain string or regular expression.");
@@ -44,6 +47,9 @@ public final class ScopeGrid extends JPanel {
 
     /**
      * Initial row seed for a custom entry.
+     *
+     * @param value initial expression text
+     * @param regex whether the expression uses regular-expression matching
      */
     public record ScopeEntryInit(String value, boolean regex) implements Serializable {
         @Serial private static final long serialVersionUID = 1L;

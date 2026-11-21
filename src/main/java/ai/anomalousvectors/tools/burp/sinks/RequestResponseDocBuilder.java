@@ -167,10 +167,22 @@ public final class RequestResponseDocBuilder {
         return RequestResponseParametersSupport.inferRequestContentType(bodyBytes, headers);
     }
 
+    /**
+     * Converts marker ranges to the flat HTTP marker shape.
+     *
+     * @param markers source ranges; null lists, null markers, and null ranges produce no entries
+     * @return ranges using {@code start_index_inclusive} and {@code end_index_exclusive}
+     */
     public static List<Map<String, Object>> convertMarkersToList(List<Marker> markers) {
         return HttpMessageDocSupport.convertMarkersToList(markers);
     }
 
+    /**
+     * Converts marker ranges to the nested traffic HTTP shape.
+     *
+     * @param markers source ranges; null, empty, or null-range entries are omitted
+     * @return ranges using {@code start_inclusive} and {@code end_exclusive}
+     */
     public static List<Map<String, Object>> convertTrafficMarkersToList(List<Marker> markers) {
         return HttpMessageDocSupport.convertTrafficMarkersToList(markers);
     }

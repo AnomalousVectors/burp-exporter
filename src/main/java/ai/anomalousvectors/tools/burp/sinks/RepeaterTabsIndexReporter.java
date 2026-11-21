@@ -216,6 +216,15 @@ public final class RepeaterTabsIndexReporter {
     /** Synchronously sends one prepared Repeater replay chunk to the search bulk path. */
     @FunctionalInterface
     interface RecoveryBulkSender {
+        /**
+         * Sends a replay chunk synchronously from its background owner.
+         *
+         * @param baseUrl database root endpoint
+         * @param indexName resolved target index name
+         * @param indexKey logical index key for accounting
+         * @param documents immutable prepared replay chunk
+         * @return database delivery outcome for route accounting
+         */
         BulkPushOutcome push(
                 String baseUrl,
                 String indexName,
@@ -1163,6 +1172,7 @@ public final class RepeaterTabsIndexReporter {
 
     }
 
+    /** Hidden editor hook that observes bound pairs without exposing an editable UI. */
     private static abstract class AbstractCaptureEditor {
         private final EditorCreationContext creationContext;
         private final JPanel hiddenComponent = new JPanel();
@@ -1172,36 +1182,53 @@ public final class RepeaterTabsIndexReporter {
             this.creationContext = creationContext;
         }
 
+        /** Returns the caption required by the extension-editor contract. */
         public String caption() {
             return CAPTION;
         }
 
+        /** Returns the placeholder component used to identify this hidden editor hook. */
         public Component uiComponent() {
             return hiddenComponent;
         }
 
+        /** Returns no user selection because this hook has no visible editor. */
         public Selection selectedData() {
             return null;
         }
 
+        /** Returns {@code false}; capture never changes the bound messages. */
         public boolean isModified() {
             return false;
         }
 
+        /**
+         * Retains the bound pair and offers it to the Repeater capture path.
+         *
+         * @param requestResponse pair supplied by Burp; may be {@code null}
+         */
         public void setRequestResponse(HttpRequestResponse requestResponse) {
             this.requestResponse = requestResponse;
             captureFromEditorContext(creationContext, requestResponse, capturePath(), hiddenComponent);
         }
 
+        /**
+         * Observes the pair while keeping this placeholder editor disabled.
+         *
+         * @param requestResponse pair supplied by Burp for editor availability checking
+         * @return {@code false}, so the hook adds no visible editor tab
+         */
         public boolean isEnabledFor(HttpRequestResponse requestResponse) {
             captureFromEditorContext(creationContext, requestResponse, capturePath(), hiddenComponent);
             return false;
         }
 
+        /** Returns the last bound pair, or {@code null} before one has been supplied. */
         protected HttpRequestResponse currentRequestResponse() {
             return requestResponse;
         }
 
+        /** Returns the stable request- or response-editor attribution label. */
         protected abstract String capturePath();
     }
 

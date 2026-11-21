@@ -12,31 +12,28 @@ import java.util.concurrent.locks.LockSupport;
  * throughput.
  *
  * <p>Two complementary mechanisms work together at the same boundary points and
- * are deliberately independent of the live traffic queue depth, since synchronous
- * bulk pushes drain the queue at least as fast as the snapshot loop fills it:</p>
+ * are independent of live traffic queue depth because snapshot preparation and
+ * snapshot flushes have their own scheduling and capacity limits:</p>
  * <ul>
  *   <li><b>Periodic per-item yield.</b> Every {@link #YIELD_EVERY_N_ITEMS} items,
  *       a brief {@link LockSupport#parkNanos(long)} sleeps for
- *       {@link #PERIODIC_YIELD_NS} so the EDT, GC concurrent threads, and other
- *       background workers get scheduled. The wall-clock cost over a full
- *       snapshot is small, but it eliminates the worst stop-the-world EDT
- *       starvation cases that occur when one CPU core is pinned by the snapshot
- *       loop.</li>
+ *       {@link #PERIODIC_YIELD_NS}, giving the EDT, GC concurrent threads, and other
+ *       background workers scheduling opportunities during allocation-heavy loops.</li>
  *   <li><b>GC duty-cycle gate.</b> At the same boundary, the JMX
  *       {@link GarbageCollectorMXBean#getCollectionTime()} totals are sampled
  *       and the fraction of recent wall-clock time spent in GC is computed.
  *       When that fraction exceeds {@link #GC_DUTY_BACKPRESSURE_THRESHOLD}, the
  *       snapshot thread sleeps for an additional
- *       {@link #GC_DUTY_BACKPRESSURE_PAUSE_MS} so G1's concurrent phases can
- *       catch up before the next chunk is built. The cached observation is
+ *       {@link #GC_DUTY_BACKPRESSURE_PAUSE_MS} to reduce allocation pressure before the
+ *       next chunk is built. The cached observation is
  *       exposed via {@link #gcSaturated()} so chunk-level backpressure code can
  *       additionally shrink chunk targets and reduce the resident allocation
  *       footprint of the in-flight chunk list.</li>
  * </ul>
  *
  * <p>Sampling is bounded to the periodic boundary (a few JMX bean reads every
- * {@link #YIELD_EVERY_N_ITEMS} items), so callers can invoke {@link #paceItem(int)}
- * on every iteration of a tight loop without measurable overhead.</p>
+ * {@link #YIELD_EVERY_N_ITEMS} items); other calls avoid those bean reads while
+ * updating the run's pacing counters.</p>
  */
 public final class SnapshotPacing {
 
@@ -65,7 +62,7 @@ public final class SnapshotPacing {
 
     // Run-scoped observability so callers can see whether the gate engaged at all and how
     // much wall-clock time was actually spent in the cooperative pause. Reset by callers via
-    // {@link #resetCountersForSnapshot()} at the start of each snapshot loop.
+    // resetCountersForSnapshot() at the start of each snapshot loop.
     private static final AtomicLong paceCallCount = new AtomicLong(0L);
     private static final AtomicLong paceBoundaryCount = new AtomicLong(0L);
     private static final AtomicLong gateTripCount = new AtomicLong(0L);
@@ -77,9 +74,9 @@ public final class SnapshotPacing {
     /**
      * Per-item pacing hook for snapshot loops.
      *
-     * <p>Call once per item processed. No-op except at every {@link #YIELD_EVERY_N_ITEMS}-th
-     * iteration, where it briefly yields and (if GC pressure is high) sleeps long
-     * enough to let concurrent collection catch up.</p>
+     * <p>Call once per item processed. Each call updates pacing counters; positive multiples of
+     * {@link #YIELD_EVERY_N_ITEMS} also yield briefly and apply the bounded GC-pressure pause
+     * when the sampled duty cycle is high.</p>
      *
      * @param itemIndex 0-based or 1-based loop counter; pacing fires only when the
      *                  counter is a positive multiple of {@link #YIELD_EVERY_N_ITEMS}.

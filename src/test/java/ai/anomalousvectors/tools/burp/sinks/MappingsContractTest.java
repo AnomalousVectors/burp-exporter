@@ -833,14 +833,12 @@ class MappingsContractTest {
     /**
      * Guards the per-index nested-document cap for mappings that declare nested fields.
      *
-     * <p>The three HTTP-centric mappings ({@code traffic.json}, {@code findings.json},
-     * {@code sitemap.json}) aggregate nested arrays per document (headers, parameters, markers,
-     * cookies). With the synthesized-BODY parameter filter (in
-     * {@link ai.anomalousvectors.tools.burp.sinks.RequestResponseDocBuilder}) in place, legit
-     * per-doc nested counts sit in the low hundreds, well under the OpenSearch default of
-     * 10000. Shipping without an override keeps the shipped settings block minimal and lets
-     * cluster operators tune if ever needed. If a future regression requires raising the
-     * ceiling, add the override and update the plan note that cleared it.</p>
+     * <p>The HTTP-centric mappings ({@code traffic.json}, {@code findings.json}, and
+     * {@code sitemap.json}) contain nested headers, parameters, markers, and cookies. A finding
+     * may also hold many evidence pairs, so its aggregate nested count can be substantial even
+     * when individual arrays are bounded. The bundled settings inherit the database's default
+     * nested-document limit rather than silently relaxing that resource guard. If the bundled
+     * policy changes, update the settings and this focused contract test together.</p>
      */
     @Test
     void httpMappings_doNotOverrideNestedObjectsLimit() throws Exception {

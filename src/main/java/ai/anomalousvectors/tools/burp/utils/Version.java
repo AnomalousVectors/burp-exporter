@@ -3,12 +3,18 @@ package ai.anomalousvectors.tools.burp.utils;
 /**
  * Centralized version accessor.
  *
- * Production: reads Implementation-Version from the JAR manifest.
- * Tests: may set {@code -Dburp.exporter.version=1.2.3} to run without a JAR.
+ * <p>Production reads {@code Implementation-Version} from the JAR manifest. Tests may set
+ * {@code burp.exporter.version} as a JVM system property to run without a packaged manifest.</p>
  */
 public final class Version {
     private Version() {}
 
+    /**
+     * Returns the explicit test override or packaged implementation version.
+     *
+     * @return trimmed non-blank override, or manifest implementation version
+     * @throws IllegalStateException if neither source provides a version
+     */
     public static String get() {
         String override = System.getProperty("burp.exporter.version");
         if (override != null && !override.isBlank()) {

@@ -10,7 +10,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
- * Static checks for test conventions documented in {@code java-testing.mdc} (Common test failure patterns).
+ * Checks source-level test patterns that can hide asynchronous logging assertion races.
  *
  * <p>Runs as part of the normal {@code test} task via {@link JavaTestingConventionsTest}.</p>
  */
@@ -65,8 +65,10 @@ public final class JavaTestingConventionScanner {
     }
 
     /**
-     * EDT / async Log panel ({@code java-testing.mdc}): tests that assert on captured listener lists must
-     * flush the EDT or use an established await/on-EDT helper before those assertions.
+     * Requires captured-listener assertions to synchronize with asynchronous Log delivery.
+     *
+     * <p>Recognizes an EDT flush or an established await/on-EDT helper before accepting a test
+     * body that asserts on captured listener lists.</p>
      */
     private static void scanLoggerListenerEdtConvention(
             String relativePath, String source, List<Violation> violations) {

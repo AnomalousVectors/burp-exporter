@@ -10,6 +10,8 @@ import java.util.List;
  *
  * <p>Warnings are surfaced in the log panel and control status after a successful import; they do
  * not prevent recognized settings from being applied.</p>
+ *
+ * <p>Not thread-safe. One import operation owns the report until it hands the result to the UI.</p>
  */
 public final class ConfigImportReport {
 
@@ -42,6 +44,10 @@ public final class ConfigImportReport {
 
     /**
      * Records a skipped key or value. Null or blank {@code jsonPath} entries are ignored.
+     *
+     * @param kind warning category; {@code null} is ignored
+     * @param jsonPath dotted JSON path; null or blank is ignored
+     * @param rejectedValue rejected value; null or blank uses an unspecified-value label
      */
     public void add(Kind kind, String jsonPath, String rejectedValue) {
         if (kind == null || jsonPath == null || jsonPath.isBlank()) {
@@ -53,14 +59,21 @@ public final class ConfigImportReport {
         warnings.add(new Warning(kind, jsonPath.trim(), value));
     }
 
+    /** Returns whether no skipped settings have been recorded. */
     public boolean isEmpty() {
         return warnings.isEmpty();
     }
 
+    /** Returns the number of recorded skipped-setting warnings. */
     public int warningCount() {
         return warnings.size();
     }
 
+    /**
+     * Returns a read-only view of warnings in encounter order.
+     *
+     * @return unmodifiable view that reflects any later additions to this report
+     */
     public List<Warning> warnings() {
         return Collections.unmodifiableList(warnings);
     }
