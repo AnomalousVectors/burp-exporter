@@ -1,18 +1,84 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.AdditionalAnswers.delegatesTo;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockConstruction;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.withSettings;
 
 import burp.api.montoya.http.message.HttpHeader;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.zip.Deflater;
+import java.util.zip.DeflaterOutputStream;
 import java.util.zip.GZIPOutputStream;
+import java.util.zip.Inflater;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Unit tests for {@link BodyContentEncodingSupport}. */
 class BodyContentEncodingSupportTest {
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void resolve_deflate_releasesEachInflaterAndPreservesWireBytes(boolean raw) throws Exception {
+        byte[] plain = "deflate: café 日本 😀".getBytes(StandardCharsets.UTF_8);
+        byte[] wire = deflate(plain, raw);
+
+        assertDeflateResolutionReleasesInflaters(wire, plain, true, raw ? 2 : 1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void resolve_truncatedDeflate_releasesBothAttemptsAndKeepsWireBytes(boolean raw) throws Exception {
+        byte[] complete = deflate("truncated payload".getBytes(StandardCharsets.UTF_8), raw);
+        byte[] wire = Arrays.copyOf(complete, complete.length - 1);
+
+        assertDeflateResolutionReleasesInflaters(wire, wire, false, 2);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void resolve_oversizedDeflate_releasesBothAttemptsAndKeepsWireBytes(boolean raw) throws Exception {
+        byte[] wire = deflate(new byte[BodyContentEncodingSupport.MAX_DECOMPRESSED_BYTES + 1], raw);
+
+        assertDeflateResolutionReleasesInflaters(wire, wire, false, 2);
+    }
+
+    @Test
+    void resolve_invalidDeflate_releasesBothAttemptsAndKeepsWireBytes() {
+        byte[] wire = {(byte) 0xff, (byte) 0xff, (byte) 0xff};
+
+        assertDeflateResolutionReleasesInflaters(wire, wire, false, 2);
+    }
+
+    @Test
+    void resolve_deflateRuntimeFailure_stillReleasesOwnedInflater() throws Exception {
+        Inflater delegate = new Inflater(false);
+        byte[] wire = deflate("runtime failure".getBytes(StandardCharsets.UTF_8), false);
+        try (var constructions = mockConstruction(Inflater.class,
+                withSettings().defaultAnswer(delegatesTo(delegate)),
+                (inflater, context) -> doThrow(new IllegalStateException("fixture failure"))
+                        .when(inflater).inflate(any(byte[].class), anyInt(), anyInt()))) {
+            assertThatThrownBy(() -> BodyContentEncodingSupport.resolve(
+                    wire, List.of(header("Content-Encoding", "deflate"))))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessage("fixture failure");
+            assertThat(constructions.constructed()).hasSize(1);
+            verify(constructions.constructed().getFirst()).end();
+        } finally {
+            delegate.end();
+        }
+    }
 
     @Test
     void resolve_gzipContentEncoding_decompressesLogicalBytes() throws Exception {
@@ -215,6 +281,47 @@ class BodyContentEncodingSupportTest {
     private static byte[] brotliCompress(byte[] input) throws Exception {
         com.aayushatharva.brotli4j.Brotli4jLoader.ensureAvailability();
         return com.aayushatharva.brotli4j.encoder.Encoder.compress(input);
+    }
+
+    private static void assertDeflateResolutionReleasesInflaters(
+            byte[] wire, byte[] logical, boolean transformed, int expectedAttempts) {
+        // Real delegates keep decoding assertions meaningful; interception observes cleanup
+        // without exposing a production factory or relying on GC/native-memory timing.
+        Inflater zlib = new Inflater(false);
+        Inflater raw = new Inflater(true);
+        try (var constructions = mockConstruction(Inflater.class, context -> withSettings()
+                .defaultAnswer(delegatesTo(Boolean.TRUE.equals(context.arguments().getFirst()) ? raw : zlib)))) {
+            BodyContentEncodingSupport.ResolvedBody resolved = BodyContentEncodingSupport.resolve(
+                    wire, List.of(header("Content-Encoding", "deflate")));
+
+            assertThat(resolved.wireBytes()).isSameAs(wire);
+            assertThat(resolved.logicalBytes()).isEqualTo(logical);
+            assertThat(resolved.transformed()).isEqualTo(transformed);
+            assertThat(resolved.encodingChainComplete()).isEqualTo(transformed);
+            if (transformed) {
+                assertThat(resolved.encodingsApplied()).containsExactly("deflate");
+                assertThat(resolved.encodingsRemaining()).isEmpty();
+            } else {
+                assertThat(resolved.encodingsApplied()).isEmpty();
+                assertThat(resolved.encodingsRemaining()).containsExactly("deflate");
+            }
+            assertThat(constructions.constructed()).hasSize(expectedAttempts);
+            constructions.constructed().forEach(inflater -> verify(inflater).end());
+        } finally {
+            zlib.end();
+            raw.end();
+        }
+    }
+
+    private static byte[] deflate(byte[] input, boolean raw) throws Exception {
+        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, raw);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        try (DeflaterOutputStream stream = new DeflaterOutputStream(output, deflater)) {
+            stream.write(input);
+        } finally {
+            deflater.end();
+        }
+        return output.toByteArray();
     }
 
     private static byte[] gzip(byte[] input) throws Exception {

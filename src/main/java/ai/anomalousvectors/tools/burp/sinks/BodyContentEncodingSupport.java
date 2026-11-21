@@ -224,11 +224,16 @@ final class BodyContentEncodingSupport {
     }
 
     private static byte[] decompressInflater(byte[] input, boolean nowrap) {
-        try (InputStream in = new InflaterInputStream(new ByteArrayInputStream(input), new Inflater(nowrap));
+        Inflater inflater = new Inflater(nowrap);
+        try (InputStream in = new InflaterInputStream(new ByteArrayInputStream(input), inflater);
                 ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(input.length * 4, 65_536))) {
             return readBounded(in, out);
         } catch (IOException ignored) {
             return null;
+        } finally {
+            // InflaterInputStream does not release caller-supplied native decompressors.
+            // Own cleanup even when decoding fails or the expansion limit returns early.
+            inflater.end();
         }
     }
 
