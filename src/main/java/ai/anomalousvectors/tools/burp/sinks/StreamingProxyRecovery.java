@@ -36,6 +36,10 @@ import burp.api.montoya.proxy.ProxyHttpRequestResponse;
  * admitted snapshot. All History reads and message preparation run on one bounded, cost-paced
  * worker, never on a forwarding callback or the EDT. Admitted snapshots use the traffic queue
  * for asynchronous destination delivery. A five-minute observation deadline is not HTTP completion.</p>
+ *
+ * <p>History display IDs can repeat after project imports. Pre-run requests are excluded before
+ * tracking lookup; current-run captures also retain the request's received time and listener port
+ * so an imported row cannot replace or suppress a new live exchange with the same display ID.</p>
  */
 public final class StreamingProxyRecovery {
     private static final Object OWNER = new Object();
@@ -48,8 +52,8 @@ public final class StreamingProxyRecovery {
     private final BiPredicate<Map<String, Object>, ExportRunToken> output;
     private final long startedWallMs;
     private final long startedMs;
-    private final Map<Integer, Capture> tracked = new LinkedHashMap<>();
-    private final Set<Integer> baseline = java.util.Collections.synchronizedSet(new HashSet<>());
+    private final Map<HistoryRowKey, Capture> tracked = new LinkedHashMap<>();
+    private final Set<HistoryRowKey> baseline = java.util.Collections.synchronizedSet(new HashSet<>());
     private final StreamingPollPolicy policy = new StreamingPollPolicy();
     private final StreamingRecoveryLog diagnostics;
     private final AtomicLong discoveryUntil = new AtomicLong();
@@ -246,12 +250,13 @@ public final class StreamingProxyRecovery {
         if (!active()) return;
         if (!initialized) {
             long began = clock.getAsLong();
-            // Baseline IDs plus request-time fencing exclude old/imported project backlog.
+            // Imported rows keep their full context; a display ID alone must not exclude live work.
             api.proxy().history(row -> {
                 if (baseline.size() >= 250_000) {
                     throw new IllegalStateException("History baseline capacity");
                 }
-                if (receivedMs(row) < startedWallMs) baseline.add(row.id());
+                HistoryRowKey key = rowKey(row);
+                if (key != null && key.received().toEpochMilli() < startedWallMs) baseline.add(key);
                 return false;
             });
             rules = StreamingResponseRules.read(api);
@@ -273,7 +278,7 @@ public final class StreamingProxyRecovery {
         if (!discover && !due) return;
         long began = clock.getAsLong();
         capacityPressure = false;
-        Map<Integer, ProxyHttpRequestResponse> selected = new HashMap<>();
+        Map<HistoryRowKey, ProxyHttpRequestResponse> selected = new HashMap<>();
         // The predicate must remain metadata-only; payload acquisition happens after enumeration.
         api.proxy().history(row -> select(row, now, discover, selected));
         if (discover) nextDiscovery = now + 5_000L;
@@ -286,9 +291,9 @@ public final class StreamingProxyRecovery {
         for (Capture capture : ready) {
             if (!active()) break;
             if (capture.nextRead > now) continue;
-            ProxyHttpRequestResponse row = selected.get(capture.id);
+            ProxyHttpRequestResponse row = selected.get(capture.key);
             if (row == null) {
-                tracked.remove(capture.id);
+                tracked.remove(capture.key);
                 removed++;
                 continue;
             }
@@ -313,19 +318,21 @@ public final class StreamingProxyRecovery {
 
     // Burp may invoke filter predicates on its own threads; do not assume worker-thread affinity.
     private synchronized boolean select(ProxyHttpRequestResponse row, long now, boolean discover,
-            Map<Integer, ProxyHttpRequestResponse> selected) {
+            Map<HistoryRowKey, ProxyHttpRequestResponse> selected) {
         if (!active()) return false;
-        int id = row.id();
-        Capture known = tracked.get(id);
-        if (known != null) {
-            if (known.nextRead <= now) selected.put(id, row);
-            return false;
-        }
-        if (!discover || baseline.contains(id)) return false;
-        long received = receivedMs(row);
+        HistoryRowKey key = rowKey(row);
+        if (key == null) return false;
+        long received = key.received().toEpochMilli();
         long deadline = startedMs + (received - startedWallMs) + StreamingPollPolicy.WINDOW_MS;
+        // Fence every read, including refreshes: an imported row must never stand in for a live row.
         if (received < startedWallMs || received > startedWallMs + (now - startedMs)
                 || now >= deadline) return false;
+        Capture known = tracked.get(key);
+        if (known != null) {
+            if (known.nextRead <= now) selected.put(key, row);
+            return false;
+        }
+        if (!discover || baseline.contains(key)) return false;
         diagnostics.candidate();
         if (tracked.size() >= StreamingPollPolicy.MAX_TRACKED) {
             rejected++;
@@ -333,9 +340,9 @@ public final class StreamingProxyRecovery {
             return false;
         }
         // A missing response may still become a stream; descriptors contain no payload views.
-        Capture capture = new Capture(id, deadline, now);
-        tracked.put(id, capture);
-        selected.put(id, row);
+        Capture capture = new Capture(key, deadline, now);
+        tracked.put(key, capture);
+        selected.put(key, row);
         return false;
     }
 
@@ -421,8 +428,8 @@ public final class StreamingProxyRecovery {
     }
 
     private void retire(Capture capture) {
-        tracked.remove(capture.id);
-        if (baseline.size() < 250_000) baseline.add(capture.id);
+        tracked.remove(capture.key);
+        if (baseline.size() < 250_000) baseline.add(capture.key);
     }
 
     private static Map<String, Object> document(ProxyHttpRequestResponse row, HttpRequest request,
@@ -446,9 +453,9 @@ public final class StreamingProxyRecovery {
         return document;
     }
 
-    private static long receivedMs(ProxyHttpRequestResponse row) {
+    private static HistoryRowKey rowKey(ProxyHttpRequestResponse row) {
         java.time.ZonedDateTime time = row.time();
-        return time == null ? Long.MIN_VALUE / 2L : time.toInstant().toEpochMilli();
+        return time == null ? null : new HistoryRowKey(row.id(), time.toInstant(), row.listenerPort());
     }
 
     // Length agreement is not end-of-stream proof. Encoded/transfer-framed views are left unknown.
@@ -473,8 +480,11 @@ public final class StreamingProxyRecovery {
         return "observed_completion_unknown";
     }
 
+    // Metadata-only current-run context survives fresh API wrappers without hashing message bytes.
+    private record HistoryRowKey(int id, Instant received, int listenerPort) { }
+
     private static final class Capture {
-        private final int id;
+        private final HistoryRowKey key;
         private final long deadline;
         private final String captureId = UUID.randomUUID().toString();
         private long nextRead;
@@ -484,8 +494,8 @@ public final class StreamingProxyRecovery {
         private String preparationSignature = "";
         private boolean stream;
 
-        private Capture(int id, long deadline, long now) {
-            this.id = id;
+        private Capture(HistoryRowKey key, long deadline, long now) {
+            this.key = key;
             this.deadline = deadline;
             nextRead = now;
         }

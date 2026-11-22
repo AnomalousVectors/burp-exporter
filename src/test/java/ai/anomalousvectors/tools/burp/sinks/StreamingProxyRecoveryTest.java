@@ -17,6 +17,8 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -434,6 +436,100 @@ class StreamingProxyRecoveryTest {
         verify(old, never()).originalResponse();
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void importedIdCannotSuppressOrReplaceLiveStream(boolean importedBeforeStart) {
+        ProxyHttpRequestResponse imported = row(63_847, WALL - 86_400_000L);
+        if (importedBeforeStart) rows.add(imported);
+        observer.tick();
+        ProxyHttpRequestResponse live = row(63_847, WALL + 100L);
+        if (!importedBeforeStart) rows.add(imported);
+        rows.add(live);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(1);
+        Object captureId = capture(outputs.getFirst()).get("id");
+
+        // Fresh wrappers and a reversed enumeration must still refresh only the live exchange.
+        ProxyHttpRequestResponse refreshed = row(63_847, WALL + 100L);
+        body(refreshed.originalResponse(), "data: a\n\ndata: live tail\n\n");
+        rows.clear();
+        rows.addAll(List.of(refreshed, imported));
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(2);
+        assertThat(capture(outputs.getLast()).get("id")).isEqualTo(captureId);
+        assertThat(capture(outputs.getLast()).get("revision")).isEqualTo(2L);
+        assertThat(bodyDoc(outputs.getLast()).get("length")).isEqualTo(26);
+
+        RuntimeConfig.beginExportStop();
+        RuntimeConfig.setExportStopping(true);
+        observer.observeFinalSnapshots();
+        assertThat(outputs).hasSize(3);
+        assertThat(capture(outputs.getLast()).get("id")).isEqualTo(captureId);
+        assertThat(capture(outputs.getLast()).get("revision")).isEqualTo(3L);
+        assertThat(capture(outputs.getLast()).get("observation_state")).isEqualTo("stopped");
+        assertThat(bodyDoc(outputs.getLast())).isEqualTo(bodyDoc(outputs.get(1)));
+        verify(imported, never()).finalRequest();
+        verify(imported, never()).originalResponse();
+        verify(refreshed.annotations(), never()).setNotes(any(String.class));
+        verify(refreshed.annotations(), never()).withNotes(any(String.class));
+    }
+
+    @Test
+    void importedDuplicateCannotStandInForRemovedLiveRow() {
+        observer.tick();
+        ProxyHttpRequestResponse live = row(63_847, WALL + 100L);
+        rows.add(live);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        rows.clear();
+        ProxyHttpRequestResponse imported = row(63_847, WALL - 86_400_000L);
+        rows.add(imported);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(1);
+        verify(imported, never()).originalResponse();
+        verify(imported, never()).finalRequest();
+    }
+
+    @Test
+    void retiringOneExchangeDoesNotExcludeAnotherWithTheSameDisplayId() {
+        observer.tick();
+        ProxyHttpRequestResponse ordinary = row(12, WALL + 100L);
+        when(ordinary.originalResponse().headerValue("Content-Type")).thenReturn("application/json");
+        rows.add(ordinary);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        rows.add(row(12, WALL + 200L));
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(1);
+        assertThat(burp(outputs.getFirst()).get("message_id")).isEqualTo(12);
+        verify(ordinary.originalResponse(), never()).body();
+    }
+
+    @Test
+    void trackingPreservesReceivedInstantPrecisionBeyondMilliseconds() {
+        observer.tick();
+        ProxyHttpRequestResponse first = row(13, WALL + 100L);
+        ProxyHttpRequestResponse second = row(13, WALL + 100L);
+        var secondReceived = first.time().plusNanos(1L);
+        when(second.time()).thenReturn(secondReceived);
+        rows.addAll(List.of(first, second));
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(2);
+        assertThat(capture(outputs.get(0)).get("id")).isNotEqualTo(capture(outputs.get(1)).get("id"));
+        body(second.originalResponse(), "data: changed\n\n");
+        java.util.Collections.reverse(rows);
+        clock.addAndGet(5_000L);
+        observer.tick();
+        assertThat(outputs).hasSize(3);
+        assertThat(capture(outputs.getLast()).get("id")).isEqualTo(capture(outputs.get(1)).get("id"));
+        assertThat(capture(outputs.getLast()).get("revision")).isEqualTo(2L);
+    }
+
     @Test
     void growingAndSameLengthChangedBodies_getOrderedIndependentSnapshots() throws Exception {
         observer.tick();
@@ -488,7 +584,7 @@ class StreamingProxyRecoveryTest {
     void identicalConcurrentRows_remainSeparateAndOwnTheirListenerPorts() {
         observer.tick();
         ProxyHttpRequestResponse first = row(5, WALL + 100L);
-        ProxyHttpRequestResponse second = row(6, WALL + 100L);
+        ProxyHttpRequestResponse second = row(5, WALL + 100L);
         when(second.listenerPort()).thenReturn(9090);
         rows.addAll(List.of(first, second));
         clock.addAndGet(5_000L);

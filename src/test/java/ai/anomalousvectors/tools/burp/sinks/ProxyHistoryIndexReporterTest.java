@@ -6,13 +6,20 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Answers;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
+import ai.anomalousvectors.tools.burp.utils.IndexNaming;
+import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -29,6 +36,51 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  * is not selected or export is not running (no OpenSearch or MontoyaApi required).
  */
 class ProxyHistoryIndexReporterTest {
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void snapshotPreservesEveryOccurrenceOfIdenticalRowsWithTheSameHistoryId(boolean sameWrapper)
+            throws Exception {
+        ConfigState.State previous = RuntimeConfig.getState();
+        try {
+            Path root = TestPathSupport.createDirectory("proxy-history-duplicate-id");
+            RuntimeConfig.updateState(new ConfigState.State(
+                    List.of(ConfigKeys.SRC_TRAFFIC), ConfigKeys.SCOPE_ALL, List.of(),
+                    new ConfigState.Sinks(true, root.toString(), false, true,
+                            false, "", "", "", false),
+                    ConfigState.DEFAULT_SETTINGS_SUB, List.of("proxy_history"),
+                    ConfigState.DEFAULT_FINDINGS_SEVERITIES, null));
+            RuntimeConfig.setExportRunning(true);
+            ProxyHttpRequestResponse first = proxyHistoryItem("https://example.test/duplicate");
+            ProxyHttpRequestResponse second = sameWrapper
+                    ? first : proxyHistoryItem("https://example.test/duplicate");
+            when(first.id()).thenReturn(63_847);
+            when(second.id()).thenReturn(63_847);
+            MontoyaApi api = mock(MontoyaApi.class, Answers.RETURNS_DEEP_STUBS);
+            when(api.proxy().history()).thenReturn(List.of(first, second));
+            MontoyaApiProvider.set(api);
+
+            callStatic(ProxyHistoryIndexReporter.class, "runStartupBacklogSlice",
+                    api, RuntimeConfig.currentExportRunToken());
+
+            List<String> lines = Files.readAllLines(
+                    root.resolve(IndexNaming.indexNameForShortName("traffic") + ".ndjson"));
+            assertThat(lines).hasSize(4);
+            var json = tools.jackson.databind.json.JsonMapper.builderWithJackson2Defaults().build();
+            String firstId = json.readTree(lines.get(0)).path("index").path("_id").asString();
+            String secondId = json.readTree(lines.get(2)).path("index").path("_id").asString();
+            assertThat(firstId).isNotBlank().isNotEqualTo(secondId).isNotEqualTo("63847");
+            assertThat(secondId).isNotBlank().isNotEqualTo("63847");
+            assertThat(json.readTree(lines.get(1)).path("request"))
+                    .isEqualTo(json.readTree(lines.get(3)).path("request"));
+            assertThat(json.readTree(lines.get(1)).path("response"))
+                    .isEqualTo(json.readTree(lines.get(3)).path("response"));
+            org.mockito.Mockito.verify(api.proxy()).history();
+        } finally {
+            ExportReporterLifecycle.resetForTests();
+            RuntimeConfig.updateState(previous);
+        }
+    }
 
     private static void resetRuntimeConfig() {
         RuntimeConfig.updateState(new ConfigState.State(
