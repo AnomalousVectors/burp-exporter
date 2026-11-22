@@ -21,9 +21,9 @@ import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
  * <p>Uses the AWS SDK via reflection against public interfaces so the IDE classpath and the
  * Burp runtime can load signing without compile-time AWS imports.</p>
  *
- * <p>Each {@link #sign} call resolves credentials from a fresh provider. Profile mode therefore
- * reloads shared-config / SSO / role credentials on the AWS SDK schedule; static access keys and
- * session tokens remain fixed until the operator updates Config.</p>
+ * <p>Each signing or validation call owns a fresh provider and closes it before returning,
+ * including on failure or interruption. Providers are not shared between concurrent requests;
+ * profile files are reread on each call, while static credentials come from session memory.</p>
  *
  * <p>Stateless and safe for concurrent callers. Credential-provider implementations supplied by
  * the AWS SDK retain their own synchronization and refresh behavior.</p>
@@ -53,15 +53,17 @@ public final class AmazonOpenSearchSigV4 {
     /**
      * Returns a validation message for current SigV4 settings.
      *
-     * <p>Validation may load configured profile files and resolve credentials. Runtime failures are
+     * <p>Validation may load configured profile files and construct a provider, but does not verify
+     * credentials with AWS. Runtime failures are
      * converted to a concise, single-line message and are not thrown.</p>
      *
      * @param baseUrl Amazon OpenSearch endpoint used to infer region and deployment type
      * @return blank when signing can proceed; otherwise a concise validation failure
      */
     public static String validationMessage(String baseUrl) {
-        try {
-            resolveSigningContext(baseUrl);
+        try (SigningContext context = resolveSigningContext(baseUrl)) {
+            // Creating the context validates settings and provider construction, not authentication.
+            java.util.Objects.requireNonNull(context.provider());
             return "";
         } catch (RuntimeException e) {
             return rootMessage(e);
@@ -92,10 +94,9 @@ public final class AmazonOpenSearchSigV4 {
         if (!isEnabledForRuntime()) {
             return;
         }
-        SigningContext context = resolveSigningContext(baseUrl);
-        byte[] payload = body == null ? new byte[0] : body.clone();
-        URI endpoint = SearchEndpoint.parse(baseUrl).uri();
-        try {
+        try (SigningContext context = resolveSigningContext(baseUrl)) {
+            byte[] payload = body == null ? new byte[0] : body.clone();
+            URI endpoint = SearchEndpoint.parse(baseUrl).uri();
             Object unsigned = buildSdkRequest(method, path, endpoint, payload);
             Object signedRequest = signSdkRequest(unsigned, context, payload);
             Object headerMap = invoke(signedRequest, "headers");
@@ -452,6 +453,21 @@ public final class AmazonOpenSearchSigV4 {
         return message.indexOf('@') > 0 && message.contains(".");
     }
 
-    private record SigningContext(String region, String signingService, Object provider) {
+    private record SigningContext(String region, String signingService, Object provider)
+            implements AutoCloseable {
+        /** {@inheritDoc} */
+        @Override
+        public void close() {
+            if (provider instanceof AutoCloseable closeable) {
+                try {
+                    closeable.close();
+                } catch (Exception e) {
+                    if (e instanceof InterruptedException) {
+                        Thread.currentThread().interrupt();
+                    }
+                    throw new IllegalStateException("Failed to close AWS credentials provider.", e);
+                }
+            }
+        }
     }
 }

@@ -2,6 +2,7 @@ package ai.anomalousvectors.tools.burp.ui.controller;
 
 import java.nio.file.Path;
 import java.util.Objects;
+import java.util.EnumMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -16,14 +17,17 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigImportPolicy;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigJsonMapper;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigParseResult;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
+import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
+import ai.anomalousvectors.tools.burp.utils.search.SearchTlsSupport;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionStatus;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnectionTester;
 
 /**
  * Coordinates owned background operations for the Config UI.
  *
- * <p>Import, export, and connection work runs on a controller-owned daemon executor. Import and
- * Test Connection use latest-request-wins cancellation and generation fencing. Export operations
+ * <p>Configuration, certificate, and connection work runs on a controller-owned daemon executor.
+ * Imports and Test Connection use latest-request-wins cancellation and generation fencing.
+ * Certificate imports are fenced independently per destination. Export operations
  * may finish independently, but only the newest control operation may update control status.
  * {@link #close()} cancels queued/running work and prevents later UI or log callbacks.</p>
  */
@@ -88,6 +92,12 @@ public final class ConfigController implements AutoCloseable {
         SearchConnectionStatus test(ConfigState.SearchDestination destination, String url) throws Exception;
     }
 
+    @FunctionalInterface
+    interface CertificateImporter {
+        /** Reads certificate material on a worker without changing the session's current pin. */
+        SecureCredentialStore.PinnedTlsCertificate importCertificate(Path path) throws Exception;
+    }
+
     private static final int WORKER_COUNT = 3;
 
     private final Ui ui;
@@ -95,6 +105,11 @@ public final class ConfigController implements AutoCloseable {
     private final ConfigImporter importer;
     private final ConfigExporter exporter;
     private final ConnectionProbe connectionProbe;
+    private final CertificateImporter certificateImporter;
+    private final EnumMap<ConfigState.SearchDestination, Long> certificateGenerations =
+            new EnumMap<>(ConfigState.SearchDestination.class);
+    private final EnumMap<ConfigState.SearchDestination, Future<?>> activeCertificates =
+            new EnumMap<>(ConfigState.SearchDestination.class);
     private final Object lifecycleLock = new Object();
     private long connectionGeneration;
     private long controlGeneration;
@@ -122,11 +137,98 @@ public final class ConfigController implements AutoCloseable {
             ConfigImporter importer,
             ConfigExporter exporter,
             ConnectionProbe connectionProbe) {
+        this(ui, executor, importer, exporter, connectionProbe, SearchTlsSupport::importPinnedCertificate);
+    }
+
+    ConfigController(Ui ui, ExecutorService executor, ConfigImporter importer,
+            ConfigExporter exporter, ConnectionProbe connectionProbe, CertificateImporter certificateImporter) {
         this.ui = Objects.requireNonNull(ui, "ui");
         this.executor = Objects.requireNonNull(executor, "executor");
         this.importer = Objects.requireNonNull(importer, "importer");
         this.exporter = Objects.requireNonNull(exporter, "exporter");
         this.connectionProbe = Objects.requireNonNull(connectionProbe, "connectionProbe");
+        this.certificateImporter = Objects.requireNonNull(certificateImporter, "certificateImporter");
+    }
+
+    /**
+     * Reads and parses a destination's pinned certificate off the EDT.
+     *
+     * <p>Only the newest import for that destination may save session material or publish status.
+     * Closing the controller fences completion even when file I/O ignores interruption.</p>
+     *
+     * @param destination destination whose pin is replaced; must not be {@code null}
+     * @param path certificate file selected by the user
+     * @throws NullPointerException when either argument is {@code null}
+     */
+    public void importPinnedCertificateAsync(ConfigState.SearchDestination destination, Path path) {
+        Objects.requireNonNull(destination, "destination");
+        Objects.requireNonNull(path, "path");
+        synchronized (lifecycleLock) {
+            if (closed) {
+                return;
+            }
+            long generation = nextCertificateGeneration(destination);
+            Future<?> previous = activeCertificates.remove(destination);
+            if (previous != null) {
+                previous.cancel(true);
+            }
+            activeCertificates.put(destination,
+                    executor.submit(() -> runCertificateImport(destination, path, generation)));
+        }
+    }
+
+    private void runCertificateImport(ConfigState.SearchDestination destination, Path path, long generation) {
+        try {
+            SecureCredentialStore.PinnedTlsCertificate certificate = certificateImporter.importCertificate(path);
+            postCertificateResult(destination, generation, () -> {
+                SecureCredentialStore.savePinnedTlsCertificate(destination.configKey(),
+                        certificate.sourcePath(), certificate.fingerprintSha256(), certificate.encodedBytes());
+                Logger.logInfoPanelOnly("[ConfigPanel] Imported " + destination.displayName()
+                        + " pinned TLS certificate: fingerprint=" + certificate.fingerprintSha256()
+                        + ", source=" + certificate.sourcePath());
+                ui.onDatabaseStatus("Pinned TLS certificate imported\nTrust: " + certificate.fingerprintSha256()
+                        + "\nSource: " + certificate.sourcePath());
+            });
+        } catch (Exception e) {
+            String detail = userFacingMessage(e);
+            postCertificateResult(destination, generation, () -> {
+                Logger.logErrorPanelOnly("[ConfigPanel] " + destination.displayName()
+                        + " pinned TLS certificate import failed for " + path + ": " + detail);
+                ui.onDatabaseStatus("Pinned TLS certificate import failed\nDetails: " + detail);
+            });
+        }
+    }
+
+    private void postCertificateResult(ConfigState.SearchDestination destination, long generation, Runnable result) {
+        SwingUtilities.invokeLater(() -> {
+            synchronized (lifecycleLock) {
+                if (!closed && certificateGenerations.getOrDefault(destination, 0L) == generation) {
+                    activeCertificates.remove(destination);
+                    result.run();
+                }
+            }
+        });
+    }
+
+    /**
+     * Cancels and fences certificate imports before another configuration replaces pin material.
+     * Safe on any thread; cancellation never waits for file I/O.
+     */
+    public void cancelCertificateImports() {
+        synchronized (lifecycleLock) {
+            for (ConfigState.SearchDestination destination : ConfigState.SearchDestination.values()) {
+                nextCertificateGeneration(destination);
+            }
+            activeCertificates.values().forEach(future -> future.cancel(true));
+            activeCertificates.clear();
+        }
+    }
+
+    private long nextCertificateGeneration(ConfigState.SearchDestination destination) {
+        Long previous = certificateGenerations.get(destination);
+        long next = previous == null ? 1L : previous.longValue() + 1L;
+        certificateGenerations.put(destination, next);
+        return next;
     }
 
     private static ExecutorService newExecutor() {
@@ -372,6 +474,7 @@ public final class ConfigController implements AutoCloseable {
                 return;
             }
             closed = true;
+            cancelCertificateImports();
             connectionGeneration++;
             controlGeneration++;
             if (activeConnection != null) {

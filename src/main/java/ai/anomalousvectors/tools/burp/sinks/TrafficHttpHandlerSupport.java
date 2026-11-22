@@ -12,6 +12,7 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.StringKeyedMaps;
 import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
@@ -850,6 +851,15 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      * ({@code status.code=0}, description {@code No response}).</p>
      */
     private static void flushOrphanedRequests() {
+        try {
+            flushOrphanedRequestsSafely();
+        } catch (RuntimeException e) {
+            Logger.logError("[Traffic] Orphan flush failed: error=" + e.getClass().getSimpleName()
+                    + "; later scheduled checks will continue.");
+        }
+    }
+
+    private static void flushOrphanedRequestsSafely() {
         if (!RuntimeConfig.isExportReady()) {
             return;
         }
@@ -864,6 +874,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 toFlush.add(e.getKey());
             }
         }
+        long failed = 0;
+        String failureType = "";
         for (MessageKey messageId : toFlush) {
             PendingOrphan po;
             synchronized (ORPHAN_LIFECYCLE_LOCK) {
@@ -872,21 +884,48 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             if (po == null || !RuntimeConfig.isExportRunActive(po.runToken)) {
                 continue;
             }
-            if (!shouldStillExportPendingOrphan(po)) {
-                ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
-                continue;
+            try {
+                if (!shouldStillExportPendingOrphan(po)) {
+                    ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
+                    continue;
+                }
+                exportOrphan(po);
+            } catch (RuntimeException e) {
+                if (RuntimeConfig.isExportRunActive(po.runToken)) {
+                    TrafficRouteBucket.Route route = TrafficRouteBucket.fromToolType(
+                            RuntimeConfig.normalizedToolTypeKey(po.toolType));
+                    if (RuntimeConfig.isSearchTrafficEnabled()) {
+                        ExportStats.recordFailure("traffic", 1);
+                        TrafficRouteBucket.recordDatabaseFailure(route, 1);
+                    }
+                    if (RuntimeConfig.isAnyFileExportEnabled()) {
+                        FileExportStats.recordFailure("traffic", 1);
+                        TrafficRouteBucket.recordFileFailure(route, 1);
+                    }
+                }
+                failed++;
+                failureType = e.getClass().getSimpleName();
             }
-            Map<String, Object> doc = new LinkedHashMap<>(po.documentSkeleton);
-            long nowMs = System.currentTimeMillis();
-            Object burpObj = doc.get("burp");
-            if (burpObj instanceof Map<?, ?> burpMap) {
-                Map<String, Object> burp = StringKeyedMaps.copy(burpMap);
-                burp.put("timing", BurpTimingFields.fromHandlerEpochMillis(po.timestamp, nowMs));
-                doc.put("burp", burp);
-            }
-            doc.put("response", buildOrphanResponse());
-            TrafficExportQueue.offerForRun(doc, po.runToken);
         }
+        if (failed > 0) {
+            Logger.logError("[Traffic] Orphan export failed: count=" + failed + ", lastError=" + failureType
+                    + "; admission outcomes are unknown; these request-only attempts will not be retried."
+                    + " Later responses and scheduled checks remain eligible.");
+        }
+    }
+
+    /** An uncertain queue admission must never be retried as a new operation. */
+    private static void exportOrphan(PendingOrphan po) {
+        Map<String, Object> doc = new LinkedHashMap<>(po.documentSkeleton);
+        long nowMs = System.currentTimeMillis();
+        Object burpObj = doc.get("burp");
+        if (burpObj instanceof Map<?, ?> burpMap) {
+            Map<String, Object> burp = StringKeyedMaps.copy(burpMap);
+            burp.put("timing", BurpTimingFields.fromHandlerEpochMillis(po.timestamp, nowMs));
+            doc.put("burp", burp);
+        }
+        doc.put("response", buildOrphanResponse());
+        TrafficExportQueue.offerForRun(doc, po.runToken);
     }
 
     static final class PendingOrphan {

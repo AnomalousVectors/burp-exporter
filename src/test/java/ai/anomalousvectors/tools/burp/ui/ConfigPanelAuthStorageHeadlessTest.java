@@ -209,6 +209,12 @@ class ConfigPanelAuthStorageHeadlessTest {
                 ConfigPanel panel = newPanelOnEdt();
                 runEdt(() -> call(panel, "applyPinnedCertificateImport",
                         ConfigState.SearchDestination.OPEN_SEARCH, certFile));
+                long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+                while (SecureCredentialStore.loadPinnedTlsCertificate().fingerprintSha256().isBlank()
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                runEdt(() -> { });
 
                 SecureCredentialStore.PinnedTlsCertificate pinned = SecureCredentialStore.loadPinnedTlsCertificate();
                 assertThat(pinned.sourcePath()).isEqualTo(certFile.toAbsolutePath().normalize().toString());
@@ -216,6 +222,7 @@ class ConfigPanelAuthStorageHeadlessTest {
                 assertThat(events).anyMatch(message -> message.contains("Importing OpenSearch pinned TLS certificate from"));
                 assertThat(events).anyMatch(message -> message.contains("Imported OpenSearch pinned TLS certificate: fingerprint=")
                         && message.contains(pinned.fingerprintSha256()));
+                runEdt(panel::closeForUnload);
             } finally {
                 Files.deleteIfExists(certFile);
                 Logger.unregisterListener(listener);

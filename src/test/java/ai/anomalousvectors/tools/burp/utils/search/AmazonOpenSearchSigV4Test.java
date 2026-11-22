@@ -2,6 +2,12 @@ package ai.anomalousvectors.tools.burp.utils.search;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mockConstruction;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.mock;
 
 import java.net.URI;
 import java.nio.file.Files;
@@ -11,6 +17,15 @@ import java.util.Map;
 
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.services.sts.StsClientBuilder;
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
+import software.amazon.awssdk.services.sts.model.AssumeRoleResponse;
+import software.amazon.awssdk.services.sts.model.Credentials;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -198,5 +213,93 @@ class AmazonOpenSearchSigV4Test {
         List<?> blankValues = (List<?>) parameters.get("blank");
         assertThat(blankValues).hasSize(1);
         assertThat(blankValues.getFirst()).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void sign_closesOwnedProfileProviderOnSuccessOrResolutionFailure(boolean fails) throws Exception {
+        Path file = TestPathSupport.createFile("aws-owned-profile", ".credentials");
+        Files.writeString(file, "[test-profile]\naws_access_key_id = test\naws_secret_access_key = test\n");
+        prepareProfileAmazonRuntime(file);
+        try (var construction = mockConstruction(ProfileCredentialsProvider.class, (provider, context) -> {
+            if (fails) {
+                when(provider.resolveCredentials()).thenThrow(new IllegalStateException("profile failed"));
+            } else {
+                when(provider.resolveCredentials()).thenReturn(AwsBasicCredentials.create("test", "secret"));
+            }
+        })) {
+            Runnable signing = () -> AmazonOpenSearchSigV4.sign(new HttpGet("/"), "GET",
+                    "https://search-example.us-east-1.es.amazonaws.com", "/", new byte[0]);
+            if (fails) {
+                assertThatThrownBy(signing::run).isInstanceOf(IllegalStateException.class);
+            } else {
+                signing.run();
+            }
+            assertThat(construction.constructed()).hasSize(1);
+            verify(construction.constructed().getFirst()).close();
+        } finally {
+            restore();
+        }
+    }
+
+    @Test
+    void validationAndInvalidTargetCloseTheirOwnProfileProviders() throws Exception {
+        Path file = TestPathSupport.createFile("aws-owned-validation", ".credentials");
+        Files.writeString(file, "[test-profile]\naws_access_key_id = test\naws_secret_access_key = test\n");
+        prepareProfileAmazonRuntime(file);
+        try (var construction = mockConstruction(ProfileCredentialsProvider.class)) {
+            String endpoint = "https://search-example.us-east-1.es.amazonaws.com";
+            assertThat(AmazonOpenSearchSigV4.validationMessage(endpoint)).isBlank();
+            assertThatThrownBy(() -> AmazonOpenSearchSigV4.sign(
+                    new HttpGet("/"), "GET", endpoint, "/invalid target", new byte[0]))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(construction.constructed()).hasSize(2);
+            for (ProfileCredentialsProvider provider : construction.constructed()) {
+                verify(provider).close();
+            }
+        } finally {
+            restore();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void roleProfileClosesItsStsClientOnSuccessOrFailure(boolean fails) throws Exception {
+        Path file = TestPathSupport.createFile("aws-owned-role", ".credentials");
+        Files.writeString(file, """
+                [test-profile]
+                role_arn = arn:aws:iam::123456789012:role/lab
+                source_profile = source
+                region = us-east-1
+                [source]
+                aws_access_key_id = test
+                aws_secret_access_key = secret
+                """);
+        prepareProfileAmazonRuntime(file);
+        StsClient client = mock(StsClient.class);
+        StsClientBuilder builder = mock(StsClientBuilder.class, org.mockito.Answers.RETURNS_SELF);
+        when(builder.build()).thenReturn(client);
+        if (fails) {
+            when(client.assumeRole(org.mockito.ArgumentMatchers.any(AssumeRoleRequest.class)))
+                    .thenThrow(new IllegalStateException("role unavailable"));
+        } else {
+            Credentials credentials = Credentials.builder().accessKeyId("role-key").secretAccessKey("role-secret")
+                    .sessionToken("role-session").expiration(java.time.Instant.now().plusSeconds(3600)).build();
+            when(client.assumeRole(org.mockito.ArgumentMatchers.any(AssumeRoleRequest.class)))
+                    .thenReturn(AssumeRoleResponse.builder().credentials(credentials).build());
+        }
+        try (var factory = mockStatic(StsClient.class)) {
+            factory.when(StsClient::builder).thenReturn(builder);
+            Runnable signing = () -> AmazonOpenSearchSigV4.sign(new HttpGet("/"), "GET",
+                    "https://search-example.us-east-1.es.amazonaws.com", "/", new byte[0]);
+            if (fails) {
+                assertThatThrownBy(signing::run).isInstanceOf(IllegalStateException.class);
+            } else {
+                signing.run();
+            }
+            verify(client).close();
+        } finally {
+            restore();
+        }
     }
 }

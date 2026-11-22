@@ -1828,6 +1828,10 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
     @Override
     public void onImportResult(ConfigState.State state) {
         Runnable r = () -> {
+            if (closedForUnload.get()) {
+                return;
+            }
+            controller().cancelCertificateImports();
             settingsCheckbox.setSelected(state.dataSources().contains(ConfigKeys.SRC_SETTINGS));
             sitemapCheckbox.setSelected(state.dataSources().contains(ConfigKeys.SRC_SITEMAP));
             issuesCheckbox.setSelected(state.dataSources().contains(ConfigKeys.SRC_FINDINGS));
@@ -2771,24 +2775,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 : destination;
         Logger.logDebug("[ConfigPanel] Importing " + selectedDestination.displayName()
                 + " pinned TLS certificate from " + selectedPath);
-        try {
-            SecureCredentialStore.PinnedTlsCertificate certificate =
-                    SearchTlsSupport.importPinnedCertificate(selectedPath);
-            SecureCredentialStore.savePinnedTlsCertificate(
-                    selectedDestination.configKey(),
-                    certificate.sourcePath(), certificate.fingerprintSha256(), certificate.encodedBytes());
-            Logger.logInfoPanelOnly("[ConfigPanel] Imported " + selectedDestination.displayName()
-                    + " pinned TLS certificate: fingerprint="
-                    + certificate.fingerprintSha256() + ", source=" + certificate.sourcePath());
-            Logger.logTrace("[ConfigPanel] " + selectedDestination.displayName()
-                    + " pinned TLS certificate bytes=" + certificate.encodedBytes().length);
-            onDatabaseStatus("Pinned TLS certificate imported\nTrust: " + certificate.fingerprintSha256()
-                    + "\nSource: " + certificate.sourcePath());
-        } catch (IOException | java.security.cert.CertificateException e) {
-            Logger.logErrorPanelOnly("[ConfigPanel] " + selectedDestination.displayName()
-                    + " pinned TLS certificate import failed for " + selectedPath + ": " + rootMessage(e));
-            onDatabaseStatus("Pinned TLS certificate import failed\nDetails: " + rootMessage(e));
-        }
+        controller().importPinnedCertificateAsync(selectedDestination, selectedPath);
     }
 
     private void applyImportedPinnedTlsCertificate(ConfigState.OpenSearchOptions openSearchOptions) {
@@ -4047,15 +4034,6 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
 
     private static String credentialValue(String value) {
         return value == null ? "" : value;
-    }
-
-    private static String rootMessage(Throwable throwable) {
-        Throwable current = throwable;
-        while (current.getCause() != null && current.getCause() != current) {
-            current = current.getCause();
-        }
-        String message = current.getMessage();
-        return (message == null || message.isBlank()) ? current.getClass().getSimpleName() : message;
     }
 
     private ConfigController controller() {

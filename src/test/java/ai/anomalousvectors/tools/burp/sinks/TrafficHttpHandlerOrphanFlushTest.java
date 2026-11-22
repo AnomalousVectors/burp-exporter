@@ -1,6 +1,9 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.ArgumentMatchers.any;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -9,11 +12,16 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import ai.anomalousvectors.tools.burp.testutils.TestPathSupport;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.FileExportStats;
+import ai.anomalousvectors.tools.burp.utils.Logger;
 import burp.api.montoya.core.ToolType;
 
 /**
@@ -25,6 +33,106 @@ import burp.api.montoya.core.ToolType;
  * {@code ObjectFactoryLocator}, which is not wired in unit tests.</p>
  */
 class TrafficHttpHandlerOrphanFlushTest {
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void preparationOrAdmissionFailureIsAccountedAndLaterTicksContinue(boolean admissionFailure) throws Exception {
+        Path root = TestPathSupport.createDirectory("orphan-flush-fault");
+        ConfigState.State previous = RuntimeConfig.getState();
+        RuntimeConfig.updateState(fileOnlyTrafficState(root));
+        RuntimeConfig.setExportRunning(true);
+        ExportStats.resetForTests();
+        List<String> errors = new java.util.concurrent.CopyOnWriteArrayList<>();
+        Logger.LogListener listener = (level, message) -> {
+            if (message.contains("Orphan export failed")) {
+                errors.add(message);
+            }
+        };
+        try (var queue = mockStatic(TrafficExportQueue.class)) {
+            Logger.registerListener(listener);
+            TrafficHttpHandlerSupport.clearPendingOrphansForTest();
+            if (admissionFailure) {
+                seedAgedPendingOrphan(10, ToolType.REPEATER);
+                queue.when(() -> TrafficExportQueue.offerForRun(any(), any()))
+                        .thenThrow(new IllegalStateException("admission fault"));
+            } else {
+                Map<String, Object> broken = org.mockito.Mockito.spy(
+                        new LinkedHashMap<String, Object>(Map.of("url", "https://example.test/fault")));
+                when(broken.entrySet()).thenThrow(new IllegalStateException("preparation fault"));
+                TrafficHttpHandlerSupport.registerPendingOrphanForTest(10, broken, ToolType.REPEATER,
+                        TrafficHttpHandlerSupport.RequestStageResolution.none());
+            }
+            TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
+            assertPendingOrphanRemoved(10);
+            assertThat(FileExportStats.getFailureCount("traffic")).isEqualTo(1);
+            assertThat(FileExportStats.getTrafficToolTypeFailureCount("repeater")).isEqualTo(1);
+            assertThat(ExportStats.getFailureCount("traffic")).isZero();
+            javax.swing.SwingUtilities.invokeAndWait(() -> { });
+            assertThat(errors).hasSize(1);
+
+            queue.reset();
+            queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenReturn(true);
+            seedAgedPendingOrphan(11, ToolType.REPEATER);
+            TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
+            TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
+            queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), org.mockito.Mockito.times(1));
+            assertPendingOrphanRemoved(11);
+            assertThat(FileExportStats.getFailureCount("traffic")).isEqualTo(1);
+        } finally {
+            Logger.unregisterListener(listener);
+            TrafficHttpHandlerSupport.stop();
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.updateState(previous);
+            ExportStats.resetForTests();
+        }
+    }
+
+    @Test
+    void realFixedRateTaskSurvivesPreparationFailure() throws Exception {
+        Path root = TestPathSupport.createDirectory("orphan-recurring-fault");
+        ConfigState.State previous = RuntimeConfig.getState();
+        RuntimeConfig.updateState(fileOnlyTrafficState(root));
+        RuntimeConfig.setExportRunning(true);
+        java.util.concurrent.ScheduledExecutorService scheduler =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
+        java.util.concurrent.CountDownLatch failed = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch admitted = new java.util.concurrent.CountDownLatch(1);
+        try {
+            TrafficHttpHandlerSupport.clearPendingOrphansForTest();
+            TrafficExportQueue.clearPendingWork();
+            Map<String, Object> broken = org.mockito.Mockito.spy(
+                    new LinkedHashMap<String, Object>(Map.of("url", "https://example.test/fault")));
+            when(broken.entrySet()).thenAnswer(invocation -> {
+                failed.countDown();
+                throw new IllegalStateException("preparation fault");
+            });
+            TrafficHttpHandlerSupport.registerPendingOrphanForTest(20, broken, ToolType.REPEATER,
+                    TrafficHttpHandlerSupport.RequestStageResolution.none());
+            var recurring = scheduler.scheduleAtFixedRate(() -> {
+                // Mockito static scopes belong to the calling thread, including the real worker.
+                try (var queue = mockStatic(TrafficExportQueue.class)) {
+                    queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenAnswer(invocation -> {
+                        admitted.countDown();
+                        return true;
+                    });
+                    TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
+                }
+            }, 0, 10, java.util.concurrent.TimeUnit.MILLISECONDS);
+            assertThat(failed.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            seedAgedPendingOrphan(21, ToolType.REPEATER);
+            assertThat(admitted.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertPendingOrphanRemoved(21);
+            assertThat(recurring.isDone()).isFalse();
+        } finally {
+            scheduler.shutdownNow();
+            assertThat(scheduler.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            TrafficHttpHandlerSupport.stop();
+            TrafficExportQueue.stopWorker();
+            TrafficExportQueue.clearPendingWork();
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.updateState(previous);
+        }
+    }
 
     @Test
     void flushOrphanedRequests_drainsAgedEntryToExportQueue() throws Exception {
