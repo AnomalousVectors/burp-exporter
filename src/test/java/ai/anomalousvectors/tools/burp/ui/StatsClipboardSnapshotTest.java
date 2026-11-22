@@ -154,6 +154,10 @@ class StatsClipboardSnapshotTest {
         var payload = JsonMapper.builderWithJackson2Defaults().build().readTree(
                 infoMessages.get(1).substring("[Stats] Session stop ".length()));
         assertThat(payload.path("sections").path("Overview").has("Streaming Recovery")).isFalse();
+        assertThat(payload.path("sections").path("Overview").has("Request Receipts / Limit")).isFalse();
+        assertThat(payload.path("sections").path("Live HTTP Capture").has("Request Receipts / Limit")).isTrue();
+        assertThat(payload.path("sections").path("Live HTTP Capture").has("Reclaimed Request Receipts")).isTrue();
+        assertThat(payload.path("sections").path("Live HTTP Capture").has("Request Receipt Rejections")).isTrue();
         assertThat(payload.path("sections").path("Streaming Recovery").path("Status").asString())
                 .isEqualTo(ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         assertThat(infoMessages).noneMatch(message -> message.contains("\"kind\":\"search_counts\""));

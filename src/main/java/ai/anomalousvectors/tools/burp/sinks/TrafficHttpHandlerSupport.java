@@ -39,16 +39,15 @@ class TrafficHttpHandlerSupport implements HttpHandler {
 
     private static final String SCHEMA_VERSION = "1";
 
-    /** Delay after which a request with no response is exported as an orphan (Chromium-aligned). */
+    /** Request-only publication delay, not proof that a response can no longer arrive. */
     private static final long ORPHAN_TIMEOUT_MS = 120_000L;
     private static final int ORPHAN_CHECK_INTERVAL_SECONDS = 30;
 
     private static final Object ORPHAN_LIFECYCLE_LOCK = new Object();
     private static final ConcurrentHashMap<MessageKey, PendingOrphan> pendingOrphans = new ConcurrentHashMap<>();
-    // Run admission is independent of request-stage scope/tool eligibility: later processing can
-    // change the initiating sent request. These payload-free receipts also survive request-only
-    // timeout, so a late response remains exportable once. Stop discards all receipts.
-    private static final ConcurrentHashMap<MessageKey, PendingOrphan> requestAdmissions = new ConcurrentHashMap<>();
+    // Request-stage eligibility can change before response capture. Keep exact run membership,
+    // but reclaim old payload-free receipts only under pressure; never wait for capacity.
+    private static LiveRequestReceipts requestAdmissions = new LiveRequestReceipts(ORPHAN_TIMEOUT_MS);
 
     // Native Proxy and general HTTP IDs belong to different Burp namespaces, even when equal.
     record MessageKey(boolean nativeProxy, int id) {}
@@ -87,21 +86,39 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      * lazily on the next tracked request via {@link LazyScheduler#getOrStart()}.</p>
      */
     public static void stop() {
+        LiveRequestReceipts.Snapshot pressure;
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
+            pressure = requestAdmissions.takePressureSummary(true);
             pendingOrphans.clear();
             requestAdmissions.clear();
         }
+        logReceiptPressure(pressure);
         ORPHAN_SCHEDULER.stop();
     }
 
     /**
      * Returns the current number of pending request/response orphan entries awaiting
-     * correlation or timeout-driven flush. Used by Misc Stats and the periodic memory-sample
-     * log to detect unbounded orphan growth (a symptom of listener misbehavior or network
-     * stalls that keep responses from arriving within the orphan TTL).
+     * correlation or timeout-driven flush. Used by Misc Stats and periodic memory-sample
+     * logging. Excludes payload-free receipts retained for late responses after timeout; their
+     * separate occupancy and pressure totals are exposed through {@link TrafficHttpHandler}.
      */
     public static int getPendingOrphansSize() {
         return pendingOrphans.size();
+    }
+
+    static LiveRequestReceipts.Snapshot receiptSnapshot() {
+        synchronized (ORPHAN_LIFECYCLE_LOCK) {
+            return requestAdmissions.snapshot(RuntimeConfig.currentExportRunToken());
+        }
+    }
+
+    private static void logReceiptPressure(LiveRequestReceipts.Snapshot snapshot) {
+        if (snapshot == null) return;
+        Logger.logWarnPanelOnly("[Traffic] Live request receipt pressure: retained=" + snapshot.retained()
+                + "/" + snapshot.capacity() + ", peak=" + snapshot.peak()
+                + ", reclaimed=" + snapshot.reclaimed() + ", rejected=" + snapshot.rejected()
+                + "; reclaimed receipts no longer admit late responses; rejected requests were not admitted to callback capture."
+                + " Burp traffic continued without waiting for capture capacity.");
     }
 
     /** Whether traffic from this tool source should be exported (user-selected tool types only). */
@@ -187,58 +204,70 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         if (toolType == ToolType.PROXY || toolType == null) {
             StreamingProxyRecovery.requestObserved();
         }
-        PendingOrphan receipt = new PendingOrphan(null, requestSentMs, toolType,
-                RequestStageResolution.none(), runToken, listenerPort);
+        LiveRequestReceipts.Receipt receipt;
+        LiveRequestReceipts.Snapshot pressure;
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
-            if (!RuntimeConfig.isExportRunActive(runToken) || RuntimeConfig.isExportStopping()
-                || requestAdmissions.putIfAbsent(key, receipt) != null) {
+            if (!RuntimeConfig.isExportRunActive(runToken) || RuntimeConfig.isExportStopping()) {
                 return;
             }
+            if (requestAdmissions.beginRun(runToken)) pendingOrphans.clear();
+            receipt = requestAdmissions.admit(key, requestSentMs, toolType, runToken, listenerPort);
+            pressure = requestAdmissions.takePressureSummary(false);
         }
-        String scopeUrl = RequestResponseDocBuilder.buildBestEffortUrl(
-                request,
-                request.httpService(),
-                RequestResponseDocBuilder.buildTrafficRequestDoc(request),
-                "TrafficHttpHandler");
-        if (!ScopeFilter.shouldExport(
-                RuntimeConfig.getState(), scopeUrl, request.isInScope())) {
-            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
-            return;
-        }
-        if (!(toolType == null ? shouldExportNullToolSourceTraffic() : shouldExportTrafficByToolSource(toolType))) {
-            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
-            return;
-        }
-        if (toolType == ToolType.EXTENSIONS) {
-            HttpService svc = request.httpService();
-            if (svc != null && isRequestToConfiguredOpenSearch(svc.host(), svc.port())) {
-                ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SELF_OPENSEARCH, 1);
+        logReceiptPressure(pressure);
+        if (receipt == null) return;
+        boolean payloadAttached = false;
+        try {
+            String scopeUrl = RequestResponseDocBuilder.buildBestEffortUrl(
+                    request,
+                    request.httpService(),
+                    RequestResponseDocBuilder.buildTrafficRequestDoc(request),
+                    "TrafficHttpHandler");
+            if (!ScopeFilter.shouldExport(
+                    RuntimeConfig.getState(), scopeUrl, request.isInScope())) {
+                ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
                 return;
             }
-        }
-        ToolType reqToolType = toolType;
-        RequestStageResolution requestStageResolution =
-                resolveRequestStageResolution(
-                        request,
-                        reqToolType,
-                        RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
-        Map<String, Object> skeleton = buildOrphanDocumentSkeleton(
-                request,
-                requestSentMs,
-                requestStageResolution.metadataForExport(), key, toolType, annotations, listenerPort);
-        if (skeleton != null) {
-            PendingOrphan pending = new PendingOrphan(
-                    skeleton,
-                    requestSentMs,
-                    reqToolType,
-                    requestStageResolution,
-                    runToken, listenerPort);
-            synchronized (ORPHAN_LIFECYCLE_LOCK) {
-                if (RuntimeConfig.isExportRunActive(runToken)
-                        && requestAdmissions.get(key) == receipt) {
-                    pendingOrphans.put(key, pending);
-                    ensureOrphanSchedulerStarted();
+            if (!(toolType == null ? shouldExportNullToolSourceTraffic() : shouldExportTrafficByToolSource(toolType))) {
+                ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
+                return;
+            }
+            if (toolType == ToolType.EXTENSIONS) {
+                HttpService svc = request.httpService();
+                if (svc != null && isRequestToConfiguredOpenSearch(svc.host(), svc.port())) {
+                    ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SELF_OPENSEARCH, 1);
+                    return;
                 }
+            }
+            ToolType reqToolType = toolType;
+            RequestStageResolution requestStageResolution =
+                    resolveRequestStageResolution(
+                            request,
+                            reqToolType,
+                            RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
+            Map<String, Object> skeleton = buildOrphanDocumentSkeleton(
+                    request,
+                    requestSentMs,
+                    requestStageResolution.metadataForExport(), key, toolType, annotations, listenerPort);
+            if (skeleton != null) {
+                PendingOrphan pending = new PendingOrphan(
+                        skeleton,
+                        requestSentMs,
+                        reqToolType,
+                        requestStageResolution,
+                        runToken, listenerPort);
+                synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                    if (RuntimeConfig.isExportRunActive(runToken)
+                            && requestAdmissions.get(key) == receipt) {
+                        pendingOrphans.put(key, pending);
+                        payloadAttached = true;
+                        ensureOrphanSchedulerStarted();
+                    }
+                }
+            }
+        } finally {
+            synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                if (!payloadAttached) requestAdmissions.releasePayload(receipt);
             }
         }
     }
@@ -275,10 +304,12 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             ToolType responseType, Annotations annotations) {
         PendingOrphan pending;
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
-            PendingOrphan receipt = requestAdmissions.remove(key);
+            LiveRequestReceipts.Receipt receipt = requestAdmissions.remove(key);
             PendingOrphan skeleton = pendingOrphans.remove(key);
             pending = receipt == null ? null
-                    : skeleton != null && skeleton.runToken.equals(receipt.runToken) ? skeleton : receipt;
+                    : skeleton != null && skeleton.runToken.equals(receipt.runToken()) ? skeleton
+                    : new PendingOrphan(null, receipt.timestamp(), receipt.toolType(),
+                            RequestStageResolution.none(), receipt.runToken(), receipt.listenerPort());
         }
         // Pair only within the admitted run; late and duplicate responses cannot enter a new run.
         if (pending == null || !RuntimeConfig.isExportRunActive(pending.runToken)
@@ -809,8 +840,17 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      * {@code ai.anomalousvectors.tools.burp.sinks}.
      */
     static void clearPendingOrphansForTest() {
-        pendingOrphans.clear();
-        requestAdmissions.clear();
+        synchronized (ORPHAN_LIFECYCLE_LOCK) {
+            pendingOrphans.clear();
+            requestAdmissions = new LiveRequestReceipts(ORPHAN_TIMEOUT_MS);
+        }
+    }
+
+    static void setReceiptCacheForTest(LiveRequestReceipts cache) {
+        synchronized (ORPHAN_LIFECYCLE_LOCK) {
+            pendingOrphans.clear();
+            requestAdmissions = cache;
+        }
     }
 
     /**
@@ -829,9 +869,13 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             ToolType toolType, RequestStageResolution requestStageResolution, boolean nativeProxy) {
         PendingOrphan pending = new PendingOrphan(documentSkeleton, 0L, toolType, requestStageResolution);
         MessageKey key = new MessageKey(nativeProxy, messageId);
-        pendingOrphans.put(key, pending);
-        requestAdmissions.put(key, new PendingOrphan(
-                null, 0L, toolType, RequestStageResolution.none(), pending.runToken));
+        synchronized (ORPHAN_LIFECYCLE_LOCK) {
+            if (requestAdmissions.beginRun(pending.runToken)) pendingOrphans.clear();
+            if (requestAdmissions.admit(key, 0L, toolType, pending.runToken, null) == null) {
+                throw new IllegalStateException("Test request was not admitted.");
+            }
+            pendingOrphans.put(key, pending);
+        }
     }
 
     /**
@@ -856,6 +900,12 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         } catch (RuntimeException e) {
             Logger.logError("[Traffic] Orphan flush failed: error=" + e.getClass().getSimpleName()
                     + "; later scheduled checks will continue.");
+        } finally {
+            LiveRequestReceipts.Snapshot pressure;
+            synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                pressure = requestAdmissions.takePressureSummary(false);
+            }
+            logReceiptPressure(pressure);
         }
     }
 
@@ -864,7 +914,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             return;
         }
         if (!RuntimeConfig.trafficExportGate().anyTrafficExportEnabled()) {
-            pendingOrphans.clear();
+            synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                pendingOrphans.forEach((key, pending) ->
+                        requestAdmissions.releasePayload(requestAdmissions.get(key)));
+                pendingOrphans.clear();
+            }
             return;
         }
         long now = System.currentTimeMillis();
@@ -878,8 +932,10 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         String failureType = "";
         for (MessageKey messageId : toFlush) {
             PendingOrphan po;
+            LiveRequestReceipts.Receipt receipt;
             synchronized (ORPHAN_LIFECYCLE_LOCK) {
                 po = pendingOrphans.remove(messageId);
+                receipt = requestAdmissions.get(messageId);
             }
             if (po == null || !RuntimeConfig.isExportRunActive(po.runToken)) {
                 continue;
@@ -905,6 +961,10 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 }
                 failed++;
                 failureType = e.getClass().getSimpleName();
+            } finally {
+                synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                    requestAdmissions.releasePayload(receipt);
+                }
             }
         }
         if (failed > 0) {

@@ -116,6 +116,7 @@ public final class StatsClipboardSnapshot {
             sections.put("Database Run Peaks", buildDatabaseRunPeaksSection());
         }
         if (RuntimeConfig.isAnyTrafficExportEnabled()) {
+            sections.put("Live HTTP Capture", buildLiveHttpCaptureSection());
             sections.put("Traffic Spill", buildDatabaseSpillSection());
             sections.put("Streaming Recovery", Map.of("Status",
                     ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status()));
@@ -223,6 +224,16 @@ public final class StatsClipboardSnapshot {
         rows.put("Queue Drops", formatWhole(ExportStats.getTrafficQueueDrops()));
         rows.put("Pending Orphans", formatWhole(TrafficHttpHandler.pendingOrphansSize()));
         rows.put("Repeater Metadata Sources", ExportStats.describeRepeaterMetadataSourceCounts());
+        return rows;
+    }
+
+    private static Map<String, String> buildLiveHttpCaptureSection() {
+        var stats = TrafficHttpHandler.requestReceiptStats();
+        Map<String, String> rows = new LinkedHashMap<>();
+        rows.put("Request Receipts / Limit", formatWhole(stats.retained()) + " / " + formatWhole(stats.capacity()));
+        rows.put("Peak Request Receipts", formatWhole(stats.peak()));
+        rows.put("Reclaimed Request Receipts", formatWhole(stats.reclaimed()));
+        rows.put("Request Receipt Rejections", formatWhole(stats.rejected()));
         return rows;
     }
 

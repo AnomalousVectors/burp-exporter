@@ -15,6 +15,9 @@
  * <p>Native Proxy callbacks capture live Proxy traffic with its own listener metadata; general HTTP
  * callbacks capture other tools. Both use the initiating sent request and original server response.
  * Native Proxy and general HTTP message IDs are separate namespaces, neither a UI History row ID.
+ * Shared payload-free request receipts have a count cap. Old receipts are reclaimed only under
+ * capacity pressure after request-only handling finishes; otherwise new capture is rejected
+ * without waiting for space. Retained receipts still allow late responses after the orphan timeout.
  * Live export does not join callbacks to History. {@link StreamingProxyRecovery} independently
  * observes retained streaming responses and publishes snapshots identified by their exact History
  * row. Its bounded observation window is not proof of HTTP completion. Database revisions replace

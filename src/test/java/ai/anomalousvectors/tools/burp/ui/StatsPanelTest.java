@@ -847,6 +847,13 @@ class StatsPanelTest {
                     .isFalse();
             assertThat(findByName(miscCard, "miscStats.section.Database Traffic", JLabel.class).isVisible())
                     .isFalse();
+            assertThat(findByName(miscCard, "miscStats.section.Live HTTP Capture", JLabel.class).isVisible())
+                    .isTrue();
+            JLabel receiptGauge = JLabel.class.cast(get(panel, "requestReceiptsValue"));
+            assertThat(receiptGauge.getToolTipText()).contains("other live HTTP tools")
+                    .contains("not a body-memory budget");
+            assertThat(JLabel.class.cast(get(panel, "reclaimedRequestReceiptsValue")).getToolTipText())
+                    .contains("not confirmed response loss");
             // Traffic source is still enabled for files-only runs → Traffic Spill remains relevant.
             assertThat(findByName(miscCard, "miscStats.section.Streaming Recovery", JLabel.class).isVisible())
                     .isTrue();

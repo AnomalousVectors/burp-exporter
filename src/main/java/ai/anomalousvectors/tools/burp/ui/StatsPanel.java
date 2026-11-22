@@ -410,6 +410,10 @@ public final class StatsPanel extends JPanel {
     private final JLabel peakCooldownWaitMsValue;
     private final JLabel peakFlushSlotWaitMsValue;
     private final JLabel pendingOrphansValue;
+    private final JLabel requestReceiptsValue;
+    private final JLabel peakRequestReceiptsValue;
+    private final JLabel reclaimedRequestReceiptsValue;
+    private final JLabel requestReceiptRejectionsValue;
     private final JLabel streamingRecoveryValue;
     private final JLabel bulkInFlightValue;
     private final JLabel softOutageValue;
@@ -559,6 +563,10 @@ public final class StatsPanel extends JPanel {
                         "Traffic Queue Size", "Traffic Queue Bytes (est.)",
                         "Queue Drops", "Pending Orphans", "Repeater Metadata Sources"
                 }),
+                new MetricSection("Live HTTP Capture", new String[] {
+                        "Request Receipts / Limit", "Peak Request Receipts",
+                        "Reclaimed Request Receipts", "Request Receipt Rejections"
+                }),
                 new MetricSection(MISC_TRAFFIC_SPILL_SECTION, new String[] {
                         "Queue", "Oldest Age (s)", "Enqueued / Dequeued / Dropped", "Drop Reasons"
                 }),
@@ -634,6 +642,10 @@ public final class StatsPanel extends JPanel {
         peakCooldownWaitMsValue = miscValues.get("Peak Cooldown Wait (ms)");
         peakFlushSlotWaitMsValue = miscValues.get("Peak Flush Slot Wait (ms)");
         pendingOrphansValue = miscValues.get("Pending Orphans");
+        requestReceiptsValue = miscValues.get("Request Receipts / Limit");
+        peakRequestReceiptsValue = miscValues.get("Peak Request Receipts");
+        reclaimedRequestReceiptsValue = miscValues.get("Reclaimed Request Receipts");
+        requestReceiptRejectionsValue = miscValues.get("Request Receipt Rejections");
         streamingRecoveryValue = miscValues.get("Status");
         bulkInFlightValue = miscValues.get("Bulk In-Flight");
         bulkByteBudgetValue = miscValues.get("Bulk Byte Budget");
@@ -832,6 +844,11 @@ public final class StatsPanel extends JPanel {
         snapshotBuildAheadValue.setText(StatsPanelFormatters.formatSnapshotBuildAhead());
         pendingOrphansValue.setText(formatWhole(
                 ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler.pendingOrphansSize()));
+        var receipts = ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler.requestReceiptStats();
+        requestReceiptsValue.setText(formatWhole(receipts.retained()) + " / " + formatWhole(receipts.capacity()));
+        peakRequestReceiptsValue.setText(formatWhole(receipts.peak()));
+        reclaimedRequestReceiptsValue.setText(formatWhole(receipts.reclaimed()));
+        requestReceiptRejectionsValue.setText(formatWhole(receipts.rejected()));
         streamingRecoveryValue.setText(
                 ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         bulkInFlightValue.setText(formatWhole(ExportStats.getBulkInFlight()));
@@ -1498,7 +1515,8 @@ public final class StatsPanel extends JPanel {
      * Exported Size follow database enablement, Traffic Spill Status follows live traffic export
      * relevance, and Files Exported Size follows files enablement. The {@code Files} section and
      * search database-prefixed groups follow the currently visible lower-panel destinations. Traffic
-     * Spill and Streaming Recovery details follow traffic export relevance (files and/or database).</p>
+     * Spill, Live HTTP Capture and Streaming Recovery details follow traffic export relevance
+     * (files and/or database).</p>
      *
      * @param fileVisible whether the Files metrics group should be visible
      * @param openSearchVisible whether the search database metrics group should be visible
@@ -1519,6 +1537,7 @@ public final class StatsPanel extends JPanel {
             setMiscSectionVisible(section, openSearchVisible);
         }
         setMiscSectionVisible(MISC_TRAFFIC_SPILL_SECTION, trafficRelevant);
+        setMiscSectionVisible("Live HTTP Capture", trafficRelevant);
         setMiscSectionVisible("Streaming Recovery", trafficRelevant);
         setMiscSectionVisible("Files", fileVisible);
         miscStatsCard.revalidate();
@@ -1951,8 +1970,23 @@ public final class StatsPanel extends JPanel {
                 "Session total of live traffic documents dropped because the in-memory queue was full.",
                 "Distinct from database failures and from spill drop counters under Spill."));
         tooltips.put("Pending Orphans", Tooltips.htmlRaw(
-                "Live HTTP request/response pairs held until a matching response arrives.",
-                "A non-zero value during heavy traffic is normal; sustained growth may indicate pairing pressure."));
+                "Live HTTP request payloads awaiting a response or the two-minute request-only timeout.",
+                "Small payload-free receipts can remain afterward; see Live HTTP Capture."));
+        tooltips.put("Request Receipts / Limit", Tooltips.htmlRaw(
+                "Payload-free run membership shared by native Proxy and other live HTTP tools.",
+                "At capacity, the oldest eligible receipt can be reclaimed after two minutes and after",
+                "request-only handling finishes. Otherwise new callback capture is rejected without waiting for space.",
+                "Responses remove their receipt; Stop clears all receipts. This is not a body-memory budget."));
+        tooltips.put("Peak Request Receipts", Tooltips.htmlRaw(
+                "Maximum simultaneous live HTTP receipts during this run, retained after Stop."));
+        tooltips.put("Reclaimed Request Receipts", Tooltips.htmlRaw(
+                "Old payload-free receipts removed only under capacity pressure during this run.",
+                "A later response for a reclaimed receipt cannot enter callback export.",
+                "This counts lost eligibility, not confirmed response loss; existing exports are unchanged."));
+        tooltips.put("Request Receipt Rejections", Tooltips.htmlRaw(
+                "New live HTTP callback admissions refused because the receipt limit was full and no old receipt was eligible.",
+                "Rejected requests are not prepared for callback export; Burp forwarding does not wait for space.",
+                "Totals remain after Stop and reset for a new run. Not a database delivery-failure count."));
         tooltips.put("Status", Tooltips.htmlRaw(
                 "Independent History-backed observations for streaming live Proxy exports.",
                 "Tracking includes responses awaiting classification, up to 256 at once. Snapshots are",

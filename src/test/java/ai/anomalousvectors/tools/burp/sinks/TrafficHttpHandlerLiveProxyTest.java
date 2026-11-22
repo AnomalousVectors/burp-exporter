@@ -13,12 +13,17 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -27,6 +32,11 @@ import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.core.Annotations;
 import burp.api.montoya.core.ByteArray;
 import burp.api.montoya.core.ToolType;
+import burp.api.montoya.core.ToolSource;
+import burp.api.montoya.http.handler.HttpRequestToBeSent;
+import burp.api.montoya.http.handler.HttpResponseReceived;
+import burp.api.montoya.http.handler.RequestToBeSentAction;
+import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.HttpService;
 import burp.api.montoya.proxy.http.InterceptedRequest;
 import burp.api.montoya.proxy.http.InterceptedResponse;
@@ -226,6 +236,126 @@ class TrafficHttpHandlerLiveProxyTest {
             queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), org.mockito.Mockito.times(2));
             responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response), org.mockito.Mockito.times(2));
             assertThat(TrafficHttpHandlerSupport.getPendingOrphansSize()).isZero();
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ToolType.class, names = {"SCANNER", "INTRUDER", "EXTENSIONS", "REPEATER"})
+    void otherLiveTools_rejectBeforeBodyPreparationAndRecoverAfterFinishedOrphanHandling(ToolType tool) {
+        RuntimeConfig.updateState(new ConfigState.State(
+                List.of("traffic"), "all", List.of(), RuntimeConfig.getState().sinks(),
+                ConfigState.DEFAULT_SETTINGS_SUB, List.of(RuntimeConfig.normalizedToolTypeKey(tool)),
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES, null));
+        AtomicLong clock = new AtomicLong();
+        TrafficHttpHandlerSupport.setReceiptCacheForTest(new LiveRequestReceipts(1, 120_000, clock::get));
+        TrafficHttpHandlerSupport.registerPendingOrphanForTest(1, Map.of("burp", Map.of()),
+                tool, TrafficHttpHandlerSupport.RequestStageResolution.none());
+        InterceptedRequest raw = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 2);
+        ToolSource source = mock(ToolSource.class);
+        when(source.toolType()).thenReturn(tool);
+        HttpRequestToBeSent request = mock(HttpRequestToBeSent.class,
+                org.mockito.AdditionalAnswers.delegatesTo(raw));
+        org.mockito.Mockito.doReturn(source).when(request).toolSource();
+        InterceptedResponse received = responseReceived(raw, 2, "HTTP/1.1 200 OK\r\n\r\n");
+        HttpResponseReceived response = mock(HttpResponseReceived.class,
+                org.mockito.AdditionalAnswers.delegatesTo(received));
+        org.mockito.Mockito.doReturn(source).when(response).toolSource();
+        var general = new TrafficHttpHandler();
+        try (var requestAction = mockStatic(RequestToBeSentAction.class);
+                var responseAction = mockStatic(ResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            general.handleHttpRequestToBeSent(request);
+            verify(raw, never()).body();
+            verify(raw, never()).toByteArray();
+            assertThat(TrafficHttpHandler.requestReceiptStats().rejected()).isEqualTo(1);
+            TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
+            clock.set(TimeUnit.MINUTES.toNanos(3));
+            general.handleHttpRequestToBeSent(request);
+            general.handleHttpResponseReceived(response);
+            general.handleHttpResponseReceived(response);
+            assertThat(TrafficHttpHandler.requestReceiptStats().reclaimed()).isEqualTo(1);
+            assertThat(TrafficHttpHandler.requestReceiptStats().retained()).isZero();
+            queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), org.mockito.Mockito.times(2));
+            requestAction.verify(() -> RequestToBeSentAction.continueWith(request), org.mockito.Mockito.times(2));
+            responseAction.verify(() -> ResponseReceivedAction.continueWith(response), org.mockito.Mockito.times(2));
+        }
+    }
+
+    @Test
+    void inFlightOrphanFlush_isProtectedFromPressureUntilItsQueueAttemptFinishes() throws Exception {
+        AtomicLong clock = new AtomicLong();
+        TrafficHttpHandlerSupport.setReceiptCacheForTest(new LiveRequestReceipts(1, 120_000, clock::get));
+        TrafficHttpHandlerSupport.registerPendingOrphanForTest(1, Map.of("burp", Map.of()),
+                ToolType.PROXY, TrafficHttpHandlerSupport.RequestStageResolution.none(), true);
+        clock.set(TimeUnit.MINUTES.toNanos(3));
+        CountDownLatch flushing = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        FutureTask<Void> flush = new FutureTask<>(() -> {
+            try (var queue = mockStatic(TrafficExportQueue.class)) {
+                queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenAnswer(call -> {
+                    flushing.countDown();
+                    assertThat(release.await(10, TimeUnit.SECONDS)).isTrue();
+                    return true;
+                });
+                TrafficHttpHandlerSupport.flushOrphanedRequestsForTest();
+            }
+            return null;
+        });
+        Thread worker = new Thread(flush, "test-receipt-flush");
+        worker.start();
+        InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 2);
+        try (var action = mockStatic(ProxyRequestToBeSentAction.class)) {
+            assertThat(flushing.await(10, TimeUnit.SECONDS)).isTrue();
+            handler.handleRequestToBeSent(request);
+            verify(request, never()).toByteArray();
+            release.countDown();
+            flush.get(10, TimeUnit.SECONDS);
+            handler.handleRequestToBeSent(request);
+            assertThat(TrafficHttpHandler.requestReceiptStats().reclaimed()).isEqualTo(1);
+            assertThat(TrafficHttpHandlerSupport.containsPendingOrphanForTest(2)).isTrue();
+            InterceptedRequest oldRequest = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 1);
+            InterceptedResponse oldResponse = responseReceived(oldRequest, 1, "HTTP/1.1 200 OK\r\n\r\n");
+            try (var responseAction = mockStatic(ProxyResponseReceivedAction.class);
+                    var queue = mockStatic(TrafficExportQueue.class)) {
+                handler.handleResponseReceived(oldResponse);
+                queue.verifyNoInteractions();
+                responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(oldResponse));
+            }
+            action.verify(() -> ProxyRequestToBeSentAction.continueWith(request), org.mockito.Mockito.times(2));
+        } finally {
+            release.countDown();
+            worker.join(10_000);
+        }
+    }
+
+    @Test
+    void scopeRejectedReceipts_areReclaimedOnlyUnderPressureAndStopPreservesTotals() {
+        AtomicLong clock = new AtomicLong();
+        TrafficHttpHandlerSupport.setReceiptCacheForTest(new LiveRequestReceipts(1, 120_000, clock::get));
+        RuntimeConfig.updateState(new ConfigState.State(
+                List.of("traffic"), "custom",
+                List.of(new ConfigState.ScopeEntry("other.test", ConfigState.Kind.STRING)),
+                RuntimeConfig.getState().sinks(), ConfigState.DEFAULT_SETTINGS_SUB,
+                List.of("proxy"), ConfigState.DEFAULT_FINDINGS_SEVERITIES, null));
+        InterceptedRequest first = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 1);
+        InterceptedRequest next = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 2);
+        try (var action = mockStatic(ProxyRequestToBeSentAction.class)) {
+            handler.handleRequestToBeSent(first);
+            clock.set(TimeUnit.HOURS.toNanos(1));
+            assertThat(TrafficHttpHandler.requestReceiptStats().reclaimed()).isZero();
+            handler.handleRequestToBeSent(next);
+            assertThat(TrafficHttpHandler.requestReceiptStats().reclaimed()).isEqualTo(1);
+            assertThat(TrafficHttpHandler.pendingOrphansSize()).isZero();
+            TrafficHttpHandlerSupport.stop();
+            assertThat(TrafficHttpHandler.requestReceiptStats().retained()).isZero();
+            assertThat(TrafficHttpHandler.requestReceiptStats().peak()).isEqualTo(1);
+            assertThat(TrafficHttpHandler.requestReceiptStats().reclaimed()).isEqualTo(1);
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.setExportRunning(true);
+            assertThat(TrafficHttpHandler.requestReceiptStats().peak()).isZero();
+            assertThat(TrafficHttpHandler.requestReceiptStats().reclaimed()).isZero();
+            action.verify(() -> ProxyRequestToBeSentAction.continueWith(first));
+            action.verify(() -> ProxyRequestToBeSentAction.continueWith(next));
         }
     }
 

@@ -248,6 +248,7 @@ public final class ExportReporterLifecycle {
         // test is mid-call, surfacing as "Connection pool shut down" or "Socket closed".
         awaitStopReclaim(5_000L);
         stopAndClearSessionState();
+        TrafficHttpHandlerSupport.clearPendingOrphansForTest();
         ControlStatusBridge.clear();
         ExportControlBridge.clear();
         DiskSpaceGuard.resetForTests();
