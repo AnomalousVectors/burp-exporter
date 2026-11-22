@@ -8,10 +8,14 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.times;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Base64;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.CountDownLatch;
@@ -26,6 +30,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.EnumSource;
 
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import burp.api.montoya.MontoyaApi;
@@ -46,6 +51,8 @@ import burp.api.montoya.proxy.http.ProxyRequestReceivedAction;
 import burp.api.montoya.proxy.http.ProxyResponseToBeSentAction;
 import burp.api.montoya.http.message.ContentType;
 import burp.api.montoya.http.message.MimeType;
+import burp.api.montoya.http.message.params.HttpParameterType;
+import burp.api.montoya.http.message.params.ParsedHttpParameter;
 import burp.api.montoya.http.message.responses.analysis.AttributeType;
 
 /** Protects the Notes-free live path independently of any retained Proxy History rows. */
@@ -399,6 +406,147 @@ class TrafficHttpHandlerLiveProxyTest {
             requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(initial));
             responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
         }
+    }
+
+    @Test
+    void largeRequest_isPreparedOncePerCallbackAndFinalSentBodyIsNotCachedFromRequestStage() {
+        InterceptedRequest initial = requestToBeSent("POST / HTTP/1.1\r\n\r\n", 600);
+        InterceptedRequest sent = requestToBeSent("POST /edited HTTP/1.1\r\n\r\n", 600);
+        ByteArray initialBody = byteArray("A".repeat(1024 * 1024));
+        byte[] finalBytes = "B".repeat(1024 * 1024).getBytes(StandardCharsets.UTF_8);
+        ByteArray finalBody = mock(ByteArray.class);
+        when(finalBody.getBytes()).thenReturn(finalBytes);
+        when(initial.body()).thenReturn(initialBody);
+        when(sent.body()).thenReturn(finalBody);
+        when(initial.contentType()).thenReturn(ContentType.JSON);
+        when(sent.contentType()).thenReturn(ContentType.JSON);
+        InterceptedResponse response = responseReceived(sent, 600, "HTTP/1.1 200 OK\r\n\r\nA");
+        AtomicReference<Map<String, Object>> offered = new AtomicReference<>();
+        long skippedBefore = ExportStats.getDocsWithSkippedBodyEnumeration();
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            queue.when(() -> TrafficExportQueue.offerForRun(any(), any())).thenAnswer(call -> {
+                offered.set(call.getArgument(0));
+                return true;
+            });
+            handler.handleRequestToBeSent(initial);
+            verify(initialBody).getBytes();
+            handler.handleResponseReceived(response);
+            verify(initialBody).getBytes();
+            verify(finalBody).getBytes();
+            Map<?, ?> requestDoc = (Map<?, ?>) offered.get().get("request");
+            assertThat(((Map<?, ?>) requestDoc.get("body")).get("b64"))
+                    .isEqualTo(Base64.getEncoder().encodeToString(finalBytes));
+            assertThat(ExportStats.getDocsWithSkippedBodyEnumeration() - skippedBefore).isEqualTo(2L);
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(initial));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({"burp,true", "burp,false", "' BuRp ',true", "' BuRp ',false"})
+    void burpScope_skipsExcludedBodyPreparationAndRechecksTheSentRequest(String scope, boolean finalInScope) {
+        useScopeAndTools(scope, List.of(), List.of("proxy"));
+        InterceptedRequest initial = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 601);
+        when(initial.isInScope()).thenReturn(false);
+        InterceptedRequest sent = requestToBeSent("GET /edited HTTP/1.1\r\n\r\n", 601);
+        when(sent.isInScope()).thenReturn(finalInScope);
+        InterceptedResponse response = responseReceived(sent, 601, "HTTP/1.1 200 OK\r\n\r\nA");
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            handler.handleRequestToBeSent(initial);
+            verify(initial, never()).body();
+            assertThat(TrafficHttpHandler.requestReceiptStats().retained()).isEqualTo(1);
+            // The response's sent request can become eligible after the earlier callback.
+            handler.handleResponseReceived(response);
+            verify(initial, never()).body();
+            queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), times(finalInScope ? 1 : 0));
+            if (!finalInScope) {
+                verify(sent, never()).body();
+                verify(response, never()).body();
+            }
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(initial));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ToolType.class, names = {"SCANNER", "INTRUDER", "EXTENSIONS", "REPEATER"})
+    void disabledGeneralTool_skipsBodiesAtBothStages(ToolType type) {
+        TrafficHttpHandler general = new TrafficHttpHandler();
+        HttpRequestToBeSent request = mock(HttpRequestToBeSent.class);
+        HttpResponseReceived response = mock(HttpResponseReceived.class);
+        ToolSource source = mock(ToolSource.class);
+        when(source.toolType()).thenReturn(type);
+        when(request.toolSource()).thenReturn(source);
+        when(request.messageId()).thenReturn(602);
+        when(request.isInScope()).thenReturn(true);
+        when(response.toolSource()).thenReturn(source);
+        when(response.messageId()).thenReturn(602);
+        when(response.initiatingRequest()).thenReturn(request);
+        try (var requestAction = mockStatic(RequestToBeSentAction.class);
+                var responseAction = mockStatic(ResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            general.handleHttpRequestToBeSent(request);
+            general.handleHttpResponseReceived(response);
+            verify(request, never()).body();
+            verify(request, never()).parameters();
+            verify(request, never()).toByteArray();
+            verify(response, never()).body();
+            queue.verifyNoInteractions();
+            requestAction.verify(() -> RequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ResponseReceivedAction.continueWith(response));
+        }
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void malformedCustomScope_usesTheNarrowedQueryAtBothStages(boolean matchesRetainedQuery) {
+        useScopeAndTools(" CuStOm ", List.of(new ConfigState.ScopeEntry(
+                matchesRetainedQuery ? "kept=value" : "dropped=value", ConfigState.Kind.STRING)), List.of("proxy"));
+        InterceptedRequest request = requestToBeSent("GET /search HTTP/1.1\r\n\r\n", 603);
+        when(request.httpService()).thenReturn(null);
+        when(request.url()).thenThrow(new IllegalStateException("malformed URL"));
+        when(request.path()).thenReturn("/search?kept=value&dropped=value");
+        when(request.pathWithoutQuery()).thenReturn("/search");
+        when(request.query()).thenReturn("kept=value&dropped=value");
+        when(request.contentType()).thenReturn(ContentType.JSON);
+        ParsedHttpParameter kept = mock(ParsedHttpParameter.class);
+        when(kept.type()).thenReturn(HttpParameterType.URL);
+        when(kept.name()).thenReturn("kept");
+        when(kept.value()).thenReturn("value");
+        ParsedHttpParameter dropped = mock(ParsedHttpParameter.class);
+        when(dropped.type()).thenReturn(HttpParameterType.URL);
+        List<ParsedHttpParameter> parameters = new ArrayList<>(
+                Collections.nCopies(RequestResponseParametersSupport.URL_PARAMETERS_CAP, kept));
+        parameters.add(dropped);
+        when(request.parameters(HttpParameterType.URL)).thenReturn(parameters);
+        InterceptedResponse response = responseReceived(request, 603, "HTTP/1.1 200 OK\r\n\r\nA");
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            handler.handleRequestToBeSent(request);
+            assertThat(TrafficHttpHandlerSupport.containsPendingOrphanForTest(603))
+                    .isEqualTo(matchesRetainedQuery);
+            handler.handleResponseReceived(response);
+            queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), times(matchesRetainedQuery ? 1 : 0));
+            // One real parameter-preparation pass per callback, including fallback scope paths.
+            verify(request, times(2)).parameters(HttpParameterType.URL);
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
+        }
+    }
+
+    private static void useScopeAndTools(String scope, List<ConfigState.ScopeEntry> entries,
+            List<String> tools) {
+        RuntimeConfig.updateState(new ConfigState.State(
+                List.of("traffic"), scope, entries,
+                new ConfigState.Sinks(false, null, true, "https://opensearch.url:9200",
+                        null, null, false),
+                ConfigState.DEFAULT_SETTINGS_SUB, tools,
+                ConfigState.DEFAULT_FINDINGS_SEVERITIES, null));
     }
 
     private static InterceptedRequest requestToBeSent(String rawRequest, int messageId) {

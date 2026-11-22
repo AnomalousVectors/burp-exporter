@@ -15,6 +15,8 @@ import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
+import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.search.SearchEndpoint;
 import burp.api.montoya.core.ToolSource;
 import burp.api.montoya.core.ToolType;
@@ -218,13 +220,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         if (receipt == null) return;
         boolean payloadAttached = false;
         try {
-            String scopeUrl = RequestResponseDocBuilder.buildBestEffortUrl(
-                    request,
-                    request.httpService(),
-                    RequestResponseDocBuilder.buildTrafficRequestDoc(request),
-                    "TrafficHttpHandler");
-            if (!ScopeFilter.shouldExport(
-                    RuntimeConfig.getState(), scopeUrl, request.isInScope())) {
+            boolean burpInScope = request.isInScope();
+            ConfigState.State state = RuntimeConfig.getState();
+            if (scopeRejectsWithoutUrl(state, burpInScope)) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
                 return;
             }
@@ -239,6 +237,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     return;
                 }
             }
+            PreparedRequest prepared = prepareRequest(request);
+            if (!ScopeFilter.shouldExport(state, prepared.url(), burpInScope)) {
+                ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
+                return;
+            }
             ToolType reqToolType = toolType;
             RequestStageResolution requestStageResolution =
                     resolveRequestStageResolution(
@@ -246,7 +249,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                             reqToolType,
                             RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
             Map<String, Object> skeleton = buildOrphanDocumentSkeleton(
-                    request,
+                    prepared, burpInScope,
                     requestSentMs,
                     requestStageResolution.metadataForExport(), key, toolType, annotations, listenerPort);
             if (skeleton != null) {
@@ -325,14 +328,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         }
 
         boolean burpInScope = request.isInScope();
-        String scopeUrl = RequestResponseDocBuilder.buildBestEffortUrl(
-                request,
-                request.httpService(),
-                RequestResponseDocBuilder.buildTrafficRequestDoc(request),
-                "TrafficHttpHandler");
-        boolean inScope = ScopeFilter.shouldExport(
-                RuntimeConfig.getState(), scopeUrl, burpInScope);
-        if (!inScope) {
+        ConfigState.State state = RuntimeConfig.getState();
+        if (scopeRejectsWithoutUrl(state, burpInScope)) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
             return;
         }
@@ -362,6 +359,12 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             }
         }
 
+        PreparedRequest prepared = prepareRequest(request);
+        if (!ScopeFilter.shouldExport(state, prepared.url(), burpInScope)) {
+            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
+            return;
+        }
+
         long responseReceivedMs = System.currentTimeMillis();
         Long requestSentMs = pending.timestamp;
         RepeaterMetadataFields.Metadata repeaterMetadata =
@@ -373,7 +376,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                         RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
 
         Map<String, Object> document =
-                buildDocument(response, request, burpInScope, requestSentMs, responseReceivedMs,
+                buildDocument(response, prepared, burpInScope, requestSentMs, responseReceivedMs,
                         toolType, repeaterMetadata, key, annotations, pending.listenerPort);
         if (annotations == null) {
             copyMissingAnnotationFieldsFromPendingRequest(document, pending);
@@ -430,26 +433,36 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         if (toolType == null) {
             toolType = toolSource == null ? null : toolSource.toolType();
         }
-        return buildDocument(response, request, burpInScope, requestSentMs, responseReceivedMs,
+        return buildDocument(response, prepareRequest(request), burpInScope, requestSentMs, responseReceivedMs,
                 toolType, repeaterMetadata, new MessageKey(false, response.messageId()),
                 response.annotations(), null);
     }
 
-    private Map<String, Object> buildDocument(HttpResponse response, HttpRequest request,
-            boolean burpInScope, Long requestSentMs, Long responseReceivedMs, ToolType toolType,
-            RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key,
-            Annotations annotations, Integer listenerPort) {
+    /** Custom scope uses the prepared URL, including narrowed queries and malformed-view fallback. */
+    private static boolean scopeRejectsWithoutUrl(ConfigState.State state, boolean burpInScope) {
+        boolean custom = state != null && state.scopeType() != null
+                && ConfigKeys.SCOPE_CUSTOM.equalsIgnoreCase(state.scopeType().trim());
+        return !custom && !ScopeFilter.shouldExport(state, null, burpInScope);
+    }
+
+    // Prepared data belongs to one callback only: later handlers can still change the request.
+    private record PreparedRequest(Map<String, Object> document, String url) {}
+
+    private static PreparedRequest prepareRequest(HttpRequest request) {
         HttpService service = request.httpService();
         Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
         String url = RequestResponseDocBuilder.buildBestEffortUrl(
-                request,
-                service,
-                requestDoc,
-                "TrafficHttpHandler");
+                request, service, requestDoc, "TrafficHttpHandler");
         requestDoc.put("url", HttpMessageDocSupport.urlObject(url, service));
         requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
                 RequestResponseDocBuilder.safeRequestHttpVersion(request)));
+        return new PreparedRequest(requestDoc, url);
+    }
 
+    private Map<String, Object> buildDocument(HttpResponse response, PreparedRequest prepared,
+            boolean burpInScope, Long requestSentMs, Long responseReceivedMs, ToolType toolType,
+            RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key,
+            Annotations annotations, Integer listenerPort) {
         Map<String, Object> document = new LinkedHashMap<>();
         Map<String, Object> burp = new LinkedHashMap<>();
         burp.put("reporting_tool", toolType == null ? null : toolType.toolName());
@@ -463,7 +476,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         document.put("burp", burp);
         RepeaterMetadataFields.put(document, repeaterMetadata);
 
-        document.put("request", requestDoc);
+        document.put("request", prepared.document());
         document.put("response", RequestResponseDocBuilder.buildTrafficResponseDoc(response));
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
 
@@ -514,18 +527,14 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             long requestSentMs,
             RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key, ToolType toolType,
             Annotations annotations, Integer listenerPort) {
-        HttpService service = request.httpService();
-        boolean burpInScope = request.isInScope();
-        Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
-        String url = RequestResponseDocBuilder.buildBestEffortUrl(
-                request,
-                service,
-                requestDoc,
-                "TrafficHttpHandler");
-        requestDoc.put("url", HttpMessageDocSupport.urlObject(url, service));
-        requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
-                RequestResponseDocBuilder.safeRequestHttpVersion(request)));
+        return buildOrphanDocumentSkeleton(prepareRequest(request), request.isInScope(),
+                requestSentMs, repeaterMetadata, key, toolType, annotations, listenerPort);
+    }
 
+    private Map<String, Object> buildOrphanDocumentSkeleton(
+            PreparedRequest prepared, boolean burpInScope, long requestSentMs,
+            RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key, ToolType toolType,
+            Annotations annotations, Integer listenerPort) {
         Map<String, Object> document = new LinkedHashMap<>();
         Map<String, Object> burp = new LinkedHashMap<>();
         burp.put("reporting_tool", toolType == null ? null : toolType.toolName());
@@ -536,7 +545,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         document.put("burp", burp);
         RepeaterMetadataFields.put(document, repeaterMetadata);
 
-        document.put("request", requestDoc);
+        document.put("request", prepared.document());
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
 
         document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION, key.nativeProxy()));
