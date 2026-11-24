@@ -122,6 +122,8 @@ public final class ExportReporterLifecycle {
         boolean retryStopped = retryCoordinator.stopDrainThread(remainingMillis(deadline));
         retryCoordinator.clearPendingWork();
         SearchBodyTruncationLog.flushAndClear();
+        ParameterIntegritySessionLog.flushFormDecodingSummary();
+        ParameterIntegritySessionLog.startForCurrentRun();
         return trafficDiscarded && retryStopped;
     }
 

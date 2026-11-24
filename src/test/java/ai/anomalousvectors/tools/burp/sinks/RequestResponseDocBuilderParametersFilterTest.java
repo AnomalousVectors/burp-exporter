@@ -503,6 +503,48 @@ class RequestResponseDocBuilderParametersFilterTest {
     }
 
     @Test
+    void parseUrlEncodedBodyParameters_scansEmptyBareAndDuplicatePairsInOrder() {
+        byte[] body = "&&first=1&&bare&first=two=three&empty=&last=4&&"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        var result = RequestResponseParametersSupport.parseUrlEncodedBodyParameters(body, List.of());
+
+        assertThat(result.entries()).extracting(row -> row.get("name"))
+                .containsExactly("first", "bare", "first", "empty", "last");
+        assertThat(result.entries()).extracting(row -> row.get("value"))
+                .containsExactly("1", "", "two=three", "", "4");
+        assertThat(result.droppedBodyParams()).isZero();
+    }
+
+    @Test
+    void parseUrlEncodedBodyParameters_capCountsOnlyValidNonemptyNames() {
+        int cap = RequestResponseParametersSupport.BODY_PARAMETERS_CAP;
+        StringBuilder body = new StringBuilder("&&=ignored&%5Bbad=ignored&");
+        for (int i = 0; i < cap; i++) {
+            body.append("field").append(i).append("=value&");
+        }
+        body.append("&%00=ignored&%5Bbad=ignored&=ignored&extra=1&bare&tail=%GG&&");
+
+        var result = RequestResponseParametersSupport.parseUrlEncodedBodyParameters(
+                body.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8), List.of());
+
+        assertThat(result.entries()).hasSize(cap);
+        assertThat(result.entries().getFirst()).containsEntry("name", "field0");
+        assertThat(result.entries().getLast()).containsEntry("name", "field" + (cap - 1));
+        assertThat(result.droppedBodyParams()).isEqualTo(3);
+    }
+
+    @Test
+    void parseUrlEncodedBodyParameters_malformedNameAfterCapDoesNotDiscardRetainedRows() {
+        String body = "valid=value&".repeat(RequestResponseParametersSupport.BODY_PARAMETERS_CAP) + "%GG=value";
+
+        var result = RequestResponseParametersSupport.parseUrlEncodedBodyParameters(
+                body.getBytes(java.nio.charset.StandardCharsets.UTF_8), List.of());
+        assertThat(result.entries()).hasSize(RequestResponseParametersSupport.BODY_PARAMETERS_CAP);
+        assertThat(result.droppedBodyParams()).isEqualTo(1);
+    }
+
+    @Test
     void collectParameters_gzipFormWithoutBurpBodyParams_supplementsBodyParameters() throws Exception {
         byte[] plain = "org_id=abc&sid=xyz".getBytes(java.nio.charset.StandardCharsets.UTF_8);
         byte[] gzip = gzipBytes(plain);

@@ -32,6 +32,7 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 
+/** Exercises reply budgets and retry identity through real loopback HTTP transports. */
 class SearchResponseBodiesTransportTest {
     private enum Channel { CLASSIC, ASYNC }
     private HttpServer server;

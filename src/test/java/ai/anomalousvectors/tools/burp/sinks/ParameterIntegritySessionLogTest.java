@@ -30,18 +30,22 @@ class ParameterIntegritySessionLogTest {
         }
     };
 
+    /** Resets run counters and attaches an isolated log listener. */
     @BeforeEach
     public void setUp() {
         ExportStats.resetForTests();
+        ParameterIntegritySessionLog.startForCurrentRun();
         Logger.resetState();
         Logger.registerListener(listener);
     }
 
+    /** Detaches the listener and clears shared logging and run counters. */
     @AfterEach
     public void tearDown() {
         Logger.unregisterListener(listener);
         Logger.resetState();
         ExportStats.resetForTests();
+        ParameterIntegritySessionLog.startForCurrentRun();
     }
 
     @Test
@@ -86,5 +90,35 @@ class ParameterIntegritySessionLogTest {
 
     private static void flushLogListeners() throws Exception {
         SwingUtilities.invokeAndWait(() -> {});
+    }
+
+    @Test
+    void formIssues_highVolumeEmitsOneNoticeAndOneSummaryWithoutContent() throws Exception {
+        for (int i = 0; i < 20_000; i++) {
+            ParameterIntegritySessionLog.recordFormDecodingIssues(1, 1);
+        }
+        ParameterIntegritySessionLog.flushFormDecodingSummary();
+        ParameterIntegritySessionLog.flushFormDecodingSummary();
+        flushLogListeners();
+
+        assertThat(debugMessages).hasSize(2);
+        assertThat(debugMessages.getLast()).contains("malformed_escape=20000", "undecodable=20000");
+        assertThat(infoMessages).isEmpty();
+        assertThat(warnMessages).isEmpty();
+    }
+
+    @Test
+    void formIssues_resetAndLateFlushDoNotRepeatOldTotals() throws Exception {
+        ParameterIntegritySessionLog.recordFormDecodingIssues(1, 0);
+        ParameterIntegritySessionLog.flushFormDecodingSummary();
+        ParameterIntegritySessionLog.recordFormDecodingIssues(0, 2);
+        ParameterIntegritySessionLog.flushFormDecodingSummary();
+        ParameterIntegritySessionLog.startForCurrentRun();
+        ParameterIntegritySessionLog.recordFormDecodingIssues(0, 0);
+        ParameterIntegritySessionLog.flushFormDecodingSummary();
+        flushLogListeners();
+
+        assertThat(debugMessages).hasSize(3);
+        assertThat(debugMessages.getLast()).contains("malformed_escape=1", "undecodable=2");
     }
 }

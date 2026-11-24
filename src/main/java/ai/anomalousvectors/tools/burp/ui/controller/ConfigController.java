@@ -94,7 +94,13 @@ public final class ConfigController implements AutoCloseable {
 
     @FunctionalInterface
     interface CertificateImporter {
-        /** Reads certificate material on a worker without changing the session's current pin. */
+        /**
+         * Reads certificate material on a worker without changing the session's current pin.
+         *
+         * @param path user-selected certificate file
+         * @return parsed certificate and its source metadata
+         * @throws Exception when reading or certificate validation fails
+         */
         SecureCredentialStore.PinnedTlsCertificate importCertificate(Path path) throws Exception;
     }
 
@@ -154,7 +160,9 @@ public final class ConfigController implements AutoCloseable {
      * Reads and parses a destination's pinned certificate off the EDT.
      *
      * <p>Only the newest import for that destination may save session material or publish status.
-     * Closing the controller fences completion even when file I/O ignores interruption.</p>
+     * Safe to call from any thread; accepted results are applied on the EDT. Failure preserves the
+     * existing pin and reports a status message. Closing the controller fences completion even when
+     * file I/O ignores interruption; submissions after close are ignored.</p>
      *
      * @param destination destination whose pin is replaced; must not be {@code null}
      * @param path certificate file selected by the user

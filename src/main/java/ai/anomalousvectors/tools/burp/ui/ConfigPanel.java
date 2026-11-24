@@ -1138,6 +1138,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         BodyParameterTruncationLog.startForCurrentRun();
         BodyEnumerationSkippedLog.startForCurrentRun();
         CompressedWireBodyParamsLog.startForCurrentRun();
+        ParameterIntegritySessionLog.startForCurrentRun();
         TrafficLiveAttributionSummary.startForCurrentRun();
         startupExecutor.execute(() -> runStartupPipeline(
                 runToken, url, sources, uiCallbacks, startupIssues, filesSelected, databaseSelected));

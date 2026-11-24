@@ -1,6 +1,5 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
-import java.net.URLEncoder;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -510,49 +509,68 @@ final class RequestResponseParametersSupport {
      *
      * <p>Rejects logical bodies that look like JSON/protobuf batches mis-declared as form data.
      * Invalid parameter names are dropped; when the body shape is non-form, returns empty entries
-     * with {@link ParametersResult#supplementalRejectedNonForm()} {@code true}.</p>
+     * with {@link ParametersResult#supplementalRejectedNonForm()} {@code true}. Literal whitespace
+     * is retained. Malformed escapes remain literal; components that cannot be decoded with the
+     * selected charset retain their encoded spelling instead of replacement characters.</p>
      */
     static ParametersResult parseUrlEncodedBodyParameters(byte[] logicalBodyBytes, List<HttpHeader> headers) {
         if (logicalBodyBytes == null || logicalBodyBytes.length == 0) {
             return ParametersResult.EMPTY;
         }
-        java.nio.charset.Charset charset = HttpMessageDocSupport.charsetFromContentType(
+        Charset charset = HttpMessageDocSupport.charsetFromContentType(
                 HttpMessageDocSupport.headerValue(headers, "Content-Type"));
-        String decoded = HttpMessageDocSupport.decodeTextWithFallback(logicalBodyBytes, charset);
-        if (decoded == null || decoded.isBlank()) {
+        if (charset == null) {
+            charset = StandardCharsets.UTF_8;
+        }
+        // A reversible byte view keeps separators and escapes intact until each component is decoded.
+        String encoded = new String(logicalBodyBytes, StandardCharsets.ISO_8859_1);
+        if (encoded.isBlank()) {
             return ParametersResult.EMPTY;
         }
-        String trimmed = decoded.trim();
-        if (!looksLikeUrlEncodedFormLogicalBody(trimmed)) {
+        if (!looksLikeUrlEncodedFormLogicalBody(encoded.stripLeading())) {
             return supplementalRejectedNonFormResult();
         }
-        if (trimmed.indexOf('=') < 0) {
+        if (encoded.indexOf('=') < 0) {
             return ParametersResult.EMPTY;
         }
-        String[] pairs = trimmed.split("&", -1);
-        List<Map<String, Object>> out = new ArrayList<>(Math.min(pairs.length, BODY_PARAMETERS_CAP));
+        // Scan one pair at a time so the retained-row cap does not follow an unbounded split.
+        List<Map<String, Object>> out = new ArrayList<>();
         int dropped = 0;
-        for (String pair : pairs) {
-            if (pair == null || pair.isEmpty()) {
+        int malformedEscapes = 0;
+        int undecodableComponents = 0;
+        for (int start = 0, end = 0; start < encoded.length(); start = end + 1) {
+            end = encoded.indexOf('&', start);
+            if (end < 0) {
+                end = encoded.length();
+            }
+            if (start == end) {
                 continue;
             }
-            int eq = pair.indexOf('=');
-            String name = eq < 0 ? pair : pair.substring(0, eq);
-            String value = eq < 0 ? "" : pair.substring(eq + 1);
-            String decodedName = decodeUrlEncodedComponent(name);
-            if (!isValidUrlEncodedParamName(decodedName)) {
+            int eq = start;
+            while (eq < end && encoded.charAt(eq) != '=') {
+                eq++;
+            }
+            FormComponent name = decodeUrlEncodedComponent(encoded.substring(start, eq), charset);
+            malformedEscapes += name.malformedEscape() ? 1 : 0;
+            undecodableComponents += name.undecodable() ? 1 : 0;
+            if (!isValidUrlEncodedParamName(name.text())) {
                 continue;
             }
             if (out.size() >= BODY_PARAMETERS_CAP) {
                 dropped++;
                 continue;
             }
+            FormComponent value = decodeUrlEncodedComponent(
+                    eq == end ? "" : encoded.substring(eq + 1, end), charset);
+            malformedEscapes += value.malformedEscape() ? 1 : 0;
+            undecodableComponents += value.undecodable() ? 1 : 0;
             Map<String, Object> entry = new LinkedHashMap<>(3);
-            entry.put("name", decodedName);
-            entry.put("value", decodeUrlEncodedComponent(value));
+            entry.put("name", name.text());
+            entry.put("value", value.text());
             entry.put("type", HttpParameterType.BODY.name());
             out.add(entry);
         }
+        ParameterIntegritySessionLog.recordFormDecodingIssues(malformedEscapes, undecodableComponents);
         if (out.isEmpty()) {
             return supplementalRejectedNonFormResult();
         }
@@ -605,12 +623,60 @@ final class RequestResponseParametersSupport {
         return pack(List.of(), 0, false, 0, "", 0, null, false, false, false, List.of(), 0, true);
     }
 
-    private static String decodeUrlEncodedComponent(String value) {
-        if (value == null || value.isEmpty()) {
-            return "";
+    /** Decodes one byte-view component once, without guessing a replacement for undecodable data. */
+    private static FormComponent decodeUrlEncodedComponent(String value, Charset charset) {
+        boolean requiresDecoding = false;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '%' || ch == '+' || ch >= 0x80) {
+                requiresDecoding = true;
+                break;
+            }
         }
-        return java.net.URLDecoder.decode(value, StandardCharsets.UTF_8);
+        if (value.isEmpty() || (!requiresDecoding && (charset.equals(StandardCharsets.UTF_8)
+                || charset.equals(StandardCharsets.ISO_8859_1) || charset.equals(StandardCharsets.US_ASCII)))) {
+            return new FormComponent(value, false, false);
+        }
+        byte[] bytes = new byte[value.length()];
+        int count = 0;
+        boolean malformed = false;
+        for (int i = 0; i < value.length(); i++) {
+            char ch = value.charAt(i);
+            if (ch == '%' && i + 2 < value.length()) {
+                int high = asciiHexDigit(value.charAt(i + 1));
+                int low = asciiHexDigit(value.charAt(i + 2));
+                if (high >= 0 && low >= 0) {
+                    bytes[count++] = (byte) ((high << 4) | low);
+                    i += 2;
+                    continue;
+                }
+            }
+            malformed |= ch == '%';
+            bytes[count++] = (byte) (ch == '+' ? ' ' : ch);
+        }
+        String text;
+        try {
+            text = charset.newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes, 0, count)).toString();
+        } catch (java.nio.charset.CharacterCodingException ex) {
+            return new FormComponent(value, malformed, true);
+        }
+        return new FormComponent(text, malformed, false);
     }
+
+    private static int asciiHexDigit(char ch) {
+        if (ch >= '0' && ch <= '9') {
+            return ch - '0';
+        }
+        if (ch >= 'a' && ch <= 'f') {
+            return ch - 'a' + 10;
+        }
+        return ch >= 'A' && ch <= 'F' ? ch - 'A' + 10 : -1;
+    }
+
+    private record FormComponent(String text, boolean malformedEscape, boolean undecodable) {}
 
     /**
      * Converts {@code request.parameters()} to the exported list form, optionally filtering
@@ -792,6 +858,7 @@ final class RequestResponseParametersSupport {
         }
     }
 
+    /** Rebuilds a capped query from Burp's raw URL components without encoding them a second time. */
     static String buildQueryStringFromUrlEntries(List<Map<String, Object>> urlEntries) {
         if (urlEntries == null || urlEntries.isEmpty()) {
             return "";
@@ -806,9 +873,9 @@ final class RequestResponseParametersSupport {
                 query.append('&');
             }
             first = false;
-            query.append(encodeQueryComponent(HttpMessageDocSupport.stringValue(entry.get("name"))));
+            query.append(HttpMessageDocSupport.nullToEmpty(HttpMessageDocSupport.stringValue(entry.get("name"))));
             query.append('=');
-            query.append(encodeQueryComponent(HttpMessageDocSupport.stringValue(entry.get("value"))));
+            query.append(HttpMessageDocSupport.nullToEmpty(HttpMessageDocSupport.stringValue(entry.get("value"))));
         }
         return query.toString();
     }
@@ -969,8 +1036,4 @@ final class RequestResponseParametersSupport {
                 supplementalRejectedNonForm);
     }
 
-    private static String encodeQueryComponent(String value) {
-        String normalized = value == null ? "" : value;
-        return URLEncoder.encode(normalized, StandardCharsets.UTF_8).replace("+", "%20");
-    }
 }

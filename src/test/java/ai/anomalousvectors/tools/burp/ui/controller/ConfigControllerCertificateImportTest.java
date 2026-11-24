@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 
+/** Verifies off-EDT certificate reads, destination isolation, and stale-result fencing. */
 class ConfigControllerCertificateImportTest {
 
     @ParameterizedTest

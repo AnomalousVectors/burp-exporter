@@ -198,6 +198,7 @@ public final class SearchResponseBodies {
             this.successLimit = successLimit;
         }
 
+        /** {@inheritDoc} */
         @Override
         public void consumeResponse(HttpResponse response, EntityDetails details, HttpContext context,
                 FutureCallback<SimpleHttpResponse> resultCallback) throws IOException {
@@ -214,14 +215,17 @@ public final class SearchResponseBodies {
             }
         }
 
+        /** {@inheritDoc} */
         @Override
         public void informationResponse(HttpResponse response, HttpContext context) { }
 
+        /** {@inheritDoc} */
         @Override
         public void updateCapacity(CapacityChannel channel) throws IOException {
             channel.update(Math.min(8192, limit - buffer.size() + 1));
         }
 
+        /** {@inheritDoc} */
         @Override
         public void consume(ByteBuffer source) throws IOException {
             int allowed = Math.min(source.remaining(), limit - buffer.size());
@@ -242,17 +246,20 @@ public final class SearchResponseBodies {
             }
         }
 
+        /** {@inheritDoc} */
         @Override
         public void streamEnd(List<? extends Header> trailers) {
             head.setBody(buffer.toByteArray(), contentType);
             callback.completed(head);
         }
 
+        /** {@inheritDoc} */
         @Override
         public void failed(Exception cause) {
             releaseResources();
         }
 
+        /** {@inheritDoc} */
         @Override
         public void releaseResources() {
             buffer = new ByteArrayOutputStream(0);

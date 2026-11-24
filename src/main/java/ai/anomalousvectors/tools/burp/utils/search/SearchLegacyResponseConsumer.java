@@ -33,11 +33,13 @@ final class SearchLegacyResponseConsumer extends AbstractAsyncResponseConsumer<H
         return SearchLegacyResponseConsumer::new;
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void onResponseReceived(HttpResponse received) {
         response = received;
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void onEntityEnclosed(HttpEntity entity, ContentType type) throws IOException {
         originalEntity = entity;
@@ -45,6 +47,7 @@ final class SearchLegacyResponseConsumer extends AbstractAsyncResponseConsumer<H
         if (entity.getContentLength() > SearchResponseBodies.METADATA_LIMIT_BYTES) throw tooLarge();
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void onContentReceived(ContentDecoder decoder, IOControl control) throws IOException {
         while (true) {
@@ -57,6 +60,7 @@ final class SearchLegacyResponseConsumer extends AbstractAsyncResponseConsumer<H
         }
     }
 
+    /** {@inheritDoc} */
     @Override
     protected HttpResponse buildResult(HttpContext context) throws IOException {
         if (originalEntity != null) {
@@ -76,6 +80,7 @@ final class SearchLegacyResponseConsumer extends AbstractAsyncResponseConsumer<H
         return response;
     }
 
+    /** {@inheritDoc} */
     @Override
     protected void releaseResources() {
         body = new ByteArrayOutputStream(0);

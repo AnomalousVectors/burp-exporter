@@ -57,7 +57,7 @@ final class LiveRequestReceipts {
         this.clock = java.util.Objects.requireNonNull(clock);
     }
 
-    /** Starts a new run's accounting; returns whether preceding run membership was discarded. */
+    /** Starts accounting when the token changes, clearing preceding membership and pressure totals. */
     boolean beginRun(ExportRunToken token) {
         if (token.equals(runToken)) return false;
         clear();

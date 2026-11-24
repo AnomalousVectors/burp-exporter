@@ -34,6 +34,7 @@ import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.io.ModalCloseable;
 import org.junit.jupiter.api.Test;
 
+/** Verifies bounded reply acquisition, connection ownership, and interrupted-wait cancellation. */
 class SearchResponseBodiesTest {
 
     @Test
@@ -88,7 +89,9 @@ class SearchResponseBodiesTest {
     @Test
     void interruptedClassicReadAbortsRatherThanDrainingDuringCleanup() throws Exception {
         InputStream input = new InputStream() {
-            @Override public int read() throws IOException {
+            /** {@inheritDoc} */
+            @Override
+            public int read() throws IOException {
                 throw new java.io.InterruptedIOException("test interruption");
             }
         };
@@ -141,7 +144,9 @@ class SearchResponseBodiesTest {
     @Test
     void interruptedAsyncWaitCancelsTheInFlightRequest() throws Exception {
         var future = new CompletableFuture<SimpleHttpResponse>() {
-            @Override public SimpleHttpResponse get() throws InterruptedException {
+            /** {@inheritDoc} */
+            @Override
+            public SimpleHttpResponse get() throws InterruptedException {
                 throw new InterruptedException("test interruption");
             }
         };
@@ -172,9 +177,17 @@ class SearchResponseBodiesTest {
 
     private static FutureCallback<SimpleHttpResponse> callback(AtomicReference<SimpleHttpResponse> result) {
         return new FutureCallback<>() {
-            @Override public void completed(SimpleHttpResponse response) { result.set(response); }
-            @Override public void failed(Exception failure) { }
-            @Override public void cancelled() { }
+            /** {@inheritDoc} */
+            @Override
+            public void completed(SimpleHttpResponse response) { result.set(response); }
+
+            /** {@inheritDoc} */
+            @Override
+            public void failed(Exception failure) { }
+
+            /** {@inheritDoc} */
+            @Override
+            public void cancelled() { }
         };
     }
 
@@ -184,13 +197,17 @@ class SearchResponseBodiesTest {
 
         private CountingBody(long length) { this.length = length; }
 
-        @Override public int read() {
+        /** {@inheritDoc} */
+        @Override
+        public int read() {
             if (read >= length) return -1;
             read++;
             return 'x';
         }
 
-        @Override public int read(byte[] bytes, int offset, int count) {
+        /** {@inheritDoc} */
+        @Override
+        public int read(byte[] bytes, int offset, int count) {
             if (read >= length) return -1;
             int copied = (int) Math.min(count, length - read);
             java.util.Arrays.fill(bytes, offset, offset + copied, (byte) 'x');

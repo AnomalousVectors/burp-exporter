@@ -103,6 +103,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      * correlation or timeout-driven flush. Used by Misc Stats and periodic memory-sample
      * logging. Excludes payload-free receipts retained for late responses after timeout; their
      * separate occupancy and pressure totals are exposed through {@link TrafficHttpHandler}.
+     *
+     * @return thread-safe current count; concurrent callbacks may change it immediately
      */
     public static int getPendingOrphansSize() {
         return pendingOrphans.size();
