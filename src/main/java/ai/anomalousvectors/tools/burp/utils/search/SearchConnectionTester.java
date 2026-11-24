@@ -31,7 +31,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  *
  * <p>Tests perform blocking network and credential-provider work and emit diagnostic log events.
  * Callers must invoke them from a worker thread, not the EDT. Independent calls are thread-safe,
- * although they read the current session credentials and runtime destination options.</p>
+ * although they read the current session credentials and runtime destination options. Redirects
+ * are reported as unsuccessful responses, never followed to another endpoint.</p>
  */
 public final class SearchConnectionTester {
     private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
@@ -455,6 +456,24 @@ public final class SearchConnectionTester {
             Array.set(headers, 0, header);
             builder.getClass().getMethod("setDefaultHeaders", headers.getClass()).invoke(builder, headers);
         }
+        Class<?> requestCallbackClass =
+                Class.forName("org.elasticsearch.client.RestClientBuilder$RequestConfigCallback");
+        Object requestCallback = Proxy.newProxyInstance(
+                requestCallbackClass.getClassLoader(),
+                new Class<?>[] { requestCallbackClass },
+                (proxy, method, args) -> {
+                    if ("customizeRequestConfig".equals(method.getName()) && args != null && args.length == 1) {
+                        // Keep the REST client's timeout defaults while forbidding destination changes.
+                        return args[0].getClass().getMethod("setRedirectsEnabled", boolean.class)
+                                .invoke(args[0], false);
+                    }
+                    if ("toString".equals(method.getName())) {
+                        return "ElasticsearchRequestConfigCallback";
+                    }
+                    return null;
+                });
+        builder.getClass().getMethod("setRequestConfigCallback", requestCallbackClass)
+                .invoke(builder, requestCallback);
         if (requiresElasticsearchTlsCallback(baseUrl, auth, tlsMode)) {
             SSLContext sslContext = sslContextForElasticsearch(auth, tlsMode);
             Class<?> callbackClass = Class.forName("org.elasticsearch.client.RestClientBuilder$HttpClientConfigCallback");

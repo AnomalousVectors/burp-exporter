@@ -36,7 +36,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  * Factory/cache for search database transport clients.
  *
  * <p>Clients are cached per URL, authentication fingerprint, and effective TLS settings. Do not
- * close a returned client; lifecycle is managed by {@link #closeAll()}.</p>
+ * close a returned client; lifecycle is managed by {@link #closeAll()}. Automatic redirects are
+ * disabled so credentials and exported content stay at the configured destination.</p>
  *
  * <p>Thread-safe. Client creation and cache detachment are serialized so callers do not receive a
  * client that has already been selected for closure.</p>
@@ -217,6 +218,7 @@ public final class SearchConnector {
             boolean useHttps = "https".equals(endpoint.scheme());
 
             builder.setHttpClientConfigCallback(httpBuilder -> {
+                httpBuilder.disableRedirectHandling();
                 PoolingAsyncClientConnectionManagerBuilder connManagerBuilder =
                         PoolingAsyncClientConnectionManagerBuilder.create();
                 if (useHttps) {
@@ -267,6 +269,7 @@ public final class SearchConnector {
             // Sized for overlapping snapshot flushes + live traffic drain + retry drain.
             connManagerBuilder.setMaxConnTotal(16).setMaxConnPerRoute(8);
             var httpBuilder = HttpClients.custom()
+                    .disableRedirectHandling()
                     .setConnectionManager(connManagerBuilder.build())
                     .evictExpiredConnections()
                     .evictIdleConnections(org.apache.hc.core5.util.TimeValue.ofSeconds(30L))

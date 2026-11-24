@@ -169,7 +169,7 @@ public final class SearchRawGet {
         Timeout connectionRequestTimeout = Timeout.ofMilliseconds(Math.min(
                 SearchConnector.CLASSIC_CONNECTION_REQUEST_TIMEOUT.toMilliseconds(),
                 Math.max(1_000L, responseTimeout.toMilliseconds())));
-        var clientBuilder = HttpAsyncClients.custom();
+        var clientBuilder = HttpAsyncClients.custom().disableRedirectHandling();
         PoolingAsyncClientConnectionManagerBuilder connManagerBuilder =
                 PoolingAsyncClientConnectionManagerBuilder.create()
                         .setDefaultConnectionConfig(org.apache.hc.client5.http.config.ConnectionConfig.custom()
