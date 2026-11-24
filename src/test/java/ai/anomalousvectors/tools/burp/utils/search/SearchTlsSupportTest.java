@@ -23,6 +23,7 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
+import ai.anomalousvectors.tools.burp.testutils.Reflect;
 
 class SearchTlsSupportTest {
 
@@ -170,6 +171,22 @@ class SearchTlsSupportTest {
                     "");
             assertThat(executeGet("localhost", server.port(), certificateAuth)).isEqualTo(200);
             assertThat(executeAsyncGet("localhost", server.port(), certificateAuth)).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void elasticsearchProbe_honorsProcessInsecureOverride() throws Exception {
+        RuntimeConfig.updateState(stateWithTlsModes(
+                ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                ConfigState.OPEN_SEARCH_TLS_VERIFY,
+                ConfigState.OPEN_SEARCH_TLS_VERIFY));
+        System.setProperty("OPENSEARCH_INSECURE", "true");
+        try (TlsTestServer server = TlsTestServer.start(false)) {
+            SearchConnectionStatus status = SearchConnectionStatus.class.cast(Reflect.callStatic(
+                    SearchConnectionTester.class, "testElasticsearchConnection",
+                    "https://127.0.0.1:" + server.port(), SearchAuth.none()));
+            assertThat(status.success()).isTrue();
+            assertThat(status.trustStatus()).isEqualTo("Trust-all certificates (insecure)");
         }
     }
 

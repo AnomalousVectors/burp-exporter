@@ -216,6 +216,9 @@ public final class SearchTlsSupport {
     /**
      * Builds an SSL context builder that trusts only one destination's imported pin.
      *
+     * <p>A leaf mismatch fails the handshake even when normal JVM trust would accept the peer.
+     * Hostname verification remains the responsibility of the configured client TLS strategy.</p>
+     *
      * @param destination destination to configure; {@code null} selects upstream OpenSearch
      * @return pinned-trust SSL context builder
      * @throws GeneralSecurityException if no pin is loaded or trust setup fails
@@ -227,8 +230,13 @@ public final class SearchTlsSupport {
             throw new GeneralSecurityException("Pinned TLS certificate not imported.");
         }
         byte[] expected = java.util.Arrays.copyOf(pinned.encodedBytes(), pinned.encodedBytes().length);
-        return SSLContextBuilder.create()
-                .loadTrustMaterial((chain, authType) -> leafMatchesPinnedCertificate(chain, expected));
+        return SSLContextBuilder.create().loadTrustMaterial((chain, authType) -> {
+            // Returning false would fall back to normal JVM trust instead of enforcing the pin.
+            if (!leafMatchesPinnedCertificate(chain, expected)) {
+                throw new CertificateException("Server certificate does not match the imported pinned certificate.");
+            }
+            return true;
+        });
     }
 
     /**

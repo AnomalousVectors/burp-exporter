@@ -117,12 +117,18 @@ final class TlsTestServer implements AutoCloseable {
                 new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
         String line;
         while ((line = reader.readLine()) != null && !line.isEmpty()) {
-            // Consume one HTTP request head; the tests send bodyless GET requests.
+            // Consume the request head; fixture bulk requests have small, fully sent bodies.
         }
     }
 
     private static void writeResponse(OutputStream output) throws IOException {
-        byte[] body = "{}".getBytes(StandardCharsets.US_ASCII);
+        byte[] body = ("{\"name\":\"fixture\",\"cluster_name\":\"fixture\",\"cluster_uuid\":\"fixture\","
+                + "\"tagline\":\"fixture\",\"version\":{\"distribution\":\"opensearch\",\"number\":\"3.7.0\","
+                + "\"build_type\":\"tar\",\"build_hash\":\"fixture\",\"build_date\":\"2026-01-01T00:00:00Z\","
+                + "\"build_snapshot\":false,\"lucene_version\":\"10.4.0\","
+                + "\"minimum_wire_compatibility_version\":\"2.19.0\","
+                + "\"minimum_index_compatibility_version\":\"2.0.0\"}}")
+                .getBytes(StandardCharsets.US_ASCII);
         String head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
                 + body.length + "\r\nConnection: close\r\n\r\n";
         output.write(head.getBytes(StandardCharsets.US_ASCII));

@@ -528,11 +528,7 @@ public final class SearchConnectionTester {
     }
 
     private static String elasticsearchTlsMode() {
-        ConfigState.State state = RuntimeConfig.getState();
-        ConfigState.ElasticsearchOptions options = state == null || state.sinks() == null
-                ? ConfigState.defaultElasticsearchOptions()
-                : state.sinks().elasticSearchOptions();
-        return ConfigState.normalizeOpenSearchTlsMode(options.tlsMode());
+        return SearchTlsSupport.currentTlsMode(ConfigState.SearchDestination.ELASTICSEARCH);
     }
 
     private static boolean isPinnedTlsMode(String tlsMode) {
