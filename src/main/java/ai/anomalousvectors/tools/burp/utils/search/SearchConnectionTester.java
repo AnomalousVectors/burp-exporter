@@ -6,7 +6,6 @@ import java.lang.reflect.Array;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,7 +16,6 @@ import javax.net.ssl.SSLContext;
 import org.apache.hc.client5.http.classic.methods.HttpGet;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.ParseException;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.ssl.SSLContextBuilder;
 
 import tools.jackson.databind.JsonNode;
@@ -167,6 +165,14 @@ public final class SearchConnectionTester {
             throws ReflectiveOperationException, IOException {
         Class<?> requestClass = Class.forName("org.elasticsearch.client.Request");
         Object request = requestClass.getConstructor(String.class, String.class).newInstance("GET", "/");
+        Class<?> optionsClass = Class.forName("org.elasticsearch.client.RequestOptions");
+        Object options = optionsClass.getField("DEFAULT").get(null);
+        Object optionsBuilder = optionsClass.getMethod("toBuilder").invoke(options);
+        Class<?> factoryClass = Class.forName("org.elasticsearch.client.HttpAsyncResponseConsumerFactory");
+        Object factory = SearchLegacyResponseConsumer.factory();
+        optionsBuilder.getClass().getMethod("setHttpAsyncResponseConsumerFactory", factoryClass)
+                .invoke(optionsBuilder, factory);
+        requestClass.getMethod("setOptions", optionsBuilder.getClass()).invoke(request, optionsBuilder);
         Object response;
         try {
             response = restClient.getClass().getMethod("performRequest", requestClass).invoke(restClient, request);
@@ -244,7 +250,7 @@ public final class SearchConnectionTester {
             return "";
         }
         try (input) {
-            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            return SearchResponseBodies.readLegacy(input);
         }
     }
 
@@ -387,7 +393,7 @@ public final class SearchConnectionTester {
             try {
                 body = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
+                        : SearchResponseBodies.read(response);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse Amazon OpenSearch response.", e);
             }

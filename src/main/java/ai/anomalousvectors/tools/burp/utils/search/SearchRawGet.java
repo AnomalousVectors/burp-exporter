@@ -1,6 +1,5 @@
 package ai.anomalousvectors.tools.burp.utils.search;
 
-import java.util.concurrent.Future;
 
 import org.apache.hc.client5.http.async.methods.SimpleHttpRequest;
 import org.apache.hc.client5.http.async.methods.SimpleHttpResponse;
@@ -105,8 +104,8 @@ public final class SearchRawGet {
                 client.start();
                 SimpleHttpRequest request = SimpleRequestBuilder.get(requestUri).build();
                 resolvedAuth.applyTo(request);
-                Future<SimpleHttpResponse> future = client.execute(request, null);
-                SimpleHttpResponse response = future.get();
+                SimpleHttpResponse response = SearchResponseBodies.execute(
+                        client, request, SearchResponseBodies.METADATA_LIMIT_BYTES);
                 String protocol = response.getVersion() != null ? response.getVersion().toString() : null;
                 int code = response.getCode();
                 String reason = response.getReasonPhrase();

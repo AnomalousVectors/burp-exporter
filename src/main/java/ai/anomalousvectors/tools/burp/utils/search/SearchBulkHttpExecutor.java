@@ -5,7 +5,6 @@ import java.io.Serial;
 import java.net.URI;
 import java.util.Locale;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -103,7 +102,8 @@ final class SearchBulkHttpExecutor {
             String indexName,
             HttpEntity entity,
             BulkResponseHandler<T> handler) throws IOException {
-        return executeBulkPost(baseUrl, indexName, toByteArray(entity), handler);
+        return executeBulkPost(baseUrl, indexName, toByteArray(entity),
+                SearchResponseBodies.METADATA_LIMIT_BYTES, handler);
     }
 
     /**
@@ -112,6 +112,7 @@ final class SearchBulkHttpExecutor {
      * @param baseUrl search database base URL
      * @param indexName target index name
      * @param body bulk NDJSON bytes; may be empty
+     * @param responseLimit maximum complete acknowledgment bytes
      * @param handler response handler receiving the local request ID used by transport logs
      * @return handler result
      * @param <T> handler result type
@@ -121,6 +122,7 @@ final class SearchBulkHttpExecutor {
             String baseUrl,
             String indexName,
             byte[] body,
+            int responseLimit,
             BulkResponseHandler<T> handler) throws IOException {
         byte[] ndjson = body == null ? new byte[0] : body;
         OfferedLoadGovernor.Permit permit = OfferedLoadGovernor.acquire(ndjson.length);
@@ -133,7 +135,7 @@ final class SearchBulkHttpExecutor {
             SearchAuth auth = SearchAuth.fromRuntime(destination);
             String path = SearchClassicHttpSupport.bulkPathForIndex(indexName);
             if (auth.mode() == SearchAuth.Mode.CERTIFICATE) {
-                return executeCertificateBulkPost(baseUrl, indexName, path, ndjson, auth, handler);
+                return executeCertificateBulkPost(baseUrl, indexName, path, ndjson, auth, responseLimit, handler);
             }
             HttpHost host = SearchClassicHttpSupport.hostForBaseUrl(baseUrl);
             HttpPost post = new HttpPost(path);
@@ -167,6 +169,7 @@ final class SearchBulkHttpExecutor {
             String path,
             byte[] ndjson,
             SearchAuth auth,
+            int responseLimit,
             BulkResponseHandler<T> handler) throws IOException {
         URI uri = SearchEndpoint.parse(baseUrl).resolve(path);
         long requestId = beginRequest(indexName, path, ndjson.length, auth, "120000");
@@ -177,8 +180,7 @@ final class SearchBulkHttpExecutor {
                     .setBody(ndjson, ContentType.create("application/x-ndjson"))
                     .build();
             auth.applyTo(request);
-            Future<SimpleHttpResponse> future = client.execute(request, null);
-            SimpleHttpResponse asyncResponse = future.get();
+            SimpleHttpResponse asyncResponse = SearchResponseBodies.execute(client, request, responseLimit);
             noteResponse(requestId, indexName, path, ndjson.length, asyncResponse.getCode(), startedNanos);
             try (ClassicHttpResponse classicResponse = adapt(asyncResponse)) {
                 try {

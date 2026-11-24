@@ -14,6 +14,8 @@
  *   <li>{@link BulkNdjsonResponseParser} classifies item outcomes; senders reconcile them with
  *       the attempted batch before accounting or retry. Prepared operation identities survive
  *       retries, and database retries do not append the same documents to Files again.</li>
+ *   <li>{@link SearchResponseBodies} bounds database replies during acquisition, separately
+ *       from captured application bodies. Oversized acknowledgments remain explicit failures.</li>
  *   <li>{@link BatchSizeController}, {@link BulkByteBudget}, {@link OfferedLoadGovernor}, and
  *       {@link BulkRateLimitBackoff} bound count, bytes, offered load, concurrency, and cooldowns.</li>
  *   <li>{@link IndexingRetryCoordinator} retains transient failures, coordinates authorization

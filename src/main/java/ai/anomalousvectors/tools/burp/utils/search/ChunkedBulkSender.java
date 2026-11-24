@@ -3,7 +3,6 @@ package ai.anomalousvectors.tools.burp.utils.search;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -16,7 +15,6 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.hc.client5.http.classic.methods.HttpPost;
 import org.apache.hc.core5.http.ParseException;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
 
 import ai.anomalousvectors.tools.burp.sinks.FileExportService;
 import ai.anomalousvectors.tools.burp.sinks.TrafficQueueEntry;
@@ -493,11 +491,13 @@ public final class ChunkedBulkSender {
                 baseUrl,
                 indexName,
                 body,
+                SearchResponseBodies.bulkLimit(attemptedRef.get()),
                 (response, requestId) -> {
             int status = response.getCode();
             String responseBody;
             try {
-                responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
+                responseBody = SearchResponseBodies.read(
+                        response, SearchResponseBodies.bulkLimit(attemptedRef.get()));
             } catch (ParseException e) {
                 throw new IOException("Failed to parse bulk response body for " + indexName, e);
             }

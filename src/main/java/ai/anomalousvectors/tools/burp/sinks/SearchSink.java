@@ -21,7 +21,6 @@ import org.apache.hc.client5.http.classic.methods.HttpPut;
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.ParseException;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.io.entity.StringEntity;
 import org.opensearch.client.json.JsonpMapper;
 import org.opensearch.client.json.jackson3.JacksonJsonpMapper;
@@ -41,6 +40,7 @@ import ai.anomalousvectors.tools.burp.utils.search.SearchConnector;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDeployment;
 import ai.anomalousvectors.tools.burp.utils.search.SearchDiagnosticText;
 import ai.anomalousvectors.tools.burp.utils.search.SearchIndexMappingAdapter;
+import ai.anomalousvectors.tools.burp.utils.search.SearchResponseBodies;
 
 /**
  * Creates search database indices from bundled JSON mapping files.
@@ -291,7 +291,7 @@ public class SearchSink {
                 try {
                     responseBody = response.getEntity() == null
                             ? ""
-                            : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
+                            : SearchResponseBodies.read(response);
                 } catch (ParseException e) {
                     throw new IOException("Failed to parse index creation response.", e);
                 }
@@ -355,7 +355,7 @@ public class SearchSink {
             try {
                 responseBody = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
+                        : SearchResponseBodies.read(response);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse index-list response.", e);
             }
@@ -403,7 +403,7 @@ public class SearchSink {
             try {
                 body = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
+                        : SearchResponseBodies.read(response);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse existing index settings response.", e);
             }
@@ -444,7 +444,7 @@ public class SearchSink {
             try {
                 body = response.getEntity() == null
                         ? ""
-                        : EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
+                        : SearchResponseBodies.read(response);
             } catch (ParseException e) {
                 throw new IOException("Failed to parse existing index mapping response.", e);
             }

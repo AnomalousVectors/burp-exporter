@@ -39,7 +39,9 @@ final class SnapshotExportFingerprints {
         }
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update((byte) 1);
             updateDigestWithMessage(digest, requestResponse.request());
+            digest.update((byte) 2);
             updateDigestWithMessage(digest, requestResponse.response());
             updateDigestWithAnnotations(digest, requestResponse.annotations());
             return HexFormat.of().formatHex(digest.digest());
@@ -108,37 +110,44 @@ final class SnapshotExportFingerprints {
 
     private static void updateDigestWithMessage(MessageDigest digest, HttpRequest request) {
         if (request == null) {
-            digest.update((byte) 0);
+            updateDigestWithBytes(digest, null);
             return;
         }
-        digest.update((byte) 1);
-        digest.update(request.toByteArray().getBytes());
+        updateDigestWithBytes(digest, request.toByteArray().getBytes());
     }
 
     private static void updateDigestWithMessage(MessageDigest digest, HttpResponse response) {
         if (response == null) {
-            digest.update((byte) 0);
+            updateDigestWithBytes(digest, null);
             return;
         }
-        digest.update((byte) 1);
-        digest.update(response.toByteArray().getBytes());
+        updateDigestWithBytes(digest, response.toByteArray().getBytes());
     }
 
     private static void updateDigestWithAnnotations(MessageDigest digest, Annotations annotations) {
+        digest.update((byte) 3);
         if (annotations == null) {
             digest.update((byte) 0);
             return;
         }
         digest.update((byte) 1);
-        if (annotations.hasNotes()) {
-            digest.update(annotations.notes().getBytes(StandardCharsets.UTF_8));
-        }
-        if (annotations.hasHighlightColor()) {
-            HighlightColor color = annotations.highlightColor();
-            if (color != null) {
-                digest.update(color.name().getBytes(StandardCharsets.UTF_8));
-            }
-        }
+        String notes = annotations.hasNotes() ? annotations.notes() : null;
+        updateDigestWithBytes(digest, notes == null ? null : notes.getBytes(StandardCharsets.UTF_8));
+        digest.update((byte) 4);
+        HighlightColor color = annotations.hasHighlightColor() ? annotations.highlightColor() : null;
+        updateDigestWithBytes(digest, color == null ? null : color.name().getBytes(StandardCharsets.UTF_8));
+    }
+
+    // Presence and fixed-width byte lengths prevent field boundaries from moving into content.
+    private static void updateDigestWithBytes(MessageDigest digest, byte[] bytes) {
+        digest.update((byte) (bytes == null ? 0 : 1));
+        if (bytes == null) return;
+        int length = bytes.length;
+        digest.update((byte) (length >>> 24));
+        digest.update((byte) (length >>> 16));
+        digest.update((byte) (length >>> 8));
+        digest.update((byte) length);
+        digest.update(bytes);
     }
 
     private static String nullToEmpty(String value) {

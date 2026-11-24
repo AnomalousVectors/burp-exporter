@@ -1,13 +1,11 @@
 package ai.anomalousvectors.tools.burp.utils.search;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.hc.core5.http.ClassicHttpResponse;
 import org.apache.hc.core5.http.ParseException;
-import org.apache.hc.core5.http.io.entity.EntityUtils;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -249,6 +247,7 @@ public final class PreparedBulkSender {
                     baseUrl,
                     indexName,
                     body,
+                    SearchResponseBodies.bulkLimit(fitted.size()),
                     (response, requestId) ->
                             handleBulkResponse(response, indexName, fitted, requestId));
             long successfulRequestBytes = result.successCount() > 0 ? body.length : 0L;
@@ -315,7 +314,7 @@ public final class PreparedBulkSender {
         int status = response.getCode();
         String responseBody;
         try {
-            responseBody = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8, Integer.MAX_VALUE);
+            responseBody = SearchResponseBodies.read(response, SearchResponseBodies.bulkLimit(attemptedCount));
         } catch (ParseException e) {
             throw new IOException("Failed to parse bulk response body for " + indexName, e);
         }

@@ -26,6 +26,8 @@ import org.opensearch.client.json.jackson3.JacksonJsonpMapper;
 import org.opensearch.client.opensearch.OpenSearchClient;
 import org.opensearch.client.transport.OpenSearchTransport;
 import org.opensearch.client.transport.httpclient5.ApacheHttpClient5TransportBuilder;
+import org.opensearch.client.transport.httpclient5.ApacheHttpClient5Options;
+import org.opensearch.client.transport.httpclient5.HttpAsyncResponseConsumerFactory;
 
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -206,6 +208,11 @@ public final class SearchConnector {
                     .builder(host)
                     .setMapper(mapper);
             builder.setDefaultHeaders(auth.defaultHeaders());
+            var transportOptions = ApacheHttpClient5Options.DEFAULT.toBuilder();
+            transportOptions.setHttpAsyncResponseConsumerFactory(
+                    new HttpAsyncResponseConsumerFactory.HeapBufferedResponseConsumerFactory(
+                            SearchResponseBodies.METADATA_LIMIT_BYTES));
+            builder.setOptions(transportOptions.build());
 
             boolean useHttps = "https".equals(endpoint.scheme());
 
