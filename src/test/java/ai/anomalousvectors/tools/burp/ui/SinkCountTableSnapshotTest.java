@@ -44,6 +44,42 @@ class SinkCountTableSnapshotTest {
         assertThat(rowNamed(snapshot, "    Proxy").values()).hasSize(10);
         assertThat(traffic.toTextValues())
                 .containsExactly("Traffic", "1,234", "0", "0", "1.0 KiB", "2.0 KiB", "3.0 KiB", "OK", "-", "-");
+        assertThat(rowNamed(snapshot, "Exporter").values().get(7)).isEqualTo("-");
+        assertThat(rowNamed(snapshot, "Total").values().get(7)).isEqualTo("OK");
+    }
+
+    @Test
+    void fileSnapshot_usesDashForUnselectedIntegrityIncludingTotalAndText() {
+        SinkCountTableSnapshot snapshot = SinkCountTableSnapshot.file();
+
+        assertThat(snapshot.rows()).isNotEmpty().allSatisfy(row -> {
+            assertThat(row.toSwingValues()[7]).isEqualTo("-");
+            assertThat(row.toTextValues()[7]).isEqualTo("-");
+        });
+        assertThat(FileExportStats.getArtifactIntegrity("traffic"))
+                .isEqualTo(FileExportStats.ArtifactIntegrity.NOT_SELECTED);
+    }
+
+    @Test
+    void fileSnapshot_preservesPendingIntegrityForSelectedArtifactsAndTotal() {
+        FileExportStats.recordArtifactRegistration("traffic", 0L);
+
+        SinkCountTableSnapshot snapshot = SinkCountTableSnapshot.file();
+
+        assertThat(rowNamed(snapshot, "Traffic").toTextValues()[7]).isEqualTo("Pending");
+        assertThat(rowNamed(snapshot, "Total").values().get(7)).isEqualTo("Pending");
+    }
+
+    @Test
+    void fileSnapshot_preservesFailedIntegrityForSelectedArtifactsAndTotal() {
+        FileExportStats.recordArtifactRegistration("traffic", 0L);
+        FileExportStats.recordArtifactCompletion(
+                "traffic", 0L, 1L, 0L, FileExportStats.ArtifactIntegrity.FAILED, "Fixture size mismatch");
+
+        SinkCountTableSnapshot snapshot = SinkCountTableSnapshot.file();
+
+        assertThat(rowNamed(snapshot, "Traffic").toTextValues()[7]).isEqualTo("Failed");
+        assertThat(rowNamed(snapshot, "Total").values().get(7)).isEqualTo("Failed");
     }
 
     @Test

@@ -244,7 +244,7 @@ record SinkCountTableSnapshot(List<String> columns, List<Row> rows) {
             case PENDING -> "Pending";
             case OK -> "OK";
             case FAILED -> "Failed";
-            case NOT_SELECTED -> "Not selected";
+            case NOT_SELECTED -> "-";
         };
     }
 
@@ -253,7 +253,7 @@ record SinkCountTableSnapshot(List<String> columns, List<Row> rows) {
             boolean anyIntegrityFailure,
             boolean anyIntegrityPending) {
         if (!anyArtifacts) {
-            return "Not selected";
+            return "-";
         }
         if (anyIntegrityFailure) {
             return "Failed";
