@@ -289,7 +289,7 @@ public final class SearchConnector {
     }
 
     /**
-     * Closes every cached OpenSearch, classic HTTP, and async HTTP client and clears their caches.
+     * Closes cached database clients and retires the run's AWS profile credentials provider.
      *
      * <p>Each client owns a pooled connection manager, TLS session cache, and reactor/scheduler
      * threads that hold substantial off-heap state (direct {@code ByteBuffer}s, SSL session state).
@@ -305,6 +305,7 @@ public final class SearchConnector {
      * cache generation and is not closed by the in-progress call.</p>
      */
     public static void closeAll() {
+        AmazonOpenSearchSigV4.closeProfileProvider();
         AtomicInteger failures = new AtomicInteger();
 
         // Drain entries out of each cache *before* closing them. If we instead closed-then-cleared,

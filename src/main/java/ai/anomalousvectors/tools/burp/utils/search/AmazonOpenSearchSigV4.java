@@ -7,6 +7,7 @@ import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 import org.apache.hc.core5.http.HttpRequest;
@@ -14,6 +15,7 @@ import org.apache.hc.core5.http.HttpRequest;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
+import ai.anomalousvectors.tools.burp.utils.Logger;
 
 /**
  * Applies AWS Signature Version 4 headers to Amazon OpenSearch HTTP requests.
@@ -21,14 +23,18 @@ import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
  * <p>Uses the AWS SDK via reflection against public interfaces so the IDE classpath and the
  * Burp runtime can load signing without compile-time AWS imports.</p>
  *
- * <p>Each signing or validation call owns a fresh provider and closes it before returning,
- * including on failure or interruption. Providers are not shared between concurrent requests;
- * profile files are reread on each call, while static credentials come from session memory.</p>
+ * <p>An active export run reuses its profile provider while the selected profile files and settings
+ * are unchanged. The SDK caches and refreshes temporary credentials. Files are reread before each
+ * acquisition; static credentials still come directly from session memory. Validation and signing
+ * outside a run use short-lived providers.</p>
  *
- * <p>Stateless and safe for concurrent callers. Credential-provider implementations supplied by
- * the AWS SDK retain their own synchronization and refresh behavior.</p>
+ * <p>Safe for concurrent callers. Retirement detaches the cached provider without closing it while
+ * a request is signing. The final borrower closes a retired provider; SDK resolution and signing
+ * execute outside the ownership lock.</p>
  */
 public final class AmazonOpenSearchSigV4 {
+    private static final Object PROFILE_LOCK = new Object();
+    private static ProfileEntry cachedProfile;
 
     private AmazonOpenSearchSigV4() {
         throw new AssertionError("No instances");
@@ -61,7 +67,7 @@ public final class AmazonOpenSearchSigV4 {
      * @return blank when signing can proceed; otherwise a concise validation failure
      */
     public static String validationMessage(String baseUrl) {
-        try (SigningContext context = resolveSigningContext(baseUrl)) {
+        try (SigningContext context = resolveSigningContext(baseUrl, false)) {
             // Creating the context validates settings and provider construction, not authentication.
             java.util.Objects.requireNonNull(context.provider());
             return "";
@@ -94,7 +100,7 @@ public final class AmazonOpenSearchSigV4 {
         if (!isEnabledForRuntime()) {
             return;
         }
-        try (SigningContext context = resolveSigningContext(baseUrl)) {
+        try (SigningContext context = resolveSigningContext(baseUrl, true)) {
             byte[] payload = body == null ? new byte[0] : body.clone();
             URI endpoint = SearchEndpoint.parse(baseUrl).uri();
             Object unsigned = buildSdkRequest(method, path, endpoint, payload);
@@ -125,7 +131,24 @@ public final class AmazonOpenSearchSigV4 {
         return isEnabledForRuntime() ? "AWS4-HMAC-SHA256 ***" : "";
     }
 
-    private static SigningContext resolveSigningContext(String baseUrl) {
+    /**
+     * Retires the active run's cached profile provider without interrupting existing signers.
+     *
+     * <p>Call from Stop, failed Start or unload cleanup. Thread-safe and idempotent; use a worker
+     * rather than the EDT when a cached provider may exist, because idle closure can block.
+     * An idle provider closes on the caller; otherwise its last borrower closes it. Close failures
+     * produce a credential-free warning and do not prevent other shutdown work.</p>
+     */
+    public static void closeProfileProvider() {
+        Object close;
+        synchronized (PROFILE_LOCK) {
+            close = retire(cachedProfile);
+            cachedProfile = null;
+        }
+        closeRetiredProvider(close);
+    }
+
+    private static SigningContext resolveSigningContext(String baseUrl, boolean reuseProfile) {
         ConfigState.State state = RuntimeConfig.getState();
         ConfigState.OpenSearchAmazonOptions options = state == null || state.sinks() == null
                 ? ConfigState.defaultOpenSearchAmazonOptions()
@@ -140,10 +163,71 @@ public final class AmazonOpenSearchSigV4 {
             throw new IllegalStateException(
                     "Deployment type could not be detected from the endpoint. Select Hosted or Serverless to continue.");
         }
+        if (!ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC.equals(options.authType())
+                && !ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE.equals(options.authType())) {
+            throw new IllegalStateException("SigV4 signing requires an IAM auth type.");
+        }
         return new SigningContext(
                 region,
                 SearchDeployment.amazonSigningService(deploymentType),
-                credentialsProvider(options));
+                ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE.equals(options.authType())
+                        ? profileLease(options, reuseProfile)
+                        : new ProviderLease(new ProfileEntry(staticCredentialsProvider())));
+    }
+
+    private static ProviderLease profileLease(ConfigState.OpenSearchAmazonOptions options, boolean reuse) {
+        Object close = null;
+        ProviderLease lease;
+        synchronized (PROFILE_LOCK) {
+            Object file;
+            try {
+                file = resolveProfileFile(options);
+                if (file == null) {
+                    file = Class.forName("software.amazon.awssdk.profiles.ProfileFile")
+                            .getMethod("defaultProfileFile").invoke(null);
+                }
+            } catch (ReflectiveOperationException e) {
+                throw new IllegalStateException("Failed to read AWS profile files: " + rootMessage(e), e);
+            }
+            var run = RuntimeConfig.currentExportRunToken();
+            String defaultProfile = System.getProperty("aws.profile", "");
+            boolean retain = reuse && RuntimeConfig.isExportRunActive(run);
+            if (retain && cachedProfile != null && cachedProfile.run.equals(run)
+                    && cachedProfile.options.equals(options) && cachedProfile.defaultProfile.equals(defaultProfile)
+                    && Objects.equals(cachedProfile.file, file)) {
+                return new ProviderLease(cachedProfile);
+            }
+            ProfileEntry entry = new ProfileEntry(profileCredentialsProvider(options, file));
+            if (retain) {
+                entry.run = run;
+                entry.options = options;
+                entry.defaultProfile = defaultProfile;
+                entry.file = file;
+                entry.retired = false;
+                close = retire(cachedProfile);
+                cachedProfile = entry;
+            }
+            lease = new ProviderLease(entry);
+        }
+        closeRetiredProvider(close);
+        return lease;
+    }
+
+    /** Marks an entry retired under PROFILE_LOCK; only the final borrower may close it. */
+    private static Object retire(ProfileEntry entry) {
+        if (entry == null) {
+            return null;
+        }
+        entry.retired = true;
+        return entry.users == 0 ? entry.provider : null;
+    }
+
+    private static void closeRetiredProvider(Object provider) {
+        try {
+            closeProvider(provider);
+        } catch (IllegalStateException e) {
+            Logger.logWarnPanelOnly("[Search] AWS profile credentials provider failed to close cleanly.");
+        }
     }
 
     private static String resolvedRegion(String baseUrl, ConfigState.OpenSearchAmazonOptions options) {
@@ -159,14 +243,6 @@ public final class AmazonOpenSearchSigV4 {
             return selected;
         }
         return SearchDeployment.detectAmazonOpenSearchDeploymentType(baseUrl);
-    }
-
-    private static Object credentialsProvider(ConfigState.OpenSearchAmazonOptions options) {
-        return switch (options.authType()) {
-            case ConfigState.OPEN_SEARCH_AMAZON_AUTH_STATIC -> staticCredentialsProvider();
-            case ConfigState.OPEN_SEARCH_AMAZON_AUTH_PROFILE -> profileCredentialsProvider(options);
-            default -> throw new IllegalStateException("SigV4 signing requires an IAM auth type.");
-        };
     }
 
     private static Object staticCredentialsProvider() {
@@ -192,7 +268,7 @@ public final class AmazonOpenSearchSigV4 {
         }
     }
 
-    private static Object profileCredentialsProvider(ConfigState.OpenSearchAmazonOptions options) {
+    private static Object profileCredentialsProvider(ConfigState.OpenSearchAmazonOptions options, Object profileFile) {
         try {
             Object builder = Class.forName("software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider")
                     .getMethod("builder")
@@ -202,7 +278,6 @@ public final class AmazonOpenSearchSigV4 {
             if (!options.profile().isBlank()) {
                 invokeOn(builderType, builder, "profileName", String.class, options.profile());
             }
-            Object profileFile = resolveProfileFile(options);
             if (profileFile != null) {
                 invokeOn(
                         builderType,
@@ -453,21 +528,74 @@ public final class AmazonOpenSearchSigV4 {
         return message.indexOf('@') > 0 && message.contains(".");
     }
 
-    private record SigningContext(String region, String signingService, Object provider)
-            implements AutoCloseable {
+    private static final class ProfileEntry {
+        private final Object provider;
+        private RuntimeConfig.ExportRunToken run;
+        private ConfigState.OpenSearchAmazonOptions options;
+        private String defaultProfile;
+        private Object file;
+        private int users;
+        private boolean retired = true;
+
+        private ProfileEntry(Object provider) {
+            this.provider = provider;
+        }
+    }
+
+    private static final class ProviderLease implements AutoCloseable {
+        private final ProfileEntry entry;
+        private boolean released;
+
+        private ProviderLease(ProfileEntry entry) {
+            this.entry = entry;
+            synchronized (PROFILE_LOCK) {
+                entry.users++;
+            }
+        }
+
         /** {@inheritDoc} */
         @Override
         public void close() {
-            if (provider instanceof AutoCloseable closeable) {
-                try {
-                    closeable.close();
-                } catch (Exception e) {
-                    if (e instanceof InterruptedException) {
-                        Thread.currentThread().interrupt();
-                    }
-                    throw new IllegalStateException("Failed to close AWS credentials provider.", e);
+            Object close;
+            synchronized (PROFILE_LOCK) {
+                if (released) {
+                    return;
                 }
+                released = true;
+                entry.users--;
+                close = entry.retired && entry.users == 0 ? entry.provider : null;
             }
+            if (entry.run != null) {
+                closeRetiredProvider(close);
+            } else {
+                closeProvider(close);
+            }
+        }
+    }
+
+    private static void closeProvider(Object provider) {
+        if (provider instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception e) {
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new IllegalStateException("Failed to close AWS credentials provider.", e);
+            }
+        }
+    }
+
+    private record SigningContext(String region, String signingService, ProviderLease lease)
+            implements AutoCloseable {
+        private Object provider() {
+            return lease.entry.provider;
+        }
+
+        /** {@inheritDoc} */
+        @Override
+        public void close() {
+            lease.close();
         }
     }
 }

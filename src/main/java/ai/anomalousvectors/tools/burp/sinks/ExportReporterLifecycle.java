@@ -15,6 +15,7 @@ import ai.anomalousvectors.tools.burp.utils.config.SecureCredentialStore;
 import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
 import ai.anomalousvectors.tools.burp.utils.search.SearchConnector;
 import ai.anomalousvectors.tools.burp.utils.search.SearchBodyTruncationLog;
+import ai.anomalousvectors.tools.burp.utils.search.AmazonOpenSearchSigV4;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -115,6 +116,7 @@ public final class ExportReporterLifecycle {
      * @return {@code true} when retry ownership stopped and run-owned files were deleted completely
      */
     public static boolean discardPendingRunState(long timeoutMs) {
+        AmazonOpenSearchSigV4.closeProfileProvider();
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
         boolean trafficDiscarded = TrafficExportQueue.clearPendingWork();

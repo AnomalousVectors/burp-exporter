@@ -265,7 +265,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                         "Profile name and optional credentials/config file paths are non-secret; resolved credentials stay outside exported config.",
                         "",
                         "<b>Credential resolution</b>",
-                        "Each signed request re-resolves credentials from the selected AWS profile.",
+                        "During export, the AWS SDK reuses temporary profile credentials and refreshes them as needed.",
                         "Temporary credentials renew only when that profile is SSO, assume-role, or credential_process and the AWS SDK refresh succeeds.",
                         "A profile that stores a fixed session token does not renew.",
                         "",
@@ -2402,7 +2402,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         String profileTip = Tooltips.htmlRaw(
                 "<b>Profile</b>",
                 "AWS shared-config profile name for <b>IAM SigV4 - Profile</b>.",
-                "Each signed request re-resolves credentials from this profile.",
+                "During export, the AWS SDK reuses temporary profile credentials and refreshes them as needed.",
                 "Temporary credentials renew only when the profile is SSO, assume-role, or credential_process and the AWS SDK refresh succeeds.",
                 "A profile that stores a fixed session token does not renew.");
         String credentialsFileTip = Tooltips.htmlRaw(
@@ -3961,7 +3961,7 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
                 "Supports IAM SigV4 (profile or static), Basic, and None.",
                 "Default auth is <b>IAM SigV4 - Profile</b> for long runs.",
                 "Uses the shared database export, retry, and capacity controls.",
-                "Profile re-resolves credentials on every signed request; temporary credentials renew only for SSO/assume-role/credential_process profiles.",
+                "Profile authentication reuses SDK credentials during export; temporary credentials renew only for SSO/assume-role/credential_process profiles.",
                 "Pasted Static session tokens are not renewed and raise mid-run auth-failure risk."
         ));
         Tooltips.apply(elasticSearchDestinationRadio, Tooltips.htmlRaw(

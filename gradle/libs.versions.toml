@@ -26,6 +26,7 @@ opensearchJava = "3.11.0"
 parsson = "1.1.9"
 slf4j = "2.0.20"
 spotbugs = "4.10.5"
+# Await a stable release with the Gradle visibility fix: https://github.com/spotbugs/spotbugs-gradle-plugin/pull/1848
 spotbugsPlugin = "6.5.13"
 spotless = "8.11.0"
 zstdJni = "1.5.7-28"
