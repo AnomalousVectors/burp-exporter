@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
@@ -18,6 +19,7 @@ import ai.anomalousvectors.tools.burp.utils.BurpRuntimeMetadata;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -46,7 +48,8 @@ public final class SettingsIndexReporter {
      */
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-settings-reporter");
-    private static volatile String lastPushedHash;
+    private record PushedHash(RuntimeConfig.ExportRunToken token, String value) { }
+    private static final AtomicReference<PushedHash> lastPushedHash = new AtomicReference<>();
     private static final ObjectMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final AtomicBoolean projectOptionsFailureLogged = new AtomicBoolean();
     private static final AtomicBoolean userOptionsFailureLogged = new AtomicBoolean();
@@ -67,43 +70,7 @@ public final class SettingsIndexReporter {
      * is unavailable. An attempted push records and logs its outcome.</p>
      */
     public static void pushSnapshotNow() {
-        try {
-            if (!RuntimeConfig.isExportRunning()) {
-                return;
-            }
-            if (!RuntimeConfig.isAnySinkEnabled()) {
-                return;
-            }
-            String baseUrl = RuntimeConfig.searchBaseUrl();
-            boolean openSearchActive = RuntimeConfig.isSearchActive();
-            List<String> sources = RuntimeConfig.getState().dataSources();
-            if (sources == null || !sources.contains(ConfigKeys.SRC_SETTINGS)) {
-                return;
-            }
-            MontoyaApi api = MontoyaApiProvider.get();
-            if (api == null) {
-                return;
-            }
-            String projectJson = safeProjectOptionsJson(api);
-            String userJson = safeUserOptionsJson(api);
-            ConfigState.State state = RuntimeConfig.getState();
-            Map<String, Object> doc = buildSettingsDoc(api, projectJson, userJson, state);
-            boolean ok = SearchClientWrapper.pushDocument(baseUrl, settingsIndexName(), "settings", doc);
-            SingleDocOutcomeRecorder.record("settings", ok, openSearchActive, "Settings index push failed");
-            if (ok) {
-                lastPushedHash = hashSettingsForEnabled(state, projectJson, userJson);
-                Logger.logInfoPanelOnly("[SnapshotExport] Settings: pushed to "
-                        + RuntimeConfig.activeSinkSummary() + ".");
-            } else {
-                Logger.logWarnPanelOnly("[SnapshotExport] Settings: push failed for "
-                        + RuntimeConfig.activeSinkSummary() + " (index request did not succeed).");
-            }
-        } catch (Exception e) {
-            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            SingleDocOutcomeRecorder.record("settings", false, RuntimeConfig.isSearchActive(), msg);
-            Logger.logWarnPanelOnly("[SnapshotExport] Settings: push failed for "
-                    + RuntimeConfig.activeSinkSummary() + ": " + msg);
-        }
+        ExportRunContext.run(ExportRunContext.captureToken(), () -> pushSettings(false));
     }
 
     /**
@@ -112,13 +79,9 @@ public final class SettingsIndexReporter {
      * call from any thread.
      */
     public static void start() {
-        RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
-        SCHEDULER.startRecurring(
-                () -> {
-                    if (RuntimeConfig.isExportRunActive(token)) {
-                        pushSnapshotIfChanged();
-                    }
-                },
+        RuntimeConfig.ExportRunToken token = ExportRunContext.captureToken();
+        SCHEDULER.startRecurringForRun(
+                token, SettingsIndexReporter::pushSnapshotIfChanged,
                 INTERVAL_SECONDS,
                 INTERVAL_SECONDS,
                 TimeUnit.SECONDS);
@@ -131,7 +94,7 @@ public final class SettingsIndexReporter {
      */
     public static void stop() {
         SCHEDULER.stop();
-        lastPushedHash = null;
+        lastPushedHash.set(null);
         projectOptionsFailureLogged.set(false);
         userOptionsFailureLogged.set(false);
         projectIdFallbackLogged.set(false);
@@ -143,6 +106,11 @@ public final class SettingsIndexReporter {
      * from last pushed; logs at info level when a push is performed.
      */
     static void pushSnapshotIfChanged() {
+        ExportRunContext.run(ExportRunContext.captureToken(), () -> pushSettings(true));
+    }
+
+    private static void pushSettings(boolean changedOnly) {
+        String prefix = changedOnly ? "[PeriodicExport]" : "[SnapshotExport]";
         try {
             if (!RuntimeConfig.isExportRunning()) {
                 return;
@@ -160,28 +128,37 @@ public final class SettingsIndexReporter {
             if (api == null) {
                 return;
             }
-            String projectJson = safeProjectOptionsJson(api);
-            String userJson = safeUserOptionsJson(api);
             ConfigState.State state = RuntimeConfig.getState();
+            String projectJson = safeProjectOptionsJson(api);
+            if (ExportRunContext.isStale()) return;
+            String userJson = safeUserOptionsJson(api);
+            if (ExportRunContext.isStale()) return;
             String currentHash = hashSettingsForEnabled(state, projectJson, userJson);
-            if (currentHash.equals(lastPushedHash)) {
+            var token = ExportRunContext.captureToken();
+            PushedHash previous = lastPushedHash.get();
+            if (changedOnly && previous != null && token.equals(previous.token())
+                    && currentHash.equals(previous.value())) {
                 return;
             }
             Map<String, Object> doc = buildSettingsDoc(api, projectJson, userJson, state);
+            if (ExportRunContext.isStale()) return;
             boolean ok = SearchClientWrapper.pushDocument(baseUrl, settingsIndexName(), "settings", doc);
             SingleDocOutcomeRecorder.record("settings", ok, openSearchActive, "Settings index push failed");
+            if (ExportRunContext.isStale()) return;
             if (ok) {
-                lastPushedHash = currentHash;
-                Logger.logInfoPanelOnly("[PeriodicExport] Settings: pushed to "
-                        + RuntimeConfig.activeSinkSummary() + " (change detected).");
+                lastPushedHash.updateAndGet(value -> RuntimeConfig.isExportRunActive(token)
+                        ? new PushedHash(token, currentHash) : value);
+                Logger.logInfoPanelOnly(prefix + " Settings: pushed to "
+                        + RuntimeConfig.activeSinkSummary() + (changedOnly ? " (change detected)." : "."));
             } else {
-                Logger.logWarnPanelOnly("[PeriodicExport] Settings: push failed for "
+                Logger.logWarnPanelOnly(prefix + " Settings: push failed for "
                         + RuntimeConfig.activeSinkSummary() + " (index request did not succeed).");
             }
         } catch (Exception e) {
+            if (ExportRunContext.isStale()) return;
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             SingleDocOutcomeRecorder.record("settings", false, RuntimeConfig.isSearchActive(), msg);
-            Logger.logWarnPanelOnly("[PeriodicExport] Settings: push failed for "
+            Logger.logWarnPanelOnly(prefix + " Settings: push failed for "
                     + RuntimeConfig.activeSinkSummary() + ": " + msg);
         }
     }
@@ -257,7 +234,7 @@ public final class SettingsIndexReporter {
         } catch (RuntimeException e) {
             logSettingsCapabilityFailureOnce(projectIdFallbackLogged, "project id lookup", e);
         }
-        if (projectIdFallbackLogged.compareAndSet(false, true)) {
+        if (!ExportRunContext.isStale() && projectIdFallbackLogged.compareAndSet(false, true)) {
             Logger.logDebug("[Settings] Project id unavailable; using fallback label for settings export.");
         }
         return BurpRuntimeMetadata.projectIdOrUnknown();
@@ -275,6 +252,7 @@ public final class SettingsIndexReporter {
     }
 
     private static void logSettingsCapabilityFailureOnce(AtomicBoolean logged, String capability, RuntimeException e) {
+        if (ExportRunContext.isStale()) return;
         if (!logged.compareAndSet(false, true)) {
             return;
         }

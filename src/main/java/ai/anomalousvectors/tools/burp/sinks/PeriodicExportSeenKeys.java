@@ -1,7 +1,9 @@
 package ai.anomalousvectors.tools.burp.sinks;
 
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.HashSet;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 
 /**
  * Per-export-run set of stable item keys already exported during backlog or periodic polls.
@@ -11,34 +13,47 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class PeriodicExportSeenKeys {
 
-    private final Set<String> seenKeys = ConcurrentHashMap.newKeySet();
+    private Set<String> seenKeys = new HashSet<>();
+    private ExportRunToken token;
 
-    void recordSeen(String itemKey) {
+    // Swapping the set keeps a late old-run preparation from repopulating a new run's keys.
+    private boolean selectRun() {
+        if (ExportRunContext.isStale()) return false;
+        ExportRunToken owner = ExportRunContext.captureToken();
+        if (!owner.equals(token)) {
+            seenKeys = new HashSet<>();
+            token = owner;
+        }
+        return true;
+    }
+
+    synchronized void recordSeen(String itemKey) {
         if (itemKey == null || itemKey.isBlank()) {
             return;
         }
-        seenKeys.add(itemKey);
+        if (selectRun()) seenKeys.add(itemKey);
     }
 
-    boolean isNew(String itemKey) {
+    synchronized boolean isNew(String itemKey) {
         if (itemKey == null || itemKey.isBlank()) {
             return false;
         }
-        return !seenKeys.contains(itemKey);
+        return selectRun() && !seenKeys.contains(itemKey);
     }
 
-    boolean claimNew(String itemKey) {
+    synchronized boolean claimNew(String itemKey) {
         if (itemKey == null || itemKey.isBlank()) {
             return false;
         }
-        return seenKeys.add(itemKey);
+        return selectRun() && seenKeys.add(itemKey);
     }
 
-    void clear() {
-        seenKeys.clear();
+    synchronized void clear() {
+        seenKeys = new HashSet<>();
+        token = null;
     }
 
-    int trackedCount() {
-        return seenKeys.size();
+    synchronized int trackedCount() {
+        return selectRun() ? seenKeys.size() : 0;
     }
 }

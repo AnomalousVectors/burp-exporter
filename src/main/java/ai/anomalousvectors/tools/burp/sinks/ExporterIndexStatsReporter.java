@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicReference;
 
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
@@ -12,6 +13,7 @@ import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.SystemMetrics;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
@@ -59,7 +61,8 @@ public final class ExporterIndexStatsReporter {
     private static final LazyScheduler SCHEDULER =
             new LazyScheduler("burp-exporter-stats");
     private static volatile int scheduledIntervalSeconds = ConfigState.DEFAULT_EXPORTER_STATS_INTERVAL_SECONDS;
-    private static volatile String lastPeriodicFailureDetail;
+    private record PeriodicFailure(RuntimeConfig.ExportRunToken token, String detail) { }
+    private static final AtomicReference<PeriodicFailure> lastPeriodicFailureDetail = new AtomicReference<>();
 
     private ExporterIndexStatsReporter() {}
 
@@ -141,13 +144,9 @@ public final class ExporterIndexStatsReporter {
                 return;
             }
             int intervalSeconds = RuntimeConfig.exporterStatsIntervalSeconds();
-            RuntimeConfig.ExportRunToken token = RuntimeConfig.currentExportRunToken();
-            SCHEDULER.getOrStart().scheduleAtFixedRate(
-                    () -> {
-                        if (RuntimeConfig.isExportRunActive(token)) {
-                            pushPeriodicSnapshot();
-                        }
-                    },
+            RuntimeConfig.ExportRunToken token = ExportRunContext.captureToken();
+            SCHEDULER.startRecurringForRun(
+                    token, ExporterIndexStatsReporter::pushPeriodicSnapshot,
                     intervalSeconds,
                     intervalSeconds,
                     TimeUnit.SECONDS);
@@ -162,7 +161,7 @@ public final class ExporterIndexStatsReporter {
      */
     public static void stop() {
         SCHEDULER.stop();
-        lastPeriodicFailureDetail = null;
+        lastPeriodicFailureDetail.set(null);
     }
 
     /**
@@ -201,6 +200,13 @@ public final class ExporterIndexStatsReporter {
     }
 
     private static ExporterStatsPushOutcome pushSnapshotInternal(SnapshotPushKind kind) {
+        if (kind == SnapshotPushKind.FINAL) return pushSnapshotForRun(kind);
+        var token = ExportRunContext.captureToken();
+        return ExportRunContext.call(token, () -> RuntimeConfig.isExportRunActive(token)
+                ? pushSnapshotForRun(kind) : ExporterStatsPushOutcome.skippedDisabled());
+    }
+
+    private static ExporterStatsPushOutcome pushSnapshotForRun(SnapshotPushKind kind) {
         boolean finalSnapshot = kind == SnapshotPushKind.FINAL;
         try {
             if (!finalSnapshot && !RuntimeConfig.isExportRunning()) {
@@ -219,6 +225,7 @@ public final class ExporterIndexStatsReporter {
             boolean openSearchActive = RuntimeConfig.isSearchActive();
             String indexName = RuntimeConfig.indexNameForKey("exporter");
             Map<String, Object> doc = buildSnapshotDoc(finalSnapshot);
+            if (ExportRunContext.isStale()) return ExporterStatsPushOutcome.skippedDisabled();
             SearchClientWrapper.ShutdownDocumentPushResult pushResult;
             if (finalSnapshot) {
                 pushResult = SearchClientWrapper.pushDocumentDuringShutdown(
@@ -232,6 +239,7 @@ public final class ExporterIndexStatsReporter {
             boolean ok = pushResult.success();
             SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive,
                     "Exporter stats snapshot push failed");
+            if (ExportRunContext.isStale()) return ExporterStatsPushOutcome.skippedDisabled();
             if (!ok) {
                 String reason = pushResult.resolvedFailureDetail();
                 if (finalSnapshot || shouldLogPeriodicFailure(openSearchActive, reason)) {
@@ -242,9 +250,12 @@ public final class ExporterIndexStatsReporter {
                 }
                 return ExporterStatsPushOutcome.failed(reason);
             }
-            lastPeriodicFailureDetail = null;
+            var token = ExportRunContext.captureToken();
+            lastPeriodicFailureDetail.updateAndGet(value -> value != null && token.equals(value.token())
+                    ? null : value);
             return ExporterStatsPushOutcome.success();
         } catch (RuntimeException e) {
+            if (ExportRunContext.isStale()) return ExporterStatsPushOutcome.skippedDisabled();
             String msg = SearchDiagnosticText.singleLine(
                     e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(),
                     1_024);
@@ -268,11 +279,11 @@ public final class ExporterIndexStatsReporter {
             return false;
         }
         String normalized = reason == null || reason.isBlank() ? "unknown" : reason;
-        if (normalized.equals(lastPeriodicFailureDetail)) {
-            return false;
-        }
-        lastPeriodicFailureDetail = normalized;
-        return true;
+        var token = ExportRunContext.captureToken();
+        PeriodicFailure next = new PeriodicFailure(token, normalized);
+        PeriodicFailure previous = lastPeriodicFailureDetail.getAndUpdate(value ->
+                RuntimeConfig.isExportRunActive(token) ? next : value);
+        return RuntimeConfig.isExportRunActive(token) && !next.equals(previous);
     }
 
     private static Map<String, Object> buildSnapshotDoc(boolean finalSnapshot) {

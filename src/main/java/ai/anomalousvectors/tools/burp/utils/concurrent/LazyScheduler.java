@@ -4,6 +4,9 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
+
 /**
  * Lazily-started single-thread daemon {@link ScheduledExecutorService} owned by one class.
  *
@@ -110,6 +113,26 @@ public final class LazyScheduler {
             recurringStarted = true;
             return true;
         }
+    }
+
+    /**
+     * Registers recurring work only while its originating export run remains active.
+     *
+     * <p>The ownership check shares the start/stop monitor, preventing an invalidated caller
+     * from recreating the scheduler after Stop. Each invocation also restores the originating
+     * context and skips work whose run has ended. Owners invalidate the run before stopping.</p>
+     *
+     * @param token originating run, captured before asynchronous work or source acquisition
+     * @param task recurring work; must not be {@code null}
+     * @param initialDelay delay before the first invocation, expressed in {@code unit}
+     * @param period fixed-rate interval, expressed in {@code unit}
+     * @param unit time unit for the delay and interval
+     * @return whether this call registered a task for the still-active run
+     */
+    public synchronized boolean startRecurringForRun(
+            ExportRunToken token, Runnable task, long initialDelay, long period, TimeUnit unit) {
+        return RuntimeConfig.isExportRunActive(token) && startRecurring(
+                () -> ExportRunContext.run(token, task), initialDelay, period, unit);
     }
 
     /**

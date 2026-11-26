@@ -15,6 +15,7 @@ import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
@@ -56,9 +57,9 @@ public final class SitemapIndexReporter {
             new LazyScheduler("burp-exporter-sitemap-reporter");
     private static final PeriodicExportSeenKeys PERIODIC_EXPORT_SEEN_KEYS =
             new PeriodicExportSeenKeys();
-    private static volatile boolean runInProgress;
-    private static volatile boolean periodicPollingRequested;
-    private static volatile boolean startupSnapshotFinished;
+    private static final ReporterRunActivity RUN_ACTIVITY = new ReporterRunActivity();
+    private static volatile ExportRunToken periodicPollingRequested = new ExportRunToken(0L);
+    private static volatile ExportRunToken startupSnapshotFinished = new ExportRunToken(0L);
     private static final Object STARTUP_BACKLOG_LOCK = new Object();
     private static volatile StartupBacklogState startupBacklog;
 
@@ -91,7 +92,8 @@ public final class SitemapIndexReporter {
             if (api == null) {
                 return;
             }
-            ExportRunToken token = RuntimeConfig.currentExportRunToken();
+            ExportRunToken token = ExportRunContext.captureToken();
+            if (!RuntimeConfig.isExportRunActive(token)) return;
             // Ordered with other startup snapshots so Proxy History cannot starve Sitemap.
             StartupSnapshotCoordinator.submit(
                     StartupSnapshotCoordinator.Lane.SITEMAP,
@@ -111,21 +113,21 @@ public final class SitemapIndexReporter {
      * Start. Safe to call from any thread.</p>
      */
     public static void start() {
-        periodicPollingRequested = true;
-        startPeriodicIfReady();
+        ExportRunToken token = ExportRunContext.captureToken();
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            if (!RuntimeConfig.isExportRunActive(token)) return;
+            periodicPollingRequested = token;
+            startPeriodicIfReady();
+        }
     }
 
     private static void startPeriodicIfReady() {
-        if (!periodicPollingRequested || !startupSnapshotFinished) {
+        ExportRunToken token = periodicPollingRequested;
+        if (!RuntimeConfig.isExportRunActive(token) || !token.equals(startupSnapshotFinished)) {
             return;
         }
-        ExportRunToken token = RuntimeConfig.currentExportRunToken();
-        SCHEDULER.startRecurring(
-                () -> {
-                    if (RuntimeConfig.isExportRunActive(token)) {
-                        pushNewItemsOnly();
-                    }
-                },
+        SCHEDULER.startRecurringForRun(
+                token, SitemapIndexReporter::pushNewItemsOnly,
                 INTERVAL_SECONDS,
                 INTERVAL_SECONDS,
                 TimeUnit.SECONDS);
@@ -138,16 +140,20 @@ public final class SitemapIndexReporter {
      */
     public static void stop() {
         SCHEDULER.stop();
-        runInProgress = false;
-        periodicPollingRequested = false;
-        startupSnapshotFinished = false;
+        RUN_ACTIVITY.clear();
         synchronized (STARTUP_BACKLOG_LOCK) {
+            periodicPollingRequested = new ExportRunToken(0L);
+            startupSnapshotFinished = new ExportRunToken(0L);
             startupBacklog = null;
         }
         PERIODIC_EXPORT_SEEN_KEYS.clear();
     }
 
     static void pushNewItemsOnly() {
+        ExportRunContext.run(ExportRunContext.captureToken(), SitemapIndexReporter::pushNewItemsOnlyForRun);
+    }
+
+    private static void pushNewItemsOnlyForRun() {
         try {
             if (!RuntimeConfig.isExportRunning()) {
                 return;
@@ -165,6 +171,7 @@ public final class SitemapIndexReporter {
             }
             pushItems(api, false);
         } catch (RuntimeException e) {
+            if (ExportRunContext.isStale()) return;
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             Logger.logWarnPanelOnly("[PeriodicExport] Sitemap: push failed: " + msg);
         }
@@ -174,10 +181,9 @@ public final class SitemapIndexReporter {
     }
 
     private static void pushItems(MontoyaApi api, boolean pushAll) {
-        if (runInProgress) {
+        if (!RUN_ACTIVITY.tryEnter()) {
             return;
         }
-        runInProgress = true;
         try {
             List<HttpRequestResponse> items = safeSiteMapItems(api);
             if (items == null) {
@@ -189,7 +195,7 @@ public final class SitemapIndexReporter {
                 pushIncrementalItems(api, items);
             }
         } finally {
-            runInProgress = false;
+            RUN_ACTIVITY.exit();
         }
     }
 
@@ -201,30 +207,36 @@ public final class SitemapIndexReporter {
      * again before results are committed.</p>
      */
     private static void runStartupBacklogSlice(MontoyaApi api, ExportRunToken token) {
+        ExportRunContext.run(token, () -> runStartupBacklogSliceForRun(api, token));
+    }
+
+    private static void runStartupBacklogSliceForRun(MontoyaApi api, ExportRunToken token) {
         if (!RuntimeConfig.isExportRunActive(token)) {
             return;
         }
         StartupBacklogState state;
         List<HttpRequestResponse> slice;
         int sliceStart;
+        if (startupBacklog == null) {
+            var config = RuntimeConfig.getState();
+            List<HttpRequestResponse> items = safeSiteMapItems(api);
+            if (items == null || !RuntimeConfig.isExportRunActive(token)) return;
+            StartupBacklogState initial = new StartupBacklogState(
+                    Collections.unmodifiableList(new ArrayList<>(items)), config,
+                    new SnapshotScopeCache(api), SnapshotSummary.forIndexKey("sitemap"), token);
+            synchronized (STARTUP_BACKLOG_LOCK) {
+                if (!RuntimeConfig.isExportRunActive(token)) return;
+                if (startupBacklog == null) {
+                    startupBacklog = initial;
+                    Logger.logInfoPanelOnly("[StartupExport] Sitemap: exporting backlog: "
+                            + items.size() + " item(s) with adaptive startup slices.");
+                    SnapshotPacing.resetCountersForSnapshot();
+                }
+            }
+        }
         synchronized (STARTUP_BACKLOG_LOCK) {
             state = startupBacklog;
-            if (state == null) {
-                List<HttpRequestResponse> items = safeSiteMapItems(api);
-                if (items == null) {
-                    return;
-                }
-                state = new StartupBacklogState(
-                        Collections.unmodifiableList(new ArrayList<>(items)),
-                        RuntimeConfig.getState(),
-                        new SnapshotScopeCache(api),
-                        SnapshotSummary.forIndexKey("sitemap"),
-                        token);
-                startupBacklog = state;
-                Logger.logInfoPanelOnly("[StartupExport] Sitemap: exporting backlog: "
-                        + items.size() + " item(s) with adaptive startup slices.");
-                SnapshotPacing.resetCountersForSnapshot();
-            }
+            if (state == null || !token.equals(state.token) || !RuntimeConfig.isExportRunActive(token)) return;
             if (state.offset >= state.items.size()) {
                 finishStartupBacklogLocked(state);
                 return;
@@ -300,6 +312,7 @@ public final class SitemapIndexReporter {
      * <p>Only the active run publishes summary counters and enables periodic polling.</p>
      */
     private static void finishStartupBacklogLocked(StartupBacklogState state) {
+        if (startupBacklog != state || ExportRunContext.isStale()) return;
         startupBacklog = null;
         if (!RuntimeConfig.isExportRunActive(state.token)) {
             return;
@@ -332,7 +345,8 @@ public final class SitemapIndexReporter {
                 + state.items.size() + " exported=" + state.attempted
                 + " skipped_scope=" + state.skippedScope.get()
                 + " in " + durationMs + "ms.");
-        startupSnapshotFinished = true;
+        if (ExportRunContext.isStale()) return;
+        startupSnapshotFinished = state.token;
         startPeriodicIfReady();
     }
 
@@ -503,7 +517,7 @@ public final class SitemapIndexReporter {
         int exported = 0;
 
         for (HttpRequestResponse item : items) {
-            if (!RuntimeConfig.isExportRunning()) {
+            if (!RuntimeConfig.isExportRunning() || ExportRunContext.isStale()) {
                 break;
             }
             SnapshotPacing.paceItem(processed);

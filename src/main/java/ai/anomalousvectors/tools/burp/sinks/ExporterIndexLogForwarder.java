@@ -11,7 +11,9 @@ import java.util.concurrent.TimeUnit;
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig.ExportRunToken;
 import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
 
 /**
@@ -23,7 +25,9 @@ import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
  * least one sink is active. While Soft Outage or hard cooldown is active, enqueue and drain
  * pause so tiny exporter singles do not compete with payload recovery.</p>
  *
- * <p>Delivery is fire-and-forget: failures are not logged back into the same stream to avoid
+ * <p>Queued entries retain their originating run token. Late entries are discarded rather than
+ * being rebound to a later run's destinations or accounting. Delivery is fire-and-forget:
+ * failures are not logged back into the same stream to avoid
  * feedback loops. If the queue is full while healthy, the newest event is rejected (no
  * drop-oldest churn during capacity pressure).</p>
  */
@@ -33,7 +37,9 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
     private static final String EVENT_TYPE = "log";
     private static final int QUEUE_CAPACITY = 1000;
 
-    private final BlockingQueue<Map<String, Object>> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+    private record PendingLog(ExportRunToken token, Map<String, Object> document) { }
+
+    private final BlockingQueue<PendingLog> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "burp-exporter-log-forwarder");
         t.setDaemon(true);
@@ -71,6 +77,8 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
      */
     @Override
     public void onLog(String level, String message) {
+        ExportRunToken token = ExportRunContext.captureToken();
+        if (!RuntimeConfig.isExportRunActive(token)) return;
         if (!RuntimeConfig.isExportReady()) {
             return;
         }
@@ -104,7 +112,7 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
         doc.put("meta", ExportMetaFields.meta(SCHEMA_VERSION));
 
         // Reject newest when full — avoid drop-oldest churn under pressure.
-        if (!queue.offer(doc)) {
+        if (!queue.offer(new PendingLog(token, doc))) {
             return;
         }
     }
@@ -167,25 +175,9 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
                     continue;
                 }
 
-                Map<String, Object> doc = queue.poll(1, TimeUnit.SECONDS);
-                if (doc == null) continue;
-                // Export state can change while poll waits. Recheck before dispatch so a document
-                // from a completed run cannot create an index during the next Start bootstrap.
-                if (!RuntimeConfig.isExportReady()
-                        || !RuntimeConfig.isAnySinkEnabled()
-                        || !RuntimeConfig.isDataSourceEnabled(
-                                ai.anomalousvectors.tools.burp.utils.config.ConfigKeys.SRC_EXPORTER)) {
-                    continue;
-                }
-                if (!RuntimeConfig.isExporterLogLevelEnabled(normalizeLevel(eventLevel(doc)))) {
-                    continue;
-                }
-
-                String baseUrl = RuntimeConfig.searchBaseUrl();
-                boolean openSearchActive = RuntimeConfig.isSearchActive();
-                boolean ok = SearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
-                SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive,
-                        "Exporter log push failed");
+                PendingLog pending = queue.poll(1, TimeUnit.SECONDS);
+                if (pending == null) continue;
+                ExportRunContext.run(pending.token(), () -> dispatch(pending.document()));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -193,6 +185,20 @@ public final class ExporterIndexLogForwarder implements Logger.LogListener {
                 // Fire-and-forget; avoid feedback loop
             }
         }
+    }
+
+    private void dispatch(Map<String, Object> doc) {
+        // Configuration may change while poll waits; the installed context still owns the entry.
+        if (!RuntimeConfig.isExportReady() || !RuntimeConfig.isAnySinkEnabled()
+                || !RuntimeConfig.isDataSourceEnabled(
+                        ai.anomalousvectors.tools.burp.utils.config.ConfigKeys.SRC_EXPORTER)) return;
+        if (!RuntimeConfig.isExporterLogLevelEnabled(normalizeLevel(eventLevel(doc)))) return;
+
+        String baseUrl = RuntimeConfig.searchBaseUrl();
+        boolean openSearchActive = RuntimeConfig.isSearchActive();
+        boolean ok = SearchClientWrapper.pushDocument(
+                baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
+        SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive, "Exporter log push failed");
     }
 
     private static String eventLevel(Map<String, Object> doc) {

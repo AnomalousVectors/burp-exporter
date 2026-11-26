@@ -31,7 +31,11 @@
  * {@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine} with
  * prepared bulk delivery. Live traffic uses {@link TrafficExportQueue}; incremental reporters
  * prepare their own batches. {@link FileExportService} protects file appends through run-scoped
- * directory ownership and artifact identity/size checks.</p>
+ * directory ownership and artifact identity/size checks. Queued exporter logs and periodic
+ * reporters carry their originating run context through delivery and accounting. Seen keys,
+ * successful Settings hashes and reporter activity remain generation-owned so late work cannot
+ * suppress or overwrite a later run's state. Public source acquisition stays outside startup
+ * backlog locks, allowing Stop to retire ownership even when Burp does not honor cancellation.</p>
  *
  * <p>Destination writes, History reads, and snapshot work belong off the EDT. Queue admission
  * for live HTTP captures Montoya metadata and parameter provenance synchronously, then retains

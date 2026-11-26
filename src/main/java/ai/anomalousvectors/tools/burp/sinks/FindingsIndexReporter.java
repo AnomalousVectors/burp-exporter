@@ -18,6 +18,7 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.ScopeFilter;
 import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine;
 import ai.anomalousvectors.tools.burp.utils.concurrent.StartupSnapshotCoordinator;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotPacing;
@@ -82,9 +83,9 @@ public final class FindingsIndexReporter {
     private static final AtomicBoolean issuesAccessFailureLogged = new AtomicBoolean();
     private static final Object STARTUP_BACKLOG_LOCK = new Object();
     private static volatile StartupBacklogState startupBacklog;
-    private static volatile boolean runInProgress;
-    private static volatile boolean periodicPollingRequested;
-    private static volatile boolean startupSnapshotFinished;
+    private static final ReporterRunActivity RUN_ACTIVITY = new ReporterRunActivity();
+    private static volatile ExportRunToken periodicPollingRequested = new ExportRunToken(0L);
+    private static volatile ExportRunToken startupSnapshotFinished = new ExportRunToken(0L);
 
     private FindingsIndexReporter() {}
 
@@ -119,7 +120,8 @@ public final class FindingsIndexReporter {
             if (api == null) {
                 return;
             }
-            ExportRunToken token = RuntimeConfig.currentExportRunToken();
+            ExportRunToken token = ExportRunContext.captureToken();
+            if (!RuntimeConfig.isExportRunActive(token)) return;
             // Ordered with other startup snapshots; slices re-submit so Sitemap/Proxy can interleave.
             StartupSnapshotCoordinator.submit(
                     StartupSnapshotCoordinator.Lane.FINDINGS,
@@ -139,21 +141,21 @@ public final class FindingsIndexReporter {
      * Start. Safe to call from any thread.</p>
      */
     public static void start() {
-        periodicPollingRequested = true;
-        startPeriodicIfReady();
+        ExportRunToken token = ExportRunContext.captureToken();
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            if (!RuntimeConfig.isExportRunActive(token)) return;
+            periodicPollingRequested = token;
+            startPeriodicIfReady();
+        }
     }
 
     private static void startPeriodicIfReady() {
-        if (!periodicPollingRequested || !startupSnapshotFinished) {
+        ExportRunToken token = periodicPollingRequested;
+        if (!RuntimeConfig.isExportRunActive(token) || !token.equals(startupSnapshotFinished)) {
             return;
         }
-        ExportRunToken token = RuntimeConfig.currentExportRunToken();
-        SCHEDULER.startRecurring(
-                () -> {
-                    if (RuntimeConfig.isExportRunActive(token)) {
-                        pushNewIssuesOnly();
-                    }
-                },
+        SCHEDULER.startRecurringForRun(
+                token, FindingsIndexReporter::pushNewIssuesOnly,
                 INTERVAL_SECONDS,
                 INTERVAL_SECONDS,
                 TimeUnit.SECONDS);
@@ -167,14 +169,20 @@ public final class FindingsIndexReporter {
     public static void stop() {
         SCHEDULER.stop();
         issuesAccessFailureLogged.set(false);
-        runInProgress = false;
-        periodicPollingRequested = false;
-        startupSnapshotFinished = false;
+        RUN_ACTIVITY.clear();
+        synchronized (STARTUP_BACKLOG_LOCK) {
+            periodicPollingRequested = new ExportRunToken(0L);
+            startupSnapshotFinished = new ExportRunToken(0L);
+        }
         clearStartupBacklog();
         PERIODIC_EXPORT_SEEN_KEYS.clear();
     }
 
     static void pushNewIssuesOnly() {
+        ExportRunContext.run(ExportRunContext.captureToken(), FindingsIndexReporter::pushNewIssuesOnlyForRun);
+    }
+
+    private static void pushNewIssuesOnlyForRun() {
         try {
             if (!RuntimeConfig.isExportRunning()) {
                 return;
@@ -191,16 +199,16 @@ public final class FindingsIndexReporter {
             }
             pushIssues(api, false);
         } catch (RuntimeException e) {
+            if (ExportRunContext.isStale()) return;
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             Logger.logWarnPanelOnly("[PeriodicExport] Findings: push failed: " + msg);
         }
     }
 
     private static void pushIssues(MontoyaApi api, boolean pushAll) {
-        if (runInProgress) {
+        if (!RUN_ACTIVITY.tryEnter()) {
             return;
         }
-        runInProgress = true;
         try {
             List<AuditIssue> issues = safeIssues(api);
             if (issues == null) {
@@ -217,7 +225,7 @@ public final class FindingsIndexReporter {
                 pushIncrementalIssues(api, issues, state, filterBySeverity, selectedSeverities);
             }
         } finally {
-            runInProgress = false;
+            RUN_ACTIVITY.exit();
         }
     }
 
@@ -232,6 +240,10 @@ public final class FindingsIndexReporter {
      * run before the next Findings slice. Marks startup finished only after the last slice.</p>
      */
     private static void runStartupBacklogSlice(MontoyaApi api, ExportRunToken token) {
+        ExportRunContext.run(token, () -> runStartupBacklogSliceForRun(api, token));
+    }
+
+    private static void runStartupBacklogSliceForRun(MontoyaApi api, ExportRunToken token) {
         if (!RuntimeConfig.isExportRunActive(token)) {
             finishStartupBacklog(false);
             return;
@@ -239,32 +251,30 @@ public final class FindingsIndexReporter {
         StartupBacklogState state;
         List<AuditIssue> slice;
         int sliceStart;
+        if (startupBacklog == null) {
+            var config = RuntimeConfig.getState();
+            List<AuditIssue> issues = safeIssues(api);
+            if (issues == null || !RuntimeConfig.isExportRunActive(token)) return;
+            var severities = config.findingsSeverities();
+            boolean filterBySeverity = severities != null && !severities.isEmpty();
+            // Preserve null issue slots for skipped_non_exportable accounting.
+            StartupBacklogState initial = new StartupBacklogState(
+                    Collections.unmodifiableList(new ArrayList<>(issues)), config, filterBySeverity,
+                    filterBySeverity ? Set.copyOf(severities) : Set.of(), new SnapshotScopeCache(api),
+                    SnapshotSummary.forIndexKey("findings"), token);
+            synchronized (STARTUP_BACKLOG_LOCK) {
+                if (!RuntimeConfig.isExportRunActive(token)) return;
+                if (startupBacklog == null) {
+                    startupBacklog = initial;
+                    Logger.logInfoPanelOnly("[StartupExport] Findings: exporting backlog: "
+                            + issues.size() + " issue(s) with adaptive startup slices.");
+                    SnapshotPacing.resetCountersForSnapshot();
+                }
+            }
+        }
         synchronized (STARTUP_BACKLOG_LOCK) {
             state = startupBacklog;
-            if (state == null) {
-                List<AuditIssue> issues = safeIssues(api);
-                if (issues == null) {
-                    finishStartupBacklogLocked(false);
-                    return;
-                }
-                var config = RuntimeConfig.getState();
-                var severities = config.findingsSeverities();
-                boolean filterBySeverity = severities != null && !severities.isEmpty();
-                // Preserve null AuditIssue slots (counted as skipped_non_exportable);
-                // List.copyOf forbids nulls.
-                state = new StartupBacklogState(
-                        Collections.unmodifiableList(new ArrayList<>(issues)),
-                        config,
-                        filterBySeverity,
-                        filterBySeverity ? Set.copyOf(severities) : Set.of(),
-                        new SnapshotScopeCache(api),
-                        SnapshotSummary.forIndexKey("findings"),
-                        token);
-                startupBacklog = state;
-                Logger.logInfoPanelOnly("[StartupExport] Findings: exporting backlog: "
-                        + state.issues.size() + " issue(s) with adaptive startup slices.");
-                SnapshotPacing.resetCountersForSnapshot();
-            }
+            if (state == null || !token.equals(state.token) || !RuntimeConfig.isExportRunActive(token)) return;
             if (state.offset >= state.issues.size()) {
                 finishStartupBacklogLocked(true);
                 return;
@@ -276,7 +286,7 @@ public final class FindingsIndexReporter {
             slice = state.issues.subList(state.offset, end);
         }
 
-        if (runInProgress) {
+        if (!RUN_ACTIVITY.tryEnter()) {
             // Another Findings push is active; re-queue so we do not drop the remainder.
             StartupSnapshotCoordinator.submit(
                     StartupSnapshotCoordinator.Lane.FINDINGS,
@@ -285,18 +295,18 @@ public final class FindingsIndexReporter {
                     () -> runStartupBacklogSlice(api, token));
             return;
         }
-        runInProgress = true;
         SnapshotExportEngine.Result result;
         long sliceStartedNanos = System.nanoTime();
         try {
             result = exportStartupSlice(state, slice);
         } catch (RuntimeException e) {
+            if (ExportRunContext.isStale()) return;
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             Logger.logWarnPanelOnly("[SnapshotExport] Findings: push failed: " + msg);
             finishStartupBacklog(true);
             return;
         } finally {
-            runInProgress = false;
+            RUN_ACTIVITY.exit();
         }
 
         boolean more;
@@ -387,6 +397,7 @@ public final class FindingsIndexReporter {
      * <p>Only an active run may publish summary counters or enable periodic polling.</p>
      */
     private static void finishStartupBacklogLocked(boolean logSummary) {
+        if (ExportRunContext.isStale()) return;
         StartupBacklogState state = startupBacklog;
         startupBacklog = null;
         if (logSummary && state != null && RuntimeConfig.isExportRunActive(state.token)) {
@@ -424,7 +435,7 @@ public final class FindingsIndexReporter {
                     + " in " + durationMs + "ms.");
         }
         if (state != null && RuntimeConfig.isExportRunActive(state.token)) {
-            startupSnapshotFinished = true;
+            startupSnapshotFinished = state.token;
             startPeriodicIfReady();
         }
     }
@@ -634,7 +645,7 @@ public final class FindingsIndexReporter {
         int exported = 0;
 
         for (AuditIssue issue : issues) {
-            if (!RuntimeConfig.isExportRunning()) {
+            if (!RuntimeConfig.isExportRunning() || ExportRunContext.isStale()) {
                 break;
             }
             AuditIssueSeverity sev = issue.severity();
@@ -705,6 +716,7 @@ public final class FindingsIndexReporter {
     }
 
     private static void logIssuesAccessFailureOnce(Throwable t) {
+        if (ExportRunContext.isStale()) return;
         if (!issuesAccessFailureLogged.compareAndSet(false, true)) {
             return;
         }

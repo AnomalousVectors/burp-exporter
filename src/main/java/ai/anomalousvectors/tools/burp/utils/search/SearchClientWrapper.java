@@ -243,6 +243,9 @@ public class SearchClientWrapper {
             String indexKey,
             Map<String, Object> document,
             boolean duringShutdown) {
+        if (ExportRunContext.isStale()) {
+            return new ShutdownDocumentPushResult(false, "Originating export run is no longer active");
+        }
         PreparedExportDocument prepared = ExportDocumentIdentity.prepare(indexName, indexKey, document);
         FileExportService.emit(prepared);
         if (!RuntimeConfig.isSearchExportEnabled() || baseUrl == null || baseUrl.isBlank()) {

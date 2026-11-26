@@ -53,6 +53,32 @@ class ExportRunContextTest {
     }
 
     @Test
+    void capturedTasksNeverRebindAStaleContextToTheNextRun() {
+        RuntimeConfig.setExportRunning(true);
+        ExportRunToken old = ExportRunContext.captureToken();
+        RuntimeConfig.setExportRunning(false);
+        RuntimeConfig.setExportRunning(true);
+        ExportRunToken active = ExportRunContext.captureToken();
+        AtomicInteger calls = new AtomicInteger();
+        ExportRunContext.run(old, calls::incrementAndGet);
+        ExportRunContext.call(old, () -> {
+            assertThat(ExportRunContext.captureToken()).isEqualTo(old);
+            ExportRunContext.run(ExportRunContext.captureToken(), calls::incrementAndGet);
+            return null;
+        });
+        ExportRunContext.run(active, () -> {
+            assertThat(ExportRunContext.currentToken()).isEqualTo(active);
+            calls.incrementAndGet();
+        });
+        assertThat(calls).hasValue(1);
+        assertThat(ExportRunContext.currentToken()).isNull();
+        assertThatThrownBy(() -> ExportRunContext.run(active, () -> {
+            throw new IllegalStateException("expected");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(ExportRunContext.currentToken()).isNull();
+    }
+
+    @Test
     void call_restoresNestedAndExceptionalThreadContext() {
         RuntimeConfig.setExportRunning(true);
         ExportRunToken outer = RuntimeConfig.currentExportRunToken();

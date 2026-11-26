@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 import ai.anomalousvectors.tools.burp.utils.Logger;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -35,6 +36,10 @@ public final class ExporterIndexConfigReporter {
      * rather than returned.</p>
      */
     public static void pushConfigSnapshot() {
+        ExportRunContext.run(ExportRunContext.captureToken(), ExporterIndexConfigReporter::pushConfigForRun);
+    }
+
+    private static void pushConfigForRun() {
         try {
             if (!RuntimeConfig.isExportRunning()) {
                 return;
@@ -48,13 +53,16 @@ public final class ExporterIndexConfigReporter {
             String baseUrl = RuntimeConfig.searchBaseUrl();
             boolean openSearchActive = RuntimeConfig.isSearchActive();
             Map<String, Object> doc = buildConfigDoc(RuntimeConfig.getState());
+            if (ExportRunContext.isStale()) return;
             boolean ok = SearchClientWrapper.pushDocument(baseUrl, RuntimeConfig.indexNameForKey("exporter"), "exporter", doc);
             SingleDocOutcomeRecorder.record("exporter", ok, openSearchActive,
                     "Exporter config snapshot push failed");
+            if (ExportRunContext.isStale()) return;
             if (!ok && openSearchActive) {
                 Logger.logWarnPanelOnly("[SnapshotExport] Exporter config: push failed.");
             }
         } catch (Exception e) {
+            if (ExportRunContext.isStale()) return;
             Logger.logWarnPanelOnly("[SnapshotExport] Exporter config: push failed: "
                     + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
         }

@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+
 /**
  * Unit tests for {@link LazyScheduler}: initial state, lazy start, idempotent stop,
  * lazy restart after stop, and daemon thread configuration.
@@ -195,5 +197,48 @@ class LazySchedulerTest {
         assertThat(second).isNotSameAs(first);
         assertThat(first.isShutdown()).isTrue();
         assertThat(second.isShutdown()).isFalse();
+    }
+
+    @Test
+    void runScopedRegistrationCannotRecreateSchedulerFromInvalidatedRun() {
+        holder = new LazyScheduler("lazy-scheduler-stale-registration");
+        try {
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.setExportRunning(true);
+            var oldToken = RuntimeConfig.currentExportRunToken();
+            assertThat(holder.startRecurringForRun(
+                    oldToken, () -> {}, 1, 1, TimeUnit.DAYS)).isTrue();
+            RuntimeConfig.setExportRunning(false);
+            holder.stop();
+            RuntimeConfig.setExportRunning(true);
+
+            assertThat(holder.startRecurringForRun(
+                    oldToken, () -> {}, 1, 1, TimeUnit.DAYS)).isFalse();
+            assertThat(holder.isStarted()).isFalse();
+            assertThat(holder.startRecurringForRun(RuntimeConfig.currentExportRunToken(),
+                    () -> {}, 1, 1, TimeUnit.DAYS)).isTrue();
+        } finally {
+            RuntimeConfig.setExportRunning(false);
+        }
+    }
+
+    @Test
+    void runScopedTaskReceivesOriginatingContext() throws Exception {
+        holder = new LazyScheduler("lazy-scheduler-run-context");
+        try {
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.setExportRunning(true);
+            var token = RuntimeConfig.currentExportRunToken();
+            AtomicReference<RuntimeConfig.ExportRunToken> observed = new AtomicReference<>();
+            CountDownLatch ran = new CountDownLatch(1);
+            assertThat(holder.startRecurringForRun(token, () -> {
+                observed.set(ExportRunContext.currentToken());
+                ran.countDown();
+            }, 0, 1, TimeUnit.DAYS)).isTrue();
+            assertThat(ran.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(observed.get()).isEqualTo(token);
+        } finally {
+            RuntimeConfig.setExportRunning(false);
+        }
     }
 }

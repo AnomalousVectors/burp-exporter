@@ -79,6 +79,9 @@ dependencies {
     testImplementation(libs.brotli4j)
     testImplementation(libs.montoya)
 
+    // Compile typed logging assertions; isolated probes still load Logback from the shipped JAR.
+    testCompileOnly(libs.logbackClassic)
+
     // testRuntimeOnly
     testRuntimeOnly(libs.junitJupiterEngine)
     testRuntimeOnly(libs.brotli4jNativeWindows)

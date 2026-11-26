@@ -75,6 +75,10 @@ public final class PackagedRuntimeProbe {
         check(JsonMapper.builderWithJackson2Defaults().build().readTree("{\"ok\":true}").get("ok").asBoolean(), "Jackson read failed");
         check(LoggerFactory.getILoggerFactory().getClass().getName().equals("ch.qos.logback.classic.LoggerContext"),
                 "Logback SLF4J provider was not selected");
+        var loggingContext = ch.qos.logback.classic.LoggerContext.class.cast(LoggerFactory.getILoggerFactory());
+        check(loggingContext.getStatusManager().getCopyOfStatusList().stream()
+                        .noneMatch(status -> status.getEffectiveLevel() >= ch.qos.logback.core.status.Status.WARN),
+                "Packaged Logback configuration produced a startup warning/error");
         SSLContext context = SSLContext.getInstance("TLS");
         context.init(null, null, null);
         check(context.getSocketFactory() != null, "TLS initialization failed");

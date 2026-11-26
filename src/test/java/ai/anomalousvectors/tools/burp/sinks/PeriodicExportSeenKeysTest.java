@@ -3,6 +3,8 @@ package ai.anomalousvectors.tools.burp.sinks;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import org.junit.jupiter.api.Test;
+import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 
 class PeriodicExportSeenKeysTest {
 
@@ -44,6 +46,32 @@ class PeriodicExportSeenKeysTest {
         assertThat(keys.claimNew("")).isFalse();
         assertThat(keys.claimNew("   ")).isFalse();
         assertThat(keys.trackedCount()).isZero();
+    }
+
+    @Test
+    void oldRunCannotRepopulateTheNextRunsSeenKeys() {
+        PeriodicExportSeenKeys keys = new PeriodicExportSeenKeys();
+        try {
+            RuntimeConfig.setExportRunning(true);
+            var old = RuntimeConfig.currentExportRunToken();
+            keys.recordSeen("old");
+            RuntimeConfig.setExportRunning(false);
+            keys.clear();
+            RuntimeConfig.setExportRunning(true);
+            assertThat(keys.claimNew("current")).isTrue();
+            ExportRunContext.call(old, () -> {
+                keys.recordSeen("late");
+                assertThat(keys.claimNew("late")).isFalse();
+                assertThat(keys.isNew("current")).isFalse();
+                return null;
+            });
+            assertThat(keys.trackedCount()).isEqualTo(1);
+            assertThat(keys.isNew("old")).isTrue();
+            assertThat(keys.isNew("late")).isTrue();
+            assertThat(keys.isNew("current")).isFalse();
+        } finally {
+            RuntimeConfig.setExportRunning(false);
+        }
     }
 
     @Test

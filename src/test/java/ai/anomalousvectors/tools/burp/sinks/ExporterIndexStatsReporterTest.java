@@ -19,6 +19,7 @@ import ai.anomalousvectors.tools.burp.utils.IndexNaming;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
+import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -208,6 +209,8 @@ class ExporterIndexStatsReporterTest {
     @Test
     void periodicFailureCoalescing_logsFirstAndChangedReasonsOnly() {
         try {
+            RuntimeConfig.setExportRunning(true);
+            var old = RuntimeConfig.currentExportRunToken();
             assertThat(callStatic(ExporterIndexStatsReporter.class,
                     "shouldLogPeriodicFailure", true, "cluster down")).isEqualTo(true);
             assertThat(callStatic(ExporterIndexStatsReporter.class,
@@ -216,6 +219,14 @@ class ExporterIndexStatsReporterTest {
                     "shouldLogPeriodicFailure", true, "auth failed")).isEqualTo(true);
             assertThat(callStatic(ExporterIndexStatsReporter.class,
                     "shouldLogPeriodicFailure", false, "auth failed")).isEqualTo(false);
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.setExportRunning(true);
+            assertThat(callStatic(ExporterIndexStatsReporter.class,
+                    "shouldLogPeriodicFailure", true, "auth failed")).isEqualTo(true);
+            assertThat(ExportRunContext.call(old, () -> callStatic(ExporterIndexStatsReporter.class,
+                    "shouldLogPeriodicFailure", true, "late old failure"))).isEqualTo(false);
+            assertThat(callStatic(ExporterIndexStatsReporter.class,
+                    "shouldLogPeriodicFailure", true, "auth failed")).isEqualTo(false);
         } finally {
             tearDown();
         }
