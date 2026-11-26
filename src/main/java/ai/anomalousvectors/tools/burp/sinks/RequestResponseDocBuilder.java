@@ -218,15 +218,23 @@ public final class RequestResponseDocBuilder {
      * parameters, body).
      */
     public static Map<String, Object> buildTrafficRequestDoc(HttpRequest request) {
+        PreparedTrafficMessage prepared = prepareTrafficRequest(request);
+        prepared.complete();
+        return prepared.document();
+    }
+
+    // Preserve Montoya's parameter provenance before handing owned body inputs to a worker.
+    // Serializing and reparsing HTTP/2 changes headers and parameter offsets.
+    static PreparedTrafficMessage prepareTrafficRequest(HttpRequest request) {
         if (request == null) {
-            return buildFallbackRequestDoc(null, true);
+            return prepareFallbackRequestDoc(null, true);
         }
         try {
             return buildTrafficRequestDocStrict(request);
         } catch (RuntimeException e) {
             Logger.logDebug("[RequestResponseDocBuilder] traffic request fallback due to malformed request: "
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
-            return buildFallbackRequestDoc(request, true);
+            return prepareFallbackRequestDoc(request, true);
         }
     }
 
@@ -543,11 +551,12 @@ public final class RequestResponseDocBuilder {
         return req;
     }
 
-    private static Map<String, Object> buildTrafficRequestDocStrict(HttpRequest request) {
+    private static PreparedTrafficMessage buildTrafficRequestDocStrict(HttpRequest request) {
         Map<String, Object> req = new LinkedHashMap<>();
         burp.api.montoya.http.message.ContentType contentType = request.contentType();
         List<HttpHeader> requestHeaders = request.headers();
-        byte[] bodyBytes = request.body() == null ? null : request.body().getBytes();
+        var sourceBody = request.body();
+        byte[] bodyBytes = sourceBody == null ? null : sourceBody.getBytes().clone();
         String inferredContentType =
                 RequestResponseParametersSupport.inferRequestContentType(bodyBytes, requestHeaders, contentType);
         boolean includeBody = RequestResponseParametersSupport.shouldIncludeBodyParameters(
@@ -572,18 +581,13 @@ public final class RequestResponseDocBuilder {
         finalizeParameterStats(
                 request, null, req, contentType, requestHeaders, inferredContentType, bodyBytes, parametersResult);
 
-        HttpMessageDocSupport.putBodyFields(
-                req,
-                bodyBytes,
-                requestHeaders,
-                HttpMessageDocSupport.mediaTypeHints(
+        ResponseBodyPreparation body = new ResponseBodyPreparation(bodyBytes,
+                ownedHeaders(requestHeaders), HttpMessageDocSupport.mediaTypeHints(
                         contentType == null ? null : contentType.toString(),
                         contentType == null ? null : contentType.name()),
-                false,
-                request.bodyOffset());
-
+                false, request.bodyOffset(), true);
         HttpMessageDocSupport.putRequestBodyField(req, "markers", HttpMessageDocSupport.trafficMarkersToList(request.markers()));
-        return req;
+        return new PreparedTrafficMessage(req, body);
     }
 
     private static Map<String, Object> buildSitemapRequestDocStrict(HttpRequest request) {
@@ -668,6 +672,12 @@ public final class RequestResponseDocBuilder {
      * fields remain {@code null} instead of aborting the whole document.</p>
      */
     private static Map<String, Object> buildFallbackRequestDoc(HttpRequest request, boolean trafficShape) {
+        PreparedTrafficMessage prepared = prepareFallbackRequestDoc(request, trafficShape);
+        prepared.complete();
+        return prepared.document();
+    }
+
+    private static PreparedTrafficMessage prepareFallbackRequestDoc(HttpRequest request, boolean trafficShape) {
         RawRequestSnapshot raw = RawRequestSnapshot.from(request);
         Map<String, Object> req = new LinkedHashMap<>();
         burp.api.montoya.http.message.ContentType contentType = safeContentType(request);
@@ -693,18 +703,14 @@ public final class RequestResponseDocBuilder {
         finalizeParameterStats(
                 request, null, req, contentType, requestHeaders, inferredContentType, raw.bodyBytes(), parametersResult);
 
-        HttpMessageDocSupport.putBodyFields(
-                req,
-                raw.bodyBytes(),
-                requestHeaders,
-                HttpMessageDocSupport.mediaTypeHints(
+        ResponseBodyPreparation body = new ResponseBodyPreparation(raw.bodyBytes(),
+                ownedHeaders(requestHeaders), HttpMessageDocSupport.mediaTypeHints(
                         contentType == null ? null : contentType.toString(),
                         contentType == null ? null : contentType.name()),
-                false,
-                raw.bodyOffset());
+                false, raw.bodyOffset(), true);
 
         HttpMessageDocSupport.putRequestBodyField(req, "markers", safeTrafficMarkers(request));
-        return req;
+        return new PreparedTrafficMessage(req, body);
     }
 
     private static Map<String, Object> buildFallbackSitemapRequestDoc(HttpRequest request) {
@@ -768,37 +774,36 @@ public final class RequestResponseDocBuilder {
      * nested {@code mime_type}, headers, body, cookies).
      *
      * <p>Performs body preparation synchronously on the caller's thread without modifying the
-     * source response or sending to a destination. Live handlers invoke it during callback
-     * capture, so large bodies have callback cost; History snapshots and streaming observations
-     * invoke it on their background owners. Do not invoke potentially large preparation on the
-     * EDT.</p>
+     * source response or sending to a destination. Live handlers instead capture the deferred
+     * representation and complete it on their run-owned worker. History snapshots and streaming
+     * observations also prepare bodies on background owners. Do not invoke potentially large
+     * preparation on the EDT.</p>
      *
      * @param response readable source response; must not be {@code null}
      * @return mutable response document with the existing video-body omission policy applied
      * @throws RuntimeException if a required source accessor or body preparation fails
      */
     public static Map<String, Object> buildTrafficResponseDoc(HttpResponse response) {
-        PreparedTrafficResponse prepared = prepareTrafficResponse(response);
+        PreparedTrafficMessage prepared = prepareTrafficResponse(response);
         prepared.complete();
         return prepared.document();
     }
 
-    // Only the streaming worker uses the deferred view. It keeps all metadata fresh but can
-    // compare raw-body digests before Base64, decompression and text preparation. Nothing from
-    // this short-lived preparation is cached across polls except the worker's digest strings.
-    static PreparedTrafficResponse prepareTrafficResponse(HttpResponse response) {
+    // Live capture and streaming recovery share owned, deferred body preparation. Streaming
+    // recovery can compare digests before encoding; live capture completes on its run worker.
+    static PreparedTrafficMessage prepareTrafficResponse(HttpResponse response) {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("status", TrafficResponseStatusFields.from(response));
         resp.put("protocol", TrafficProtocolFields.responseProtocol(safeResponseHttpVersion(response)));
         ResponseBodyPreparation body = populateResponsePayload(resp, response, true, true);
-        return new PreparedTrafficResponse(resp, body);
+        return new PreparedTrafficMessage(resp, body);
     }
 
-    static final class PreparedTrafficResponse {
+    static final class PreparedTrafficMessage {
         private final Map<String, Object> document;
         private ResponseBodyPreparation body;
 
-        private PreparedTrafficResponse(Map<String, Object> document, ResponseBodyPreparation body) {
+        private PreparedTrafficMessage(Map<String, Object> document, ResponseBodyPreparation body) {
             this.document = document;
             this.body = body;
         }
@@ -813,10 +818,29 @@ public final class RequestResponseDocBuilder {
                     "hints", body.hints, "textual", body.textual, "offset", body.offset);
         }
 
+        long retainedBodyBytes() {
+            return body == null || body.bytes == null ? 0L : body.bytes.length;
+        }
+
+        long preparationBytes() {
+            if (body == null || body.bytes == null || body.bytes.length == 0) return 0L;
+            // Estimate Base64/text retention while the raw copy lives. Prepared NDJSON receives
+            // its own delivery reservation; a single worker bounds temporary serializer work.
+            return 4L * body.bytes.length;
+        }
+
         void complete() {
+            complete(null);
+        }
+
+        void complete(java.util.function.LongConsumer reserveDecodedBytes) {
             if (body == null) return;
-            Map<String, Object> prepared = HttpMessageDocSupport.buildBodyContent(
-                    body.bytes, body.headers, body.hints, body.textual, body.offset, false);
+            Map<String, Object> prepared = reserveDecodedBytes == null
+                    ? HttpMessageDocSupport.buildBodyContent(
+                            body.bytes, body.headers, body.hints, body.textual, body.offset, body.request)
+                    : HttpMessageDocSupport.buildBodyContent(
+                            body.bytes, body.headers, body.hints, body.textual, body.offset, body.request,
+                            reserveDecodedBytes);
             // Markers and any Montoya-derived attributes were already read for comparison.
             prepared.putAll(StringKeyedMaps.nested(document, "body", LinkedHashMap::new));
             document.put("body", prepared);
@@ -825,7 +849,15 @@ public final class RequestResponseDocBuilder {
     }
 
     private record ResponseBodyPreparation(byte[] bytes, List<HttpHeader> headers,
-            List<String> hints, boolean textual, int offset) { }
+            List<String> hints, boolean textual, int offset, boolean request) { }
+
+    private static List<HttpHeader> ownedHeaders(List<HttpHeader> headers) {
+        if (headers == null) return List.of();
+        return headers.stream().filter(java.util.Objects::nonNull)
+                .map(header -> (HttpHeader) new CapturedHeader(header.name(), header.value())).toList();
+    }
+
+    private record CapturedHeader(String name, String value) implements HttpHeader { }
 
     /**
      * Empty traffic-index response used when a pair has no response yet (orphans, history rows).
@@ -886,15 +918,15 @@ public final class RequestResponseDocBuilder {
             resp.put("body", body);
         } else {
             var sourceBody = response.body();
-            byte[] bodyBytes = sourceBody == null ? null : sourceBody.getBytes();
+            byte[] bodyBytes = sourceBody == null ? null : sourceBody.getBytes().clone();
             List<String> hints = HttpMessageDocSupport.mediaTypeHints(
                         HttpMessageDocSupport.mimeTypeHint(mime),
                         HttpMessageDocSupport.mimeTypeHint(stated),
                         HttpMessageDocSupport.mimeTypeHint(inferred));
             if (deferBody) {
                 resp.put("body", new LinkedHashMap<String, Object>());
-                preparation = new ResponseBodyPreparation(bodyBytes, responseHeaders, hints,
-                        montoyaTextualHint, response.bodyOffset());
+                preparation = new ResponseBodyPreparation(bodyBytes, ownedHeaders(responseHeaders), hints,
+                        montoyaTextualHint, response.bodyOffset(), false);
             } else {
                 HttpMessageDocSupport.putBodyFields(resp, bodyBytes, responseHeaders, hints,
                         montoyaTextualHint, response.bodyOffset(), false);

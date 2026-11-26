@@ -21,6 +21,15 @@ public class TrafficHttpHandler extends TrafficHttpHandlerSupport {
     }
 
     /**
+     * Returns queued and active live HTTP preparation counts for Stats.
+     *
+     * @return thread-safe display value in {@code queued / active} order; performs no I/O
+     */
+    public static String preparationStatus() {
+        return LiveTrafficPreparation.status();
+    }
+
+    /**
      * Returns a thread-safe snapshot of shared native Proxy/general HTTP receipt accounting.
      *
      * <p>Stop clears retained entries but preserves peak/pressure totals. A new run starts with

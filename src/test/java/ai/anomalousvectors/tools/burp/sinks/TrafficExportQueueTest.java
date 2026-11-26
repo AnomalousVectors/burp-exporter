@@ -193,4 +193,52 @@ class TrafficExportQueueTest {
     private static Map<String, Object> trafficDoc(String reporter) {
         return Map.of("burp", Map.of("reporting_tool", reporter));
     }
+
+    @Test
+    void slowSpillDoesNotHoldMemoryAdmissionAndCannotRefillANewerRun() throws Exception {
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+            var token = RuntimeConfig.currentExportRunToken();
+            java.util.concurrent.CountDownLatch entered = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+            DiskSpaceGuard.setUsableSpaceOverride(path -> {
+                if (Thread.currentThread().getName().equals("slow-spill-test")) {
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("Disk fixture timed out");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(e);
+                    }
+                }
+                return Long.MAX_VALUE;
+            });
+            ExportAdmissionController.setMemBudgetOverrideForTests(1L);
+            var writer = new java.util.concurrent.FutureTask<>(
+                    () -> TrafficExportQueue.offerForRun(trafficDoc("Proxy"), token));
+            Thread writerThread = new Thread(writer, "slow-spill-test");
+            writerThread.start();
+            try {
+                assertThat(entered.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                RuntimeConfig.setExportRunning(false);
+                RuntimeConfig.setExportRunning(true);
+                ExportAdmissionController.setMemBudgetOverrideForTests(1_000_000L);
+                var nextToken = RuntimeConfig.currentExportRunToken();
+                var memory = new java.util.concurrent.FutureTask<>(
+                        () -> TrafficExportQueue.offerForRun(trafficDoc("Proxy"), nextToken));
+                Thread memoryThread = new Thread(memory, "memory-admission-test");
+                memoryThread.start();
+                assertThat(memory.get(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            } finally {
+                release.countDown();
+                writerThread.join(5_000L);
+                DiskSpaceGuard.resetForTests();
+            }
+            assertThat(writer.get(2, java.util.concurrent.TimeUnit.SECONDS)).isFalse();
+            assertThat(TrafficExportQueue.getCurrentSpillSize()).isZero();
+            assertThat(TrafficExportQueue.getCurrentSize()).isEqualTo(1);
+        });
+    }
 }

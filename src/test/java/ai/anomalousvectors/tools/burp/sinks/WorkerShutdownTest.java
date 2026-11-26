@@ -56,6 +56,7 @@ class WorkerShutdownTest {
             Map.entry("sinks/ExporterIndexStatsReporter.java", 1),
             Map.entry("sinks/ExportReporterLifecycle.java", 1),
             Map.entry("sinks/FindingsIndexReporter.java", 1),
+            Map.entry("sinks/LiveTrafficPreparation.java", 1),
             Map.entry("sinks/ProxyHistoryIndexReporter.java", 1),
             Map.entry("sinks/RepeaterSwingTabWalker.java", 2),
             Map.entry("sinks/RepeaterTabsIndexReporter.java", 1),
@@ -81,7 +82,10 @@ class WorkerShutdownTest {
      * orphan export, and both parameter-integrity flushers) start lazily,
      * stop through their owner or {@link ExportReporterLifecycle}, unload through that lifecycle,
      * restart lazily, wait at most {@link Workers#DEFAULT_SHUTDOWN_TIMEOUT_MS}, and interrupt their
-     * scheduled executor. Their owner tests plus this class cover termination. Traffic queue and
+     * scheduled executor. Their owner tests plus this class cover termination. Live HTTP preparation
+     * starts on admitted work, shares the Stop wait, releases cancelled queued allocations and
+     * fences still-finishing older-run work; this class and LiveTrafficPreparationTest cover it.
+     * Traffic queue and
      * retry workers start on admitted work, stop and unload with bounded joins, and restart lazily;
      * this class covers both cooperative and non-cooperative termination.</p>
      *
@@ -167,6 +171,23 @@ class WorkerShutdownTest {
         assertThat(peek(TrafficHttpHandlerSupport.class, "ORPHAN_SCHEDULER")).isNull();
         assertThat(started.isShutdown()).isTrue();
         assertThat(started.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+    }
+
+    @Test
+    void livePreparation_stopTerminatesItsExecutorAndReleasesSnapshots() throws Exception {
+        TrafficExportQueueTestSupport.withDrainWorkerDisabled(() -> {
+            TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+            var capture = LiveTrafficPreparation.retain(Map.of("burp", Map.of("reporting_tool", "Proxy")),
+                    RuntimeConfig.currentExportRunToken());
+            assertThat(capture).isNotNull();
+            assertThat(LiveTrafficPreparation.submit(capture)).isTrue();
+            ExecutorService owner = ExecutorService.class.cast(getStatic(LiveTrafficPreparation.class, "executor"));
+            RuntimeConfig.setExportRunning(false);
+            TrafficHttpHandlerSupport.stop();
+            assertThat(getStatic(LiveTrafficPreparation.class, "executor")).isNull();
+            assertThat(owner.isShutdown()).isTrue();
+            assertThat(owner.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+        });
     }
 
 

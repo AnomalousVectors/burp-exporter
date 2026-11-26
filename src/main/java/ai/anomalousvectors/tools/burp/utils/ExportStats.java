@@ -995,7 +995,7 @@ public final class ExportStats {
     public static final String SKIP_REASON_SELF_OPENSEARCH = "self_opensearch";
 
     /**
-     * Records that one or more documents were dropped from the traffic queue (queue full, drop oldest).
+     * Records live capture, preparation or delivery-admission failures.
      *
      * @param count number of documents dropped; ignored if &lt;= 0
      */
@@ -1004,7 +1004,7 @@ public final class ExportStats {
     }
 
     /**
-     * Returns the session total of documents dropped from the traffic queue because it was full.
+     * Returns the session total of live capture, preparation and delivery-admission failures.
      *
      * @return total drop count (0 or positive)
      */

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
@@ -132,6 +133,31 @@ class StatsClipboardSnapshotTest {
         assertThat(text).contains("Capacity Events: 0");
         assertThat(text).contains("Peak Cooldown Wait (ms):");
         assertThat(text).contains("Peak Flush Slot Wait (ms):");
+    }
+
+    @Test
+    void liveCaptureResourcesAppearInClipboardAndStopSummary() throws Exception {
+        ExportAdmissionController.setMemBudgetOverrideForTests(8L * 1024L * 1024L);
+        long reserved = 2048L;
+        assertThat(ExportAdmissionController.tryReserveLiveBytes(reserved)).isTrue();
+        try {
+            String text = StatsClipboardSnapshot.buildClipboardText();
+            assertThat(text).contains("Live Bytes / Limit (est.): 2.0 KiB / 8.0 MiB");
+            assertThat(text).contains("Preparation Queued / Active: "
+                    + ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler.preparationStatus());
+            StatsClipboardSnapshot.logSessionStopSummary();
+            SwingUtilities.invokeAndWait(() -> {});
+            var payload = JsonMapper.builderWithJackson2Defaults().build().readTree(
+                    infoMessages.get(1).substring("[Stats] Session stop ".length()));
+            var capture = payload.path("sections").path("Live HTTP Capture");
+            assertThat(capture.path("Live Bytes / Limit (est.)").asString())
+                    .isEqualTo("2.0 KiB / 8.0 MiB");
+            assertThat(capture.path("Preparation Queued / Active").asString())
+                    .isEqualTo(ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler.preparationStatus());
+        } finally {
+            ExportAdmissionController.releaseLiveBytes(reserved);
+            ExportAdmissionController.setMemBudgetOverrideForTests(null);
+        }
     }
 
     @Test

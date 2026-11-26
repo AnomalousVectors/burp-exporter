@@ -34,7 +34,12 @@
  * directory ownership and artifact identity/size checks.</p>
  *
  * <p>Destination writes, History reads, and snapshot work belong off the EDT. Queue admission
- * still performs synchronous preparation and may write to spill storage; it does not wait for
- * destination HTTP completion. {@link ExportReporterLifecycle} coordinates Stop and unload.</p>
+ * for live HTTP captures Montoya metadata and parameter provenance synchronously, then retains
+ * owned compact body inputs. A bounded run-owned worker completes body representations and spill
+ * admission. Pending captures, preparation and prepared delivery share a byte budget through
+ * {@link ai.anomalousvectors.tools.burp.utils.ExportAdmissionController}; capacity exhaustion is
+ * reported without waiting or trimming accepted payloads. Other prepared producers may perform
+ * synchronous queue/spill admission, but no path waits for destination HTTP completion during
+ * admission. {@link ExportReporterLifecycle} coordinates Stop and unload.</p>
  */
 package ai.anomalousvectors.tools.burp.sinks;

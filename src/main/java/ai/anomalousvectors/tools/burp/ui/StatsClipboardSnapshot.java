@@ -9,6 +9,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import ai.anomalousvectors.tools.burp.sinks.TrafficExportQueue;
 import ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler;
+import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -230,6 +231,10 @@ public final class StatsClipboardSnapshot {
     private static Map<String, String> buildLiveHttpCaptureSection() {
         var stats = TrafficHttpHandler.requestReceiptStats();
         Map<String, String> rows = new LinkedHashMap<>();
+        rows.put("Live Bytes / Limit (est.)", StatsPanelFormatters.formatBytesHuman(
+                ExportAdmissionController.liveBytesHeld()) + " / "
+                + StatsPanelFormatters.formatBytesHuman(ExportAdmissionController.memBudgetBytes()));
+        rows.put("Preparation Queued / Active", TrafficHttpHandler.preparationStatus());
         rows.put("Request Receipts / Limit", formatWhole(stats.retained()) + " / " + formatWhole(stats.capacity()));
         rows.put("Peak Request Receipts", formatWhole(stats.peak()));
         rows.put("Reclaimed Request Receipts", formatWhole(stats.reclaimed()));

@@ -91,11 +91,19 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         LiveRequestReceipts.Snapshot pressure;
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
             pressure = requestAdmissions.takePressureSummary(true);
-            pendingOrphans.clear();
+            clearPendingPayloads();
             requestAdmissions.clear();
         }
         logReceiptPressure(pressure);
         ORPHAN_SCHEDULER.stop();
+        LiveTrafficPreparation.stop();
+    }
+
+    private static void clearPendingPayloads() {
+        for (PendingOrphan pending : pendingOrphans.values()) {
+            if (pending != null) pending.releasePayload();
+        }
+        pendingOrphans.clear();
     }
 
     /**
@@ -214,13 +222,14 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             if (!RuntimeConfig.isExportRunActive(runToken) || RuntimeConfig.isExportStopping()) {
                 return;
             }
-            if (requestAdmissions.beginRun(runToken)) pendingOrphans.clear();
+            if (requestAdmissions.beginRun(runToken)) clearPendingPayloads();
             receipt = requestAdmissions.admit(key, requestSentMs, toolType, runToken, listenerPort);
             pressure = requestAdmissions.takePressureSummary(false);
         }
         logReceiptPressure(pressure);
         if (receipt == null) return;
         boolean payloadAttached = false;
+        LiveTrafficPreparation.Capture capture = null;
         try {
             boolean burpInScope = request.isInScope();
             ConfigState.State state = RuntimeConfig.getState();
@@ -239,7 +248,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     return;
                 }
             }
-            PreparedRequest prepared = prepareRequest(request);
+            PreparedRequest prepared = prepareDeferredRequest(request);
             if (!ScopeFilter.shouldExport(state, prepared.url(), burpInScope)) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
                 return;
@@ -255,22 +264,26 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     requestSentMs,
                     requestStageResolution.metadataForExport(), key, toolType, annotations, listenerPort);
             if (skeleton != null) {
+                capture = LiveTrafficPreparation.retain(skeleton, runToken, prepared.message());
+                if (capture == null) return;
                 PendingOrphan pending = new PendingOrphan(
                         skeleton,
                         requestSentMs,
                         reqToolType,
                         requestStageResolution,
-                        runToken, listenerPort);
+                        runToken, listenerPort, capture);
                 synchronized (ORPHAN_LIFECYCLE_LOCK) {
                     if (RuntimeConfig.isExportRunActive(runToken)
                             && requestAdmissions.get(key) == receipt) {
-                        pendingOrphans.put(key, pending);
+                        PendingOrphan replaced = pendingOrphans.put(key, pending);
+                        if (replaced != null) replaced.releasePayload();
                         payloadAttached = true;
                         ensureOrphanSchedulerStarted();
                     }
                 }
             }
         } finally {
+            if (!payloadAttached && capture != null) capture.close();
             synchronized (ORPHAN_LIFECYCLE_LOCK) {
                 if (!payloadAttached) requestAdmissions.releasePayload(receipt);
             }
@@ -315,6 +328,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     : skeleton != null && skeleton.runToken.equals(receipt.runToken()) ? skeleton
                     : new PendingOrphan(null, receipt.timestamp(), receipt.toolType(),
                             RequestStageResolution.none(), receipt.runToken(), receipt.listenerPort());
+            if (skeleton != null) skeleton.releasePayload();
         }
         // Pair only within the admitted run; late and duplicate responses cannot enter a new run.
         if (pending == null || !RuntimeConfig.isExportRunActive(pending.runToken)
@@ -361,7 +375,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             }
         }
 
-        PreparedRequest prepared = prepareRequest(request);
+        PreparedRequest prepared = prepareDeferredRequest(request);
         if (!ScopeFilter.shouldExport(state, prepared.url(), burpInScope)) {
             ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
             return;
@@ -377,13 +391,15 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                         pending.requestStageResolution,
                         RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
 
+        var preparedResponse = RequestResponseDocBuilder.prepareTrafficResponse(response);
         Map<String, Object> document =
-                buildDocument(response, prepared, burpInScope, requestSentMs, responseReceivedMs,
+                buildDocument(preparedResponse.document(), prepared, burpInScope, requestSentMs, responseReceivedMs,
                         toolType, repeaterMetadata, key, annotations, pending.listenerPort);
         if (annotations == null) {
             copyMissingAnnotationFieldsFromPendingRequest(document, pending);
         }
-        TrafficExportQueue.offerForRun(document, pending.runToken);
+        LiveTrafficPreparation.submit(LiveTrafficPreparation.retain(
+                document, pending.runToken, prepared.message(), preparedResponse));
 
     }
 
@@ -448,20 +464,37 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     // Prepared data belongs to one callback only: later handlers can still change the request.
-    private record PreparedRequest(Map<String, Object> document, String url) {}
+    private record PreparedRequest(Map<String, Object> document, String url,
+            RequestResponseDocBuilder.PreparedTrafficMessage message) { }
 
     private static PreparedRequest prepareRequest(HttpRequest request) {
+        PreparedRequest prepared = prepareDeferredRequest(request);
+        prepared.message().complete();
+        return prepared;
+    }
+
+    private static PreparedRequest prepareDeferredRequest(HttpRequest request) {
         HttpService service = request.httpService();
-        Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
+        var message = RequestResponseDocBuilder.prepareTrafficRequest(request);
+        Map<String, Object> requestDoc = message.document();
         String url = RequestResponseDocBuilder.buildBestEffortUrl(
                 request, service, requestDoc, "TrafficHttpHandler");
         requestDoc.put("url", HttpMessageDocSupport.urlObject(url, service));
         requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
                 RequestResponseDocBuilder.safeRequestHttpVersion(request)));
-        return new PreparedRequest(requestDoc, url);
+        return new PreparedRequest(requestDoc, url, message);
     }
 
     private Map<String, Object> buildDocument(HttpResponse response, PreparedRequest prepared,
+            boolean burpInScope, Long requestSentMs, Long responseReceivedMs, ToolType toolType,
+            RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key,
+            Annotations annotations, Integer listenerPort) {
+        return buildDocument(RequestResponseDocBuilder.buildTrafficResponseDoc(response), prepared,
+                burpInScope, requestSentMs, responseReceivedMs, toolType, repeaterMetadata, key,
+                annotations, listenerPort);
+    }
+
+    private Map<String, Object> buildDocument(Map<String, Object> response, PreparedRequest prepared,
             boolean burpInScope, Long requestSentMs, Long responseReceivedMs, ToolType toolType,
             RepeaterMetadataFields.Metadata repeaterMetadata, MessageKey key,
             Annotations annotations, Integer listenerPort) {
@@ -479,7 +512,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         RepeaterMetadataFields.put(document, repeaterMetadata);
 
         document.put("request", prepared.document());
-        document.put("response", RequestResponseDocBuilder.buildTrafficResponseDoc(response));
+        document.put("response", response);
         document.put("websocket", WebSocketTrafficDocumentBuilder.notWebSocket());
 
         document.put("meta", ExportMetaFields.liveHttp(SCHEMA_VERSION, key.nativeProxy()));
@@ -852,14 +885,14 @@ class TrafficHttpHandlerSupport implements HttpHandler {
      */
     static void clearPendingOrphansForTest() {
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
-            pendingOrphans.clear();
+            clearPendingPayloads();
             requestAdmissions = new LiveRequestReceipts(ORPHAN_TIMEOUT_MS);
         }
     }
 
     static void setReceiptCacheForTest(LiveRequestReceipts cache) {
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
-            pendingOrphans.clear();
+            clearPendingPayloads();
             requestAdmissions = cache;
         }
     }
@@ -881,7 +914,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         PendingOrphan pending = new PendingOrphan(documentSkeleton, 0L, toolType, requestStageResolution);
         MessageKey key = new MessageKey(nativeProxy, messageId);
         synchronized (ORPHAN_LIFECYCLE_LOCK) {
-            if (requestAdmissions.beginRun(pending.runToken)) pendingOrphans.clear();
+            if (requestAdmissions.beginRun(pending.runToken)) clearPendingPayloads();
             if (requestAdmissions.admit(key, 0L, toolType, pending.runToken, null) == null) {
                 throw new IllegalStateException("Test request was not admitted.");
             }
@@ -928,7 +961,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             synchronized (ORPHAN_LIFECYCLE_LOCK) {
                 pendingOrphans.forEach((key, pending) ->
                         requestAdmissions.releasePayload(requestAdmissions.get(key)));
-                pendingOrphans.clear();
+                clearPendingPayloads();
             }
             return;
         }
@@ -949,14 +982,16 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 receipt = requestAdmissions.get(messageId);
             }
             if (po == null || !RuntimeConfig.isExportRunActive(po.runToken)) {
+                if (po != null) po.releasePayload();
                 continue;
             }
+            boolean transferred = false;
             try {
                 if (!shouldStillExportPendingOrphan(po)) {
                     ExportStats.recordSkipReason(ExportStats.SKIP_REASON_TOOL_DISABLED, 1);
                     continue;
                 }
-                exportOrphan(po);
+                transferred = exportOrphan(po, receipt);
             } catch (RuntimeException e) {
                 if (RuntimeConfig.isExportRunActive(po.runToken)) {
                     TrafficRouteBucket.Route route = TrafficRouteBucket.fromToolType(
@@ -973,8 +1008,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                 failed++;
                 failureType = e.getClass().getSimpleName();
             } finally {
-                synchronized (ORPHAN_LIFECYCLE_LOCK) {
-                    requestAdmissions.releasePayload(receipt);
+                po.releasePayload();
+                if (!transferred) {
+                    synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                        requestAdmissions.releasePayload(receipt);
+                    }
                 }
             }
         }
@@ -986,8 +1024,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     /** An uncertain queue admission must never be retried as a new operation. */
-    private static void exportOrphan(PendingOrphan po) {
-        Map<String, Object> doc = new LinkedHashMap<>(po.documentSkeleton);
+    private static boolean exportOrphan(PendingOrphan po, LiveRequestReceipts.Receipt receipt) {
+        Map<String, Object> doc = po.capture == null
+                ? new LinkedHashMap<>(po.documentSkeleton) : po.documentSkeleton;
         long nowMs = System.currentTimeMillis();
         Object burpObj = doc.get("burp");
         if (burpObj instanceof Map<?, ?> burpMap) {
@@ -996,7 +1035,20 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             doc.put("burp", burp);
         }
         doc.put("response", buildOrphanResponse());
-        TrafficExportQueue.offerForRun(doc, po.runToken);
+        if (po.capture == null) {
+            TrafficExportQueue.offerForRun(doc, po.runToken);
+            return false;
+        } else {
+            LiveTrafficPreparation.Capture capture = po.capture;
+            po.capture = null;
+            capture.whenClosed(() -> {
+                synchronized (ORPHAN_LIFECYCLE_LOCK) {
+                    requestAdmissions.releasePayload(receipt);
+                }
+            });
+            LiveTrafficPreparation.submit(capture);
+            return true;
+        }
     }
 
     static final class PendingOrphan {
@@ -1006,6 +1058,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         final RequestStageResolution requestStageResolution;
         final RuntimeConfig.ExportRunToken runToken;
         final Integer listenerPort;
+        private LiveTrafficPreparation.Capture capture;
 
         PendingOrphan(
                 Map<String, Object> documentSkeleton,
@@ -1028,14 +1081,28 @@ class TrafficHttpHandlerSupport implements HttpHandler {
         PendingOrphan(Map<String, Object> documentSkeleton, long timestamp, ToolType toolType,
                 RequestStageResolution requestStageResolution, RuntimeConfig.ExportRunToken runToken,
                 Integer listenerPort) {
+            this(documentSkeleton, timestamp, toolType, requestStageResolution, runToken, listenerPort, null);
+        }
+
+        PendingOrphan(Map<String, Object> documentSkeleton, long timestamp, ToolType toolType,
+                RequestStageResolution requestStageResolution, RuntimeConfig.ExportRunToken runToken,
+                Integer listenerPort, LiveTrafficPreparation.Capture capture) {
             this.documentSkeleton = documentSkeleton;
             this.timestamp = timestamp;
             this.toolType = toolType;
             this.runToken = runToken;
             this.listenerPort = listenerPort;
+            this.capture = capture;
             this.requestStageResolution = requestStageResolution == null
                     ? RequestStageResolution.none()
                     : requestStageResolution;
+        }
+
+        private void releasePayload() {
+            if (capture != null) {
+                capture.close();
+                capture = null;
+            }
         }
     }
 

@@ -307,6 +307,14 @@ final class HttpMessageDocSupport {
             boolean montoyaTextualHint,
             int bodyOffset,
             boolean allowDeclaredFormGzipSniff) {
+        return buildBodyContent(wireBytes, headers, mediaTypeHints, montoyaTextualHint,
+                bodyOffset, allowDeclaredFormGzipSniff, ignored -> { });
+    }
+
+    static Map<String, Object> buildBodyContent(
+            byte[] wireBytes, List<HttpHeader> headers, List<String> mediaTypeHints,
+            boolean montoyaTextualHint, int bodyOffset, boolean allowDeclaredFormGzipSniff,
+            java.util.function.LongConsumer reserveDecodedBytes) {
         int bodyLen = wireBytes == null ? 0 : wireBytes.length;
         Map<String, Object> bodyContent = new LinkedHashMap<>(10);
         bodyContent.put("length", bodyLen);
@@ -326,6 +334,7 @@ final class HttpMessageDocSupport {
                 declaredForm,
                 allowDeclaredFormGzipSniff);
         if (resolved.transformed()) {
+            reserveDecodedBytes.accept(4L * resolved.logicalBytes().length);
             bodyContent.put("decoded_b64", Base64.getEncoder().encodeToString(resolved.logicalBytes()));
         }
         if (!resolved.encodingsApplied().isEmpty() || !resolved.encodingsRemaining().isEmpty()) {

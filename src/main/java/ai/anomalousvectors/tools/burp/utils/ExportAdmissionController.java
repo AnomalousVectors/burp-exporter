@@ -61,6 +61,7 @@ public final class ExportAdmissionController {
     public static final double SPILL_IN_USE_FRACTION = 0.05d;
 
     private static final AtomicReference<Long> MEM_BUDGET_OVERRIDE = new AtomicReference<>();
+    private static final AtomicLong LIVE_BYTES = new AtomicLong();
     private static final AtomicReference<Long> RETRY_BUDGET_OVERRIDE = new AtomicReference<>();
     private static final AtomicReference<Long> SPILL_BUDGET_OVERRIDE = new AtomicReference<>();
     private static final AtomicLong LAST_SPILL_FULL_LOG_MS = new AtomicLong(0L);
@@ -102,6 +103,44 @@ public final class ExportAdmissionController {
         long budget = memBudgetBytes();
         long next = Math.max(0L, heldBytes) + Math.max(0L, docBytes);
         return next <= (long) (budget * MEM_HARD_WATERMARK);
+    }
+
+    /**
+     * Reserves estimated live bytes shared by capture, preparation and prepared delivery.
+     *
+     * <p>Never waits for capacity or performs I/O. Every successful reservation must be released
+     * exactly once, including stale-run work. The counter is not reset at Start, because an older
+     * worker may still own its allocation.</p>
+     *
+     * @param bytes nonnegative allocation estimate
+     * @return whether capacity was reserved
+     */
+    public static boolean tryReserveLiveBytes(long bytes) {
+        if (bytes < 0L) throw new IllegalArgumentException("Negative live reservation");
+        while (true) {
+            long held = LIVE_BYTES.get();
+            if (bytes > Long.MAX_VALUE - held || !memAccepts(held, bytes)) return false;
+            if (LIVE_BYTES.compareAndSet(held, held + bytes)) return true;
+        }
+    }
+
+    /**
+     * Releases bytes previously reserved by {@link #tryReserveLiveBytes(long)}.
+     *
+     * @param bytes exact nonnegative reservation size; caller owns the allocation
+     */
+    public static void releaseLiveBytes(long bytes) {
+        if (bytes < 0L) throw new IllegalArgumentException("Negative live release");
+        LIVE_BYTES.addAndGet(-bytes);
+    }
+
+    /**
+     * Returns estimated live bytes across pending capture, preparation and queued delivery.
+     *
+     * @return current aggregate reservation, including still-finishing older-run work
+     */
+    public static long liveBytesHeld() {
+        return LIVE_BYTES.get();
     }
 
     /**
@@ -194,7 +233,7 @@ public final class ExportAdmissionController {
         if (shouldForceLiveTrafficToSpill()) {
             return true;
         }
-        long held = TrafficExportQueue.getCurrentBytesEstimate();
+        long held = liveBytesHeld();
         return memAccepts(held, 1L);
     }
 
@@ -221,7 +260,7 @@ public final class ExportAdmissionController {
         if (BulkRateLimitBackoff.remainingCooldownMs() > 0L) {
             return false;
         }
-        long held = TrafficExportQueue.getCurrentBytesEstimate();
+        long held = liveBytesHeld();
         long budget = memBudgetBytes();
         return held < (long) (budget * MEM_SOFT_WATERMARK);
     }
@@ -239,7 +278,7 @@ public final class ExportAdmissionController {
         if (spill == SpillStatus.IN_USE || spill == SpillStatus.FULL) {
             return true;
         }
-        long held = TrafficExportQueue.getCurrentBytesEstimate();
+        long held = liveBytesHeld();
         long budget = memBudgetBytes();
         return held >= (long) (budget * MEM_SOFT_WATERMARK);
     }

@@ -414,6 +414,8 @@ public final class StatsPanel extends JPanel {
     private final JLabel peakRequestReceiptsValue;
     private final JLabel reclaimedRequestReceiptsValue;
     private final JLabel requestReceiptRejectionsValue;
+    private final JLabel liveCaptureBytesValue;
+    private final JLabel livePreparationValue;
     private final JLabel streamingRecoveryValue;
     private final JLabel bulkInFlightValue;
     private final JLabel softOutageValue;
@@ -564,6 +566,7 @@ public final class StatsPanel extends JPanel {
                         "Queue Drops", "Pending Orphans", "Repeater Metadata Sources"
                 }),
                 new MetricSection("Live HTTP Capture", new String[] {
+                        "Live Bytes / Limit (est.)", "Preparation Queued / Active",
                         "Request Receipts / Limit", "Peak Request Receipts",
                         "Reclaimed Request Receipts", "Request Receipt Rejections"
                 }),
@@ -646,6 +649,8 @@ public final class StatsPanel extends JPanel {
         peakRequestReceiptsValue = miscValues.get("Peak Request Receipts");
         reclaimedRequestReceiptsValue = miscValues.get("Reclaimed Request Receipts");
         requestReceiptRejectionsValue = miscValues.get("Request Receipt Rejections");
+        liveCaptureBytesValue = miscValues.get("Live Bytes / Limit (est.)");
+        livePreparationValue = miscValues.get("Preparation Queued / Active");
         streamingRecoveryValue = miscValues.get("Status");
         bulkInFlightValue = miscValues.get("Bulk In-Flight");
         bulkByteBudgetValue = miscValues.get("Bulk Byte Budget");
@@ -849,6 +854,11 @@ public final class StatsPanel extends JPanel {
         peakRequestReceiptsValue.setText(formatWhole(receipts.peak()));
         reclaimedRequestReceiptsValue.setText(formatWhole(receipts.reclaimed()));
         requestReceiptRejectionsValue.setText(formatWhole(receipts.rejected()));
+        liveCaptureBytesValue.setText(StatsPanelFormatters.formatBytesHuman(
+                ai.anomalousvectors.tools.burp.utils.ExportAdmissionController.liveBytesHeld()) + " / "
+                + StatsPanelFormatters.formatBytesHuman(
+                        ai.anomalousvectors.tools.burp.utils.ExportAdmissionController.memBudgetBytes()));
+        livePreparationValue.setText(ai.anomalousvectors.tools.burp.sinks.TrafficHttpHandler.preparationStatus());
         streamingRecoveryValue.setText(
                 ai.anomalousvectors.tools.burp.sinks.StreamingProxyRecovery.status());
         bulkInFlightValue.setText(formatWhole(ExportStats.getBulkInFlight()));
@@ -1967,11 +1977,21 @@ public final class StatsPanel extends JPanel {
                 "Estimated serialized bulk bytes for documents currently in the in-memory traffic queue.",
                 "Computed on refresh; excludes spill-file backlog (see Spill / Queue)."));
         tooltips.put("Queue Drops", Tooltips.htmlRaw(
-                "Session total of live traffic documents dropped because the in-memory queue was full.",
-                "Distinct from database failures and from spill drop counters under Spill."));
+                "Session total of live capture, preparation and delivery-admission failures.",
+                "Includes exhausted capture memory and spill capacity. Capture/preparation failures",
+                "also count against selected destinations; reasons are summarized in Log."));
         tooltips.put("Pending Orphans", Tooltips.htmlRaw(
                 "Live HTTP request payloads awaiting a response or the two-minute request-only timeout.",
                 "Small payload-free receipts can remain afterward; see Live HTTP Capture."));
+        tooltips.put("Live Bytes / Limit (est.)", Tooltips.htmlRaw(
+                "Shared estimated memory reservation for pending live HTTP payloads, queued/in-flight",
+                "preparation and the prepared traffic delivery queue. Transient codec work and destination",
+                "batches have separate bounded lifetimes. Capacity refusals appear in Queue Drops and Log summaries.",
+                "The limit adapts to heap headroom; Burp forwarding never waits for capture capacity."));
+        tooltips.put("Preparation Queued / Active", Tooltips.htmlRaw(
+                "Owned live HTTP captures waiting for or running on the preparation worker.",
+                "Body encoding, serialization and spill admission run off Burp's traffic callback threads.",
+                "Pending requests awaiting a response are shown separately under Pending Orphans."));
         tooltips.put("Request Receipts / Limit", Tooltips.htmlRaw(
                 "Payload-free run membership shared by native Proxy and other live HTTP tools.",
                 "At capacity, the oldest eligible receipt can be reclaimed after two minutes and after",

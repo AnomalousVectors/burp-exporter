@@ -62,6 +62,7 @@ class TrafficHttpHandlerLiveProxyTest {
 
     @BeforeEach
     void startRun() {
+        LiveTrafficPreparation.setInlineForTests(true);
         RuntimeConfig.updateState(new ConfigState.State(
                 List.of("traffic"), "all", List.of(),
                 new ConfigState.Sinks(false, null, true, "https://opensearch.url:9200",
@@ -74,6 +75,7 @@ class TrafficHttpHandlerLiveProxyTest {
 
     @AfterEach
     void stopRun() {
+        LiveTrafficPreparation.setInlineForTests(false);
         ExportReporterLifecycle.resetForTests();
     }
 

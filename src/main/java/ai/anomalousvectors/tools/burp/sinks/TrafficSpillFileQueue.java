@@ -58,6 +58,7 @@ final class TrafficSpillFileQueue {
         QUEUED,
         REJECTED_LIMIT,
         REJECTED_LOW_DISK,
+        REJECTED_STALE,
         FAILED
     }
 
@@ -157,18 +158,27 @@ final class TrafficSpillFileQueue {
     }
 
     OfferResult offerDetailed(TrafficQueueEntry entry) {
+        return offerDetailed(entry, () -> true);
+    }
+
+    OfferResult offerDetailed(TrafficQueueEntry entry, java.util.function.BooleanSupplier ownerActive) {
         if (entry == null || entry.prepared() == null) {
             return OfferResult.FAILED;
         }
-        return offerPayload(buildPayload(buildSpillEnvelope(entry.prepared())));
+        return offerPayload(buildPayload(buildSpillEnvelope(entry.prepared())), ownerActive);
     }
 
     private OfferResult offerPayload(byte[] payload) {
+        return offerPayload(payload, () -> true);
+    }
+
+    private OfferResult offerPayload(byte[] payload, java.util.function.BooleanSupplier ownerActive) {
         if (payload == null || payload.length == 0) {
             return OfferResult.FAILED;
         }
         lock.lock();
         try {
+            if (!ownerActive.getAsBoolean()) return OfferResult.REJECTED_STALE;
             pruneExpiredLocked(System.currentTimeMillis());
             long effectiveMax = effectiveMaxBytesLocked();
             if (files.size() >= maxFiles || (totalBytes + payload.length) > effectiveMax) {
@@ -176,6 +186,7 @@ final class TrafficSpillFileQueue {
             }
             ensureDirectoryExists();
             DiskSpaceGuard.ensureWritable(directory, payload.length, "traffic spill");
+            if (!ownerActive.getAsBoolean()) return OfferResult.REJECTED_STALE;
             String name = String.format(Locale.ROOT, "%s-%020d.json", projectId, nextSequence++);
             Path target = directory.resolve(name);
             Path temp = directory.resolve(name + ".tmp");
@@ -188,6 +199,7 @@ final class TrafficSpillFileQueue {
                 if (!quota.accepted()) {
                     return OfferResult.REJECTED_LIMIT;
                 }
+                if (!ownerActive.getAsBoolean()) return OfferResult.REJECTED_STALE;
                 try {
                     Files.write(
                             temp,
@@ -198,9 +210,16 @@ final class TrafficSpillFileQueue {
                         ManagedDiskPaths.secureManagedFile(temp);
                     }
                     Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                    if (!ownerActive.getAsBoolean()) {
+                        Files.deleteIfExists(target);
+                        return OfferResult.REJECTED_STALE;
+                    }
                     quota.commit();
                 } catch (IOException e) {
                     try {
+                        // A failed stale-owner cleanup may leave the committed-name artifact.
+                        // Keep its quota charged even though it is never eligible for replay.
+                        if (Files.exists(target)) quota.commit();
                         if (Files.exists(temp) && !Files.deleteIfExists(temp)) {
                             quota.commit();
                         }

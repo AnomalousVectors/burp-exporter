@@ -30,7 +30,8 @@ import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
  * <p>Documents are prepared once at {@link #offer(Map)} into {@link TrafficQueueEntry}. A
  * dedicated worker drains bounded batches; {@link ChunkedBulkSender} materializes each database
  * NDJSON request body before transport. Callback threads do not wait for destination HTTP
- * completion, but document preparation and spill admission still run on the offering thread.</p>
+ * completion. Live HTTP offers come from its preparation worker; other producers prepare and
+ * admit spill on their offering thread. Spill I/O never holds the memory/run admission lock.</p>
  *
  * <p>In-memory capacity is heap-headroom byte-based ({@link ExportAdmissionController}). Memory
  * pressure, Soft Outage, or cooldown routes admitted work to the managed file-backed spill queue,
@@ -137,7 +138,9 @@ public final class TrafficExportQueue {
 
     private static void recordDequeuedBytes(TrafficQueueEntry entry) {
         if (entry != null) {
-            queueBytesHeld.addAndGet(-entry.prepared().estimatedBulkBytes());
+            long bytes = entry.prepared().estimatedBulkBytes();
+            queueBytesHeld.addAndGet(-bytes);
+            ExportAdmissionController.releaseLiveBytes(bytes);
         }
     }
 
@@ -286,8 +289,9 @@ public final class TrafficExportQueue {
     /**
      * Prepares a live HTTP document, then admits it only while its captured run still owns export.
      *
-     * <p>Preparation may outlive Stop. The final token check and enqueue share the discard lock,
-     * preventing a delayed old-run preparation from refilling a stopped or newer run's queue.</p>
+     * <p>Preparation may outlive Stop. Memory admission shares the discard lock. Spill admission
+     * checks ownership under its own queue lock, without holding the memory admission lock during
+     * disk I/O, preventing delayed old-run preparation from refilling a stopped or newer run.</p>
      */
     static boolean offerForRun(Map<String, Object> document, RuntimeConfig.ExportRunToken token) {
         if (!RuntimeConfig.isExportRunActive(token)) {
@@ -295,14 +299,16 @@ public final class TrafficExportQueue {
         }
         TrafficRouteBucket.Route route = TrafficRouteBucket.fromDocument(document);
         TrafficQueueEntry entry = TrafficQueueEntry.from(document, route);
-        synchronized (RUN_ADMISSION) {
-            return RuntimeConfig.isExportRunActive(token)
-                    && isRouteCurrentlyEnabled(route)
-                    && offerEntry(entry);
-        }
+        return offerEntry(entry, () -> RuntimeConfig.isExportRunActive(token)
+                && isRouteCurrentlyEnabled(route));
     }
 
     private static boolean offerEntry(TrafficQueueEntry entry) {
+        return offerEntry(entry, () -> true);
+    }
+
+    private static boolean offerEntry(TrafficQueueEntry entry,
+            java.util.function.BooleanSupplier ownerActive) {
         if (entry == null) {
             return false;
         }
@@ -310,12 +316,16 @@ public final class TrafficExportQueue {
         long held = queueBytesHeld.get();
         boolean preferSpill = ExportAdmissionController.shouldForceLiveTrafficToSpill()
                 || ExportAdmissionController.shouldPreferSpill(held, docBytes);
-        if (!preferSpill
-                && queue.offerWithinBudget(entry)) {
-            startWorkerIfNeeded();
-            return true;
+        synchronized (RUN_ADMISSION) {
+            if (!ownerActive.getAsBoolean()) return false;
+            if (!preferSpill && queue.offerWithinBudget(entry)) {
+                startWorkerIfNeeded();
+                return true;
+            }
         }
-        TrafficSpillFileQueue.OfferResult spillResult = spillQueue.offerDetailed(entry);
+        // Disk admission owns its own fence. Never hold the memory/run lock during file I/O.
+        TrafficSpillFileQueue.OfferResult spillResult = spillQueue.offerDetailed(entry, ownerActive);
+        if (spillResult == TrafficSpillFileQueue.OfferResult.REJECTED_STALE) return false;
         if (spillResult == TrafficSpillFileQueue.OfferResult.QUEUED) {
             ExportStats.recordTrafficSpillEnqueued(1);
             OVERFLOW_LOGS.record("spill_queued", 1, TrafficExportQueue::overflowContext);
@@ -343,7 +353,7 @@ public final class TrafficExportQueue {
                 ExportDocumentIdentity.prepareStreaming(
                         TrafficRouteBucket.trafficIndexName(), TrafficRouteBucket.INDEX_KEY,
                         document, route.key(), revision));
-        synchronized (RUN_ADMISSION) {
+        return offerEntry(entry, () -> {
             boolean stoppingOwner = token != null && token.isValid()
                     && RuntimeConfig.isExportStopping()
                     && token.equals(RuntimeConfig.lastInvalidatedExportRunToken())
@@ -351,8 +361,8 @@ public final class TrafficExportQueue {
                     && !RuntimeConfig.isExportStopForceAbortRequested()
                     && !RuntimeConfig.isExportStopBudgetExpired();
             return ownerActive.getAsBoolean() && (RuntimeConfig.isExportRunActive(token) || stoppingOwner)
-                    && isRouteCurrentlyEnabled(route) && offerEntry(entry);
-        }
+                    && isRouteCurrentlyEnabled(route);
+        });
     }
 
     static boolean offerPreparedForTests(PreparedExportDocument document) {
@@ -378,13 +388,13 @@ public final class TrafficExportQueue {
     public static boolean clearPendingWork() {
         synchronized (RUN_ADMISSION) {
             queue.clear();
-            TrafficSpillFileQueue.DiscardResult discarded = spillQueue.clear();
-            if (!discarded.complete()) {
-                Logger.logWarnPanelOnly("[TrafficExportQueue] Unable to discard all spill files: failures="
-                        + discarded.failures() + ". Abandoned files will not be replayed.");
-            }
-            return discarded.complete();
         }
+        TrafficSpillFileQueue.DiscardResult discarded = spillQueue.clear();
+        if (!discarded.complete()) {
+            Logger.logWarnPanelOnly("[TrafficExportQueue] Unable to discard all spill files: failures="
+                    + discarded.failures() + ". Abandoned files will not be replayed.");
+        }
+        return discarded.complete();
     }
 
     /**
@@ -457,7 +467,8 @@ public final class TrafficExportQueue {
     public static boolean awaitPendingWorkDrained(long timeoutMs) {
         long deadline = System.nanoTime()
                 + TimeUnit.MILLISECONDS.toNanos(Math.max(0L, timeoutMs));
-        while (getCurrentSize() > 0
+        while (!LiveTrafficPreparation.isIdle()
+                || getCurrentSize() > 0
                 || getCurrentSpillSize() > 0
                 || getActiveDrainBatches() > 0) {
             if (System.nanoTime() >= deadline) {
@@ -628,7 +639,8 @@ public final class TrafficExportQueue {
     }
 
     private static boolean isIdle() {
-        return queue.isEmpty() && spillQueue.size() == 0 && activeDrainBatches.get() == 0;
+        return LiveTrafficPreparation.isIdle() && queue.isEmpty()
+                && spillQueue.size() == 0 && activeDrainBatches.get() == 0;
     }
 
     private static void awaitWorker(Thread worker, long timeoutMs, boolean interrupt) {
@@ -867,6 +879,7 @@ public final class TrafficExportQueue {
                 return true;
             }
             queueBytesHeld.addAndGet(-bytes);
+            ExportAdmissionController.releaseLiveBytes(bytes);
             return false;
         }
 
@@ -905,15 +918,9 @@ public final class TrafficExportQueue {
         }
 
         private static boolean reserveWithinBudget(long bytes) {
-            while (true) {
-                long held = queueBytesHeld.get();
-                if (!ExportAdmissionController.memAccepts(held, bytes)) {
-                    return false;
-                }
-                if (queueBytesHeld.compareAndSet(held, held + bytes)) {
-                    return true;
-                }
-            }
+            if (!ExportAdmissionController.tryReserveLiveBytes(bytes)) return false;
+            queueBytesHeld.addAndGet(bytes);
+            return true;
         }
 
         private static long entryBytes(TrafficQueueEntry entry) {
