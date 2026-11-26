@@ -8,9 +8,10 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
  * <p>Session-final Stats totals (File Counts, Database Counts, Misc Stats including Parameter
  * Integrity) are INFO from {@link ai.anomalousvectors.tools.burp.ui.StatsClipboardSnapshot} after
  * the final exporter stats push. Per-category live rollups remain in
-     * {@link BodyEnumerationSkippedLog} and {@link CompressedWireBodyParamsLog}. Supplemental form
-     * decoding records component counts here, with one DEBUG notice and changed totals at Stop;
-     * repeated extraction for separate destinations is counted separately, not as unique traffic.</p>
+ * {@link BodyEnumerationSkippedLog} and {@link CompressedWireBodyParamsLog}. Supplemental form
+ * decoding records component counts here, with one DEBUG notice and changed totals at Stop.
+ * Counts describe decoding operations, not unique exchanges; preparing another source view can
+ * count the same component again.</p>
  */
 public final class ParameterIntegritySessionLog {
 

@@ -13,6 +13,41 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 
 class BulkNdjsonResponseParserTest {
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullSource
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "", "{broken", "{}", "{\"items\":[]}",
+            "{\"items\":[{\"index\":{\"status\":201,\"result\":\"created\"}}]}",
+            "{\"items\":[{\"index\":{\"status\":201}},{\"index\":{\"status\":429}}]}",
+            "{\"items\":[{\"index\":{\"status\":200,\"result\":\"noop\"}},{\"index\":{\"status\":409}}]}",
+            "{\"items\":[{\"index\":{\"status\":201}},{\"index\":{\"status\":400}},{\"index\":{\"status\":201}}]}"
+    })
+    void sharedRequestContractKeepsBothSenderAdaptersInAgreement(String body) {
+        var expected = BulkNdjsonResponseParser.parseAttempted(body, 2, "traffic", -1L, null);
+        var prepared = PreparedBulkSender.parseBulkResponse(body, 2, "traffic");
+        var chunked = ChunkedBulkSender.parseBulkResponse(body, 2);
+        assertThat(prepared.breakdown()).isEqualTo(expected.breakdown());
+        assertThat(prepared.failedItems).isEqualTo(expected.failedItems());
+        assertThat(chunked.breakdown).isEqualTo(expected.breakdown());
+        assertThat(chunked.failedItems).isEqualTo(expected.failedItems());
+        assertThat(expected.breakdown().successTotal() + expected.breakdown().failed()).isEqualTo(2);
+    }
+
+    @Test
+    void incompleteRequestContextCannotAcknowledgeAnOwnedConflictAsSuccessful() {
+        var prepared = ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity.prepareStreaming(
+                "tool-burp-traffic", "traffic", java.util.Map.of(), "proxy",
+                new ai.anomalousvectors.tools.burp.utils.export.SearchDocumentRevision("stream", 2));
+        String body = """
+                {"errors":true,"items":[{"index":{"_id":"stream","status":409,
+                "error":{"type":"version_conflict_engine_exception"}}}]}
+                """;
+        var normalized = BulkNdjsonResponseParser.parseAttempted(body, 2, "traffic", -1L, List.of(prepared));
+        assertThat(normalized.successCount()).isZero();
+        assertThat(normalized.failedItems()).hasSize(2);
+        assertThat(normalized.noopIndexes()).isEmpty();
+    }
+
     @Test
     void ownedRevisionConflictIsQuietAcknowledgedNoop_butRawErrorsRemainConsistent() throws Exception {
         var prepared = ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity.prepareStreaming(

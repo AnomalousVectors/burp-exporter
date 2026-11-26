@@ -373,49 +373,9 @@ public final class PreparedBulkSender {
             String indexName,
             long requestId,
             List<PreparedExportDocument> documents) {
-        if (responseBody == null || responseBody.isBlank()) {
-            return failedBulkResult(
-                    attemptedCount, "bulk_response_parse_exception", "Bulk response body was blank");
-        }
         BulkNdjsonResponseParser.ParsedBulk parsed =
-                BulkNdjsonResponseParser.parse(responseBody, indexName, documents);
-        if (parsed.responseItemCount() > attemptedCount) {
-            // An overlong response cannot prove which acknowledgments belong to this batch.
-            // Retry its stable operation IDs rather than inventing successes or permanent drops.
-            return failedBulkResult(
-                    attemptedCount,
-                    "bulk_response_item_count_mismatch",
-                    "Bulk response contained excess items: expected=" + attemptedCount
-                            + ", received=" + parsed.responseItemCount());
-        }
-        if (requestId > 0L) {
-            BulkNdjsonResponseParser.warnIfOutcomeFlagMismatch(parsed, indexName, requestId);
-        }
-        if (parsed.successCount() == 0 && parsed.failedItems().isEmpty() && attemptedCount > 0) {
-            Logger.logWarnPanelOnly(RuntimeConfig.searchDestinationLogPrefix()
-                    + " Prepared bulk response parsing failed for "
-                    + (indexName == null || indexName.isBlank() ? "unknown" : indexName) + ".");
-            return failedBulkResult(
-                    attemptedCount,
-                    "bulk_response_parse_exception",
-                    "Bulk response could not be parsed into item outcomes");
-        }
-        int observed = parsed.breakdown().successTotal() + parsed.breakdown().failed();
-        if (observed == attemptedCount) {
-            return new SearchClientWrapper.BulkResult(parsed.breakdown(), parsed.failedItems(),
-                    0L, parsed.noopIndexes());
-        }
-        List<SearchClientWrapper.FailedItem> completedFailures =
-                new ArrayList<>(parsed.failedItems());
-        for (int index = observed; index < attemptedCount; index++) {
-            completedFailures.add(new SearchClientWrapper.FailedItem(
-                    index,
-                    "bulk_response_incomplete",
-                    "Bulk response omitted this attempted item"));
-        }
-        BulkOutcomeBreakdown completedBreakdown = parsed.breakdown().plus(
-                BulkOutcomeBreakdown.classified(0, attemptedCount - observed));
-        return new SearchClientWrapper.BulkResult(completedBreakdown, completedFailures,
+                BulkNdjsonResponseParser.parseAttempted(responseBody, attemptedCount, indexName, requestId, documents);
+        return new SearchClientWrapper.BulkResult(parsed.breakdown(), parsed.failedItems(),
                 0L, parsed.noopIndexes());
     }
 

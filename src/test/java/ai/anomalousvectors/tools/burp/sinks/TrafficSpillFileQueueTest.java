@@ -31,6 +31,57 @@ import ai.anomalousvectors.tools.burp.utils.export.PreparedExportDocument;
 class TrafficSpillFileQueueTest {
 
     @Test
+    void missingQueuedFileCountsOneLossAndContinuesWithTheNextRecord() throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-missing-file");
+        try {
+            var queue = new TrafficSpillFileQueue(dir, 10, 1_000_000);
+            assertThat(queue.offer(Map.of("id", "missing"))).isTrue();
+            assertThat(queue.offer(Map.of("id", "retained"))).isTrue();
+            try (var files = Files.list(dir)) {
+                Path missing = files.sorted().findFirst().orElseThrow();
+                Files.delete(missing);
+            }
+            long losses = ExportStats.getTrafficSpillDrops();
+            long readFailures = ExportStats.getTrafficDropReasonCount("spill_read_failed");
+            assertThat(queue.poll()).isEqualTo(Map.of("id", "retained"));
+            assertThat(queue.poll()).isNull();
+            assertThat(ExportStats.getTrafficSpillDrops()).isEqualTo(losses + 1);
+            assertThat(ExportStats.getTrafficDropReasonCount("spill_read_failed")).isEqualTo(readFailures + 1);
+            assertThat(queue.size()).isZero();
+            assertThat(queue.bytes()).isZero();
+        } finally {
+            deleteRecursively(dir);
+        }
+    }
+
+    @Test
+    void repeatedWriteFailuresEmitOneSafeErrorWithoutRetainingFiles() throws IOException {
+        Path dir = TestPathSupport.createDirectory("traffic-spill-write-failure");
+        var messages = new CopyOnWriteArrayList<String>();
+        Logger.LogListener listener = (level, message) -> {
+            if ("ERROR".equals(level) && message.startsWith("[TrafficSpill]")) messages.add(message);
+        };
+        Logger.registerListener(listener);
+        try {
+            var queue = new TrafficSpillFileQueue(dir, 1_000, 1_000_000);
+            Files.delete(dir);
+            Files.writeString(dir, "not a directory");
+            for (int i = 0; i < 100; i++) {
+                assertThat(queue.offerDetailed(Map.of("private", "payload must not appear")))
+                        .isEqualTo(TrafficSpillFileQueue.OfferResult.FAILED);
+            }
+            assertThat(queue.size()).isZero();
+            assertThat(queue.bytes()).isZero();
+            assertThat(messages).hasSize(1);
+            assertThat(messages.getFirst()).contains("write_failed=1", "error=")
+                    .doesNotContain("payload must not appear");
+        } finally {
+            Logger.unregisterListener(listener);
+            deleteRecursively(dir);
+        }
+    }
+
+    @Test
     void preparedSpillRetainsTrustedStreamRevisionAndOperationId() throws IOException {
         Path dir = TestPathSupport.createDirectory("traffic-spill-stream-revision");
         try {
@@ -350,7 +401,7 @@ class TrafficSpillFileQueueTest {
         Path dir = TestPathSupport.createDirectory("traffic-spill-malformed");
         List<String> errors = new CopyOnWriteArrayList<>();
         Logger.LogListener listener = (level, message) -> {
-            if ("ERROR".equals(level) && message.startsWith("[TrafficSpill] Parse failed:")) {
+            if ("ERROR".equals(level) && message.startsWith("[TrafficSpill]") && message.contains("parse_failed=")) {
                 errors.add(message);
             }
         };

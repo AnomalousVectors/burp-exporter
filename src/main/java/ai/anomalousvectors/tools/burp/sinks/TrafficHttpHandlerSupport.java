@@ -248,7 +248,8 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     return;
                 }
             }
-            PreparedRequest prepared = prepareDeferredRequest(request);
+            capture = LiveTrafficPreparation.begin(runToken, toolType == null ? null : toolType.toolName());
+            PreparedRequest prepared = prepareDeferredRequest(request, capture::reserveBodyBytes);
             if (!ScopeFilter.shouldExport(state, prepared.url(), burpInScope)) {
                 ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
                 return;
@@ -264,8 +265,7 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     requestSentMs,
                     requestStageResolution.metadataForExport(), key, toolType, annotations, listenerPort);
             if (skeleton != null) {
-                capture = LiveTrafficPreparation.retain(skeleton, runToken, prepared.message());
-                if (capture == null) return;
+                capture.attach(skeleton, prepared.message());
                 PendingOrphan pending = new PendingOrphan(
                         skeleton,
                         requestSentMs,
@@ -282,6 +282,11 @@ class TrafficHttpHandlerSupport implements HttpHandler {
                     }
                 }
             }
+        } catch (LiveTrafficPreparation.CapacityException e) {
+            if (capture != null) capture.reject("capture_capacity", null);
+        } catch (RuntimeException e) {
+            if (capture != null) capture.reject("capture_failed", e);
+            else throw e;
         } finally {
             if (!payloadAttached && capture != null) capture.close();
             synchronized (ORPHAN_LIFECYCLE_LOCK) {
@@ -375,32 +380,36 @@ class TrafficHttpHandlerSupport implements HttpHandler {
             }
         }
 
-        PreparedRequest prepared = prepareDeferredRequest(request);
-        if (!ScopeFilter.shouldExport(state, prepared.url(), burpInScope)) {
-            ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
-            return;
+        LiveTrafficPreparation.Capture capture = LiveTrafficPreparation.begin(
+                pending.runToken, toolType == null ? null : toolType.toolName());
+        boolean transferred = false;
+        try {
+            PreparedRequest prepared = prepareDeferredRequest(request, capture::reserveBodyBytes);
+            if (!ScopeFilter.shouldExport(state, prepared.url(), burpInScope)) {
+                ExportStats.recordSkipReason(ExportStats.SKIP_REASON_SCOPE, 1);
+                return;
+            }
+
+            long responseReceivedMs = System.currentTimeMillis();
+            Long requestSentMs = pending.timestamp;
+            RepeaterMetadataFields.Metadata repeaterMetadata = resolveResponseStageRepeaterMetadata(
+                    request, response, toolType, pending.requestStageResolution,
+                    RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
+
+            var preparedResponse = RequestResponseDocBuilder.prepareTrafficResponse(response, capture::reserveBodyBytes);
+            Map<String, Object> document = buildDocument(
+                    preparedResponse.document(), prepared, burpInScope, requestSentMs, responseReceivedMs,
+                    toolType, repeaterMetadata, key, annotations, pending.listenerPort);
+            if (annotations == null) copyMissingAnnotationFieldsFromPendingRequest(document, pending);
+            capture.attach(document, prepared.message(), preparedResponse);
+            transferred = LiveTrafficPreparation.submit(capture);
+        } catch (LiveTrafficPreparation.CapacityException e) {
+            capture.reject("capture_capacity", null);
+        } catch (RuntimeException e) {
+            capture.reject("capture_failed", e);
+        } finally {
+            if (!transferred) capture.close();
         }
-
-        long responseReceivedMs = System.currentTimeMillis();
-        Long requestSentMs = pending.timestamp;
-        RepeaterMetadataFields.Metadata repeaterMetadata =
-                resolveResponseStageRepeaterMetadata(
-                        request,
-                        response,
-                        toolType,
-                        pending.requestStageResolution,
-                        RepeaterTabsIndexReporter::currentRepeaterSharedMetadataForLiveFallback);
-
-        var preparedResponse = RequestResponseDocBuilder.prepareTrafficResponse(response);
-        Map<String, Object> document =
-                buildDocument(preparedResponse.document(), prepared, burpInScope, requestSentMs, responseReceivedMs,
-                        toolType, repeaterMetadata, key, annotations, pending.listenerPort);
-        if (annotations == null) {
-            copyMissingAnnotationFieldsFromPendingRequest(document, pending);
-        }
-        LiveTrafficPreparation.submit(LiveTrafficPreparation.retain(
-                document, pending.runToken, prepared.message(), preparedResponse));
-
     }
 
 
@@ -419,8 +428,9 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     /**
      * Builds a sink-neutral traffic document synchronously from readable callback views.
      *
-     * <p>Live capture invokes this on Burp's callback thread before queue admission. This helper
-     * performs no destination I/O and does not acquire a Burp thread or lock.</p>
+     * <p>This synchronous compatibility helper performs no destination I/O. Live capture instead
+     * reserves capacity for owned inputs and completes body representations on its run worker.
+     * Callers must supply readable source views and must not perform large preparation on the EDT.</p>
      *
      * @param response the received response (with initiating request)
      * @param request  the initiating request
@@ -474,14 +484,19 @@ class TrafficHttpHandlerSupport implements HttpHandler {
     }
 
     private static PreparedRequest prepareDeferredRequest(HttpRequest request) {
+        return prepareDeferredRequest(request, null);
+    }
+
+    private static PreparedRequest prepareDeferredRequest(HttpRequest request,
+            java.util.function.LongConsumer reserveBodyBytes) {
         HttpService service = request.httpService();
-        var message = RequestResponseDocBuilder.prepareTrafficRequest(request);
+        var message = RequestResponseDocBuilder.prepareTrafficRequest(request, reserveBodyBytes);
         Map<String, Object> requestDoc = message.document();
         String url = RequestResponseDocBuilder.buildBestEffortUrl(
                 request, service, requestDoc, "TrafficHttpHandler");
         requestDoc.put("url", HttpMessageDocSupport.urlObject(url, service));
         requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
-                RequestResponseDocBuilder.safeRequestHttpVersion(request)));
+                RequestResponseDocBuilder.safeRequestHttpVersion(request, reserveBodyBytes)));
         return new PreparedRequest(requestDoc, url, message);
     }
 

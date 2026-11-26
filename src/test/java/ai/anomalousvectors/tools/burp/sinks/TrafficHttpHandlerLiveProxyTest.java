@@ -130,6 +130,35 @@ class TrafficHttpHandlerLiveProxyTest {
     }
 
     @Test
+    void exhaustedCaptureBudgetSkipsCopiesButKeepsLateResponseEligibility() {
+        InterceptedRequest request = requestToBeSent("POST / HTTP/1.1\r\n\r\nlarge", 781);
+        ByteArray large = mock(ByteArray.class);
+        when(large.length()).thenReturn(10_000_000);
+        when(request.body()).thenReturn(large);
+        InterceptedResponse response = responseReceived(request, 781, "HTTP/1.1 200 OK\r\n\r\nA");
+        try (var requestAction = mockStatic(ProxyRequestToBeSentAction.class);
+                var responseAction = mockStatic(ProxyResponseReceivedAction.class);
+                var queue = mockStatic(TrafficExportQueue.class)) {
+            ai.anomalousvectors.tools.burp.utils.ExportAdmissionController.setMemBudgetOverrideForTests(1_000L);
+            handler.handleRequestToBeSent(request);
+            verify(large, never()).getBytes();
+            verify(request, never()).toByteArray();
+            assertThat(TrafficHttpHandler.requestReceiptStats().retained()).isEqualTo(1);
+            ai.anomalousvectors.tools.burp.utils.ExportAdmissionController.setMemBudgetOverrideForTests(100_000L);
+            ByteArray small = byteArray("small");
+            when(request.body()).thenReturn(small);
+            handler.handleResponseReceived(response);
+            queue.verify(() -> TrafficExportQueue.offerForRun(any(), any()), times(1));
+            assertThat(TrafficHttpHandler.requestReceiptStats().retained()).isZero();
+            assertThat(ai.anomalousvectors.tools.burp.utils.ExportAdmissionController.liveBytesHeld()).isZero();
+            requestAction.verify(() -> ProxyRequestToBeSentAction.continueWith(request));
+            responseAction.verify(() -> ProxyResponseReceivedAction.continueWith(response));
+        } finally {
+            ai.anomalousvectors.tools.burp.utils.ExportAdmissionController.setMemBudgetOverrideForTests(null);
+        }
+    }
+
+    @Test
     void preStartAndPriorRunResponses_doNotLeakIntoNextRun() {
         InterceptedRequest request = requestToBeSent("GET / HTTP/1.1\r\n\r\n", 42);
         InterceptedResponse response = responseReceived(request, 42,

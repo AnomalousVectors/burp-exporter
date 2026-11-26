@@ -375,19 +375,23 @@ public final class StreamingProxyRecovery {
             return true;
         }
         capture.stream = true;
-        var wireBody = response.body();
-        long wireBytes = wireBody == null ? 0L : wireBody.length();
+        if (!active()) return false;
+        var preparedResponse = RequestResponseDocBuilder.prepareTrafficResponse(response);
+        long wireBytes = preparedResponse.wireBodyLength();
         capture.nextRead = Math.min(capture.deadline,
                 now + StreamingPollPolicy.intervalMs(age, wireBytes));
         if (!active()) return false;
-        var preparedResponse = RequestResponseDocBuilder.prepareTrafficResponse(response);
-        Map<String, Object> document = document(row, request, preparedResponse.document(), inScope);
+        var preparedRequest = RequestResponseDocBuilder.prepareTrafficRequest(request);
+        Map<String, Object> document = document(
+                row, request, preparedRequest.document(), preparedResponse.document(), inScope);
         String preparationSignature = SnapshotFingerprint.of(Map.of(
-                "document", document, "body_inputs", preparedResponse.bodyInputs()));
+                "document", document, "request_body_inputs", preparedRequest.bodyInputs(),
+                "response_body_inputs", preparedResponse.bodyInputs()));
         if (preparationSignature.equals(capture.preparationSignature) && !finishing) {
             diagnostics.unchanged();
             return true;
         }
+        preparedRequest.complete();
         preparedResponse.complete();
         String signature = SnapshotFingerprint.of(document);
         if (signature.equals(capture.signature) && !finishing) {
@@ -433,7 +437,7 @@ public final class StreamingProxyRecovery {
     }
 
     private static Map<String, Object> document(ProxyHttpRequestResponse row, HttpRequest request,
-            Map<String, Object> response, boolean inScope) {
+            Map<String, Object> requestDoc, Map<String, Object> response, boolean inScope) {
         Map<String, Object> document = new LinkedHashMap<>();
         Map<String, Object> burp = new LinkedHashMap<>();
         burp.put("reporting_tool", "Proxy");
@@ -443,7 +447,6 @@ public final class StreamingProxyRecovery {
         burp.put("timing", BurpTimingFields.fromProxyHistory(row));
         BurpAnnotationFields.put(burp, row.annotations());
         document.put("burp", burp);
-        Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
         requestDoc.put("url", HttpMessageDocSupport.urlObject(request.url(), row.httpService()));
         requestDoc.put("protocol", TrafficProtocolFields.requestProtocol(
                 RequestResponseDocBuilder.safeRequestHttpVersion(request)));

@@ -18,7 +18,7 @@
     <logger name="org.apache.hc" level="WARN"/>
     <logger name="org.opensearch" level="WARN"/>
 
-    <!-- Our package: DEBUG in console/UI. Third-party at INFO+ to avoid flood. -->
+    <!-- Extension DEBUG reaches the UI; the console appender retains its INFO threshold. -->
     <logger name="ai.anomalousvectors.tools.burp" level="DEBUG"/>
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

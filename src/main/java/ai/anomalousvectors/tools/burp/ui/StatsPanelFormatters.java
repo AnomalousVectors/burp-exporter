@@ -36,6 +36,22 @@ final class StatsPanelFormatters {
 
     private StatsPanelFormatters() {}
 
+    /** Formats rejected new documents, rejected requeues and expiry using shared reason totals. */
+    static String trafficSpillDropReasons() {
+        long rejected = ExportStats.getTrafficDropReasonCount("spill_full_reject_new")
+                + ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_new")
+                + ExportStats.getTrafficDropReasonCount("spill_failure_reject_new")
+                + ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")
+                + ExportStats.getTrafficDropReasonCount("spill_low_disk_drop_oldest");
+        long requeued = ExportStats.getTrafficDropReasonCount("spill_full_reject_requeue")
+                + ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_requeue")
+                + ExportStats.getTrafficDropReasonCount("spill_failure_reject_requeue")
+                + ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")
+                + ExportStats.getTrafficDropReasonCount("spill_requeue_low_disk_drop");
+        return formatWhole(rejected) + " / " + formatWhole(requeued) + " / "
+                + formatWhole(ExportStats.getTrafficSpillExpiredPruned());
+    }
+
     /**
      * Y-axis label and tick scaling for throughput byte-rate charts (dataset values are KiB/s).
      *

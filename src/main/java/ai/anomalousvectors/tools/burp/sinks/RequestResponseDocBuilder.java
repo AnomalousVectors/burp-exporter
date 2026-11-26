@@ -226,15 +226,24 @@ public final class RequestResponseDocBuilder {
     // Preserve Montoya's parameter provenance before handing owned body inputs to a worker.
     // Serializing and reparsing HTTP/2 changes headers and parameter offsets.
     static PreparedTrafficMessage prepareTrafficRequest(HttpRequest request) {
+        return prepareTrafficRequest(request, null);
+    }
+
+    // The live owner reserves raw-copy and future representation capacity before getBytes().
+    static PreparedTrafficMessage prepareTrafficRequest(HttpRequest request,
+            java.util.function.LongConsumer reserveBodyBytes) {
         if (request == null) {
-            return prepareFallbackRequestDoc(null, true);
+            return prepareFallbackRequestDoc(null, true, reserveBodyBytes);
         }
         try {
-            return buildTrafficRequestDocStrict(request);
+            return buildTrafficRequestDocStrict(request, reserveBodyBytes);
+        } catch (LiveTrafficPreparation.CapacityException e) {
+            // Capacity rejection must never trigger a second, unaccounted raw-message fallback.
+            throw e;
         } catch (RuntimeException e) {
             Logger.logDebug("[RequestResponseDocBuilder] traffic request fallback due to malformed request: "
                     + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
-            return prepareFallbackRequestDoc(request, true);
+            return prepareFallbackRequestDoc(request, true, reserveBodyBytes);
         }
     }
 
@@ -551,12 +560,13 @@ public final class RequestResponseDocBuilder {
         return req;
     }
 
-    private static PreparedTrafficMessage buildTrafficRequestDocStrict(HttpRequest request) {
+    private static PreparedTrafficMessage buildTrafficRequestDocStrict(HttpRequest request,
+            java.util.function.LongConsumer reserveBodyBytes) {
         Map<String, Object> req = new LinkedHashMap<>();
         burp.api.montoya.http.message.ContentType contentType = request.contentType();
         List<HttpHeader> requestHeaders = request.headers();
         var sourceBody = request.body();
-        byte[] bodyBytes = sourceBody == null ? null : sourceBody.getBytes().clone();
+        byte[] bodyBytes = copyBody(sourceBody, reserveBodyBytes);
         String inferredContentType =
                 RequestResponseParametersSupport.inferRequestContentType(bodyBytes, requestHeaders, contentType);
         boolean includeBody = RequestResponseParametersSupport.shouldIncludeBodyParameters(
@@ -678,7 +688,12 @@ public final class RequestResponseDocBuilder {
     }
 
     private static PreparedTrafficMessage prepareFallbackRequestDoc(HttpRequest request, boolean trafficShape) {
-        RawRequestSnapshot raw = RawRequestSnapshot.from(request);
+        return prepareFallbackRequestDoc(request, trafficShape, null);
+    }
+
+    private static PreparedTrafficMessage prepareFallbackRequestDoc(HttpRequest request, boolean trafficShape,
+            java.util.function.LongConsumer reserveBodyBytes) {
+        RawRequestSnapshot raw = RawRequestSnapshot.from(request, reserveBodyBytes);
         Map<String, Object> req = new LinkedHashMap<>();
         burp.api.montoya.http.message.ContentType contentType = safeContentType(request);
         List<HttpHeader> requestHeaders = safeHeaders(request);
@@ -792,10 +807,15 @@ public final class RequestResponseDocBuilder {
     // Live capture and streaming recovery share owned, deferred body preparation. Streaming
     // recovery can compare digests before encoding; live capture completes on its run worker.
     static PreparedTrafficMessage prepareTrafficResponse(HttpResponse response) {
+        return prepareTrafficResponse(response, null);
+    }
+
+    static PreparedTrafficMessage prepareTrafficResponse(HttpResponse response,
+            java.util.function.LongConsumer reserveBodyBytes) {
         Map<String, Object> resp = new LinkedHashMap<>();
         resp.put("status", TrafficResponseStatusFields.from(response));
         resp.put("protocol", TrafficProtocolFields.responseProtocol(safeResponseHttpVersion(response)));
-        ResponseBodyPreparation body = populateResponsePayload(resp, response, true, true);
+        ResponseBodyPreparation body = populateResponsePayload(resp, response, true, true, reserveBodyBytes);
         return new PreparedTrafficMessage(resp, body);
     }
 
@@ -820,6 +840,12 @@ public final class RequestResponseDocBuilder {
 
         long retainedBodyBytes() {
             return body == null || body.bytes == null ? 0L : body.bytes.length;
+        }
+
+        long wireBodyLength() {
+            if (body != null) return body.bytes == null ? 0L : body.bytes.length;
+            Object length = StringKeyedMaps.nested(document, "body", LinkedHashMap::new).get("length");
+            return length instanceof Number number ? number.longValue() : 0L;
         }
 
         long preparationBytes() {
@@ -888,6 +914,12 @@ public final class RequestResponseDocBuilder {
 
     private static ResponseBodyPreparation populateResponsePayload(
             Map<String, Object> resp, HttpResponse response, boolean trafficShape, boolean deferBody) {
+        return populateResponsePayload(resp, response, trafficShape, deferBody, null);
+    }
+
+    private static ResponseBodyPreparation populateResponsePayload(
+            Map<String, Object> resp, HttpResponse response, boolean trafficShape, boolean deferBody,
+            java.util.function.LongConsumer reserveBodyBytes) {
         ResponseBodyPreparation preparation = null;
         List<HttpHeader> responseHeaders = response.headers();
         resp.put("headers", HttpMessageDocSupport.headersToList(responseHeaders));
@@ -918,7 +950,7 @@ public final class RequestResponseDocBuilder {
             resp.put("body", body);
         } else {
             var sourceBody = response.body();
-            byte[] bodyBytes = sourceBody == null ? null : sourceBody.getBytes().clone();
+            byte[] bodyBytes = copyBody(sourceBody, reserveBodyBytes);
             List<String> hints = HttpMessageDocSupport.mediaTypeHints(
                         HttpMessageDocSupport.mimeTypeHint(mime),
                         HttpMessageDocSupport.mimeTypeHint(stated),
@@ -943,6 +975,21 @@ public final class RequestResponseDocBuilder {
             putResponseAttributes(resp, received, trafficShape);
         }
         return preparation;
+    }
+
+    // Burp may allocate while providing the public ByteArray view. Reserve our own copy and
+    // future Base64/text retention before requesting its bytes; never trust length for slicing.
+    private static byte[] copyBody(burp.api.montoya.core.ByteArray source,
+            java.util.function.LongConsumer reserveBodyBytes) {
+        if (source == null) return null;
+        long length = Math.max(0, source.length());
+        if (reserveBodyBytes != null) reserveBodyBytes.accept(5L * length);
+        byte[] bytes = source.getBytes();
+        if (bytes == null) return null;
+        if (reserveBodyBytes != null && bytes.length > length) {
+            reserveBodyBytes.accept(5L * (bytes.length - length));
+        }
+        return bytes.clone();
     }
 
     // Content type and Burp's classification are used, never a filename extension or a blanket
@@ -1189,13 +1236,18 @@ public final class RequestResponseDocBuilder {
      * Resolves the HTTP version for a request, including malformed requests where Montoya accessors throw.
      */
     public static String safeRequestHttpVersion(HttpRequest request) {
+        return safeRequestHttpVersion(request, null);
+    }
+
+    static String safeRequestHttpVersion(HttpRequest request,
+            java.util.function.LongConsumer reserveBodyBytes) {
         if (request == null) {
             return null;
         }
         try {
             return request.httpVersion();
         } catch (RuntimeException ignored) {
-            return RawRequestSnapshot.from(request).httpVersion();
+            return RawRequestSnapshot.from(request, reserveBodyBytes).httpVersion();
         }
     }
 
@@ -1247,7 +1299,12 @@ public final class RequestResponseDocBuilder {
             byte[] bodyBytes,
             int bodyOffset) {
         private static RawRequestSnapshot from(HttpRequest request) {
-            byte[] rawBytes = rawBytes(request);
+            return from(request, null);
+        }
+
+        private static RawRequestSnapshot from(HttpRequest request,
+                java.util.function.LongConsumer reserveBodyBytes) {
+            byte[] rawBytes = rawBytes(request, reserveBodyBytes);
             int bodyOffset = bodyOffset(rawBytes);
             String requestLine = requestLine(rawBytes, bodyOffset);
             String[] parts = requestLine == null ? new String[0] : requestLine.split(" ", 3);
@@ -1265,12 +1322,15 @@ public final class RequestResponseDocBuilder {
                     bodyOffset);
         }
 
-        private static byte[] rawBytes(HttpRequest request) {
+        private static byte[] rawBytes(HttpRequest request,
+                java.util.function.LongConsumer reserveBodyBytes) {
             if (request == null) {
                 return null;
             }
             try {
-                return request.toByteArray() == null ? null : request.toByteArray().getBytes();
+                return copyBody(request.toByteArray(), reserveBodyBytes);
+            } catch (LiveTrafficPreparation.CapacityException e) {
+                throw e;
             } catch (RuntimeException ignored) {
                 return null;
             }

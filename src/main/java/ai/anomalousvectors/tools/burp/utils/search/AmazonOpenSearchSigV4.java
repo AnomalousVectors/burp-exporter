@@ -20,8 +20,8 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 /**
  * Applies AWS Signature Version 4 headers to Amazon OpenSearch HTTP requests.
  *
- * <p>Uses the AWS SDK via reflection against public interfaces so the IDE classpath and the
- * Burp runtime can load signing without compile-time AWS imports.</p>
+ * <p>Uses public SDK interfaces through a reflective adapter for AWS request construction and
+ * signing, without opening implementation classes. The SDK is packaged with the extension.</p>
  *
  * <p>An active export run reuses its profile provider while the selected profile files and settings
  * are unchanged. The SDK caches and refreshes temporary credentials. Files are reread before each
@@ -372,16 +372,11 @@ public final class AmazonOpenSearchSigV4 {
                 .getField("SERVICE_SIGNING_NAME")
                 .get(null);
 
-        Class<?> defaultSignRequest = Class.forName(
-                "software.amazon.awssdk.http.auth.spi.internal.signer.DefaultSignRequest");
-        Object signRequestBuilder = defaultSignRequest.getMethod("builder").invoke(null);
+        Class<?> signRequestType = Class.forName("software.amazon.awssdk.http.auth.spi.signer.SignRequest");
+        Object signRequestBuilder = signRequestType
+                .getMethod("builder", Class.forName("software.amazon.awssdk.identity.spi.Identity"))
+                .invoke(null, credentials);
         Class<?> builderType = Class.forName("software.amazon.awssdk.http.auth.spi.signer.SignRequest$Builder");
-        invokeOn(
-                builderType,
-                signRequestBuilder,
-                "identity",
-                Class.forName("software.amazon.awssdk.identity.spi.Identity"),
-                credentials);
         invokeOn(
                 builderType,
                 signRequestBuilder,
@@ -481,24 +476,23 @@ public final class AmazonOpenSearchSigV4 {
 
     private static Method findMethod(Class<?> type, String methodName, Class<?>... parameterTypes)
             throws NoSuchMethodException {
-        Class<?> current = type;
-        while (current != null) {
+        if (java.lang.reflect.Modifier.isPublic(type.getModifiers())) {
             try {
-                Method method = current.getMethod(methodName, parameterTypes);
-                method.setAccessible(true);
-                return method;
+                Method method = type.getMethod(methodName, parameterTypes);
+                if (java.lang.reflect.Modifier.isPublic(method.getDeclaringClass().getModifiers())) return method;
             } catch (NoSuchMethodException ignored) {
-                current = current.getSuperclass();
+                // A non-public implementation may expose the operation through a public interface.
             }
         }
         for (Class<?> iface : type.getInterfaces()) {
             try {
-                Method method = iface.getMethod(methodName, parameterTypes);
-                method.setAccessible(true);
-                return method;
+                return findMethod(iface, methodName, parameterTypes);
             } catch (NoSuchMethodException ignored) {
                 // keep searching
             }
+        }
+        if (type.getSuperclass() != null) {
+            return findMethod(type.getSuperclass(), methodName, parameterTypes);
         }
         throw new NoSuchMethodException(type.getName() + "#" + methodName);
     }

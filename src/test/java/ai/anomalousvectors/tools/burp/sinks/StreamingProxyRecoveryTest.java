@@ -154,6 +154,12 @@ class StreamingProxyRecoveryTest {
         ProxyHttpRequestResponse source = row(98, WALL + 100L);
         rows.add(source);
         HttpResponse response = source.originalResponse();
+        HttpRequest request = source.finalRequest();
+        ByteArray requestBody = mock(ByteArray.class);
+        when(requestBody.getBytes()).thenReturn("stream request".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        when(requestBody.length()).thenReturn(14);
+        when(request.body()).thenReturn(requestBody);
+        org.mockito.Mockito.clearInvocations(response);
         try (var bodies = org.mockito.Mockito.mockStatic(HttpMessageDocSupport.class,
                 org.mockito.Mockito.CALLS_REAL_METHODS)) {
             for (int i = 0; i < 3; i++) {
@@ -165,6 +171,11 @@ class StreamingProxyRecoveryTest {
                     org.mockito.ArgumentMatchers.any(byte[].class), any(), any(),
                     org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyInt(),
                     org.mockito.ArgumentMatchers.eq(false)), org.mockito.Mockito.times(1));
+            bodies.verify(() -> HttpMessageDocSupport.buildBodyContent(
+                    org.mockito.ArgumentMatchers.any(byte[].class), any(), any(),
+                    org.mockito.ArgumentMatchers.anyBoolean(), org.mockito.ArgumentMatchers.anyInt(),
+                    org.mockito.ArgumentMatchers.eq(true)), org.mockito.Mockito.times(1));
+            verify(response, org.mockito.Mockito.times(3)).body();
             when(source.annotations().notes()).thenReturn("updated user notes");
             clock.addAndGet(5_000L);
             observer.tick();
@@ -179,6 +190,23 @@ class StreamingProxyRecoveryTest {
                     .isEqualTo(bodyDoc(outputs.get(2)).get("b64"))
                     .isNotEqualTo(bodyDoc(outputs.get(3)).get("b64"));
             assertThat(capture(outputs.getLast()).get("revision")).isEqualTo(4L);
+            var requestHeader = mock(burp.api.montoya.http.message.HttpHeader.class);
+            when(requestHeader.name()).thenReturn("X-Request-Metadata");
+            when(requestHeader.value()).thenReturn("updated");
+            when(request.headers()).thenReturn(List.of(requestHeader));
+            clock.addAndGet(5_000L);
+            observer.tick();
+            assertThat(outputs).hasSize(5);
+            when(requestBody.getBytes()).thenReturn("stream requesU".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            // Once this capture is over 30 seconds old, its next due read is ten seconds later.
+            clock.addAndGet(10_000L);
+            observer.tick();
+            assertThat(outputs).hasSize(6);
+            assertThat(capture(outputs.getLast()).get("revision")).isEqualTo(6L);
+            Map<?, ?> latestRequest = (Map<?, ?>) outputs.getLast().get("request");
+            assertThat(((Map<?, ?>) latestRequest.get("body")).get("b64"))
+                    .isEqualTo(java.util.Base64.getEncoder().encodeToString(
+                            "stream requesU".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             verify(source.annotations(), never()).setNotes(any(String.class));
         }
     }

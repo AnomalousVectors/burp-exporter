@@ -29,6 +29,7 @@ import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.Version;
 import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
+import ai.anomalousvectors.tools.burp.utils.ExportPressureLogThrottler;
 import ai.anomalousvectors.tools.burp.utils.DiskSpaceGuard;
 import ai.anomalousvectors.tools.burp.utils.ManagedDiskPaths;
 import ai.anomalousvectors.tools.burp.utils.ManagedStorageQuota;
@@ -47,6 +48,9 @@ final class TrafficSpillFileQueue {
 
     private static final JsonMapper JSON = JsonMapper.builderWithJackson2Defaults().build();
     private static final String SCHEMA_VERSION = "1";
+    private final ExportPressureLogThrottler failures = new ExportPressureLogThrottler(
+            "TrafficSpill", ExportPressureLogThrottler.DEFAULT_INTERVAL_MS,
+            System::currentTimeMillis, Logger::logErrorPanelOnly);
     /**
      * Outcome of attempting to spill one traffic document.
      *
@@ -236,7 +240,7 @@ final class TrafficSpillFileQueue {
         } catch (DiskSpaceGuard.LowDiskSpaceException e) {
             return OfferResult.REJECTED_LOW_DISK;
         } catch (IOException e) {
-            Logger.logError("[TrafficSpill] Write failed: " + e.getMessage());
+            logFailure("write_failed", e);
             return OfferResult.FAILED;
         } finally {
             lock.unlock();
@@ -286,9 +290,15 @@ final class TrafficSpillFileQueue {
         try {
             return JSON.writeValueAsBytes(envelope);
         } catch (JacksonException e) {
-            Logger.logError("[TrafficSpill] Serialize failed: " + e.getMessage());
+            logFailure("serialize_failed", e);
             return null;
         }
+    }
+
+    // Keep repeated storage failures visible without emitting captured JSON or one log per item.
+    private void logFailure(String reason, Exception failure) {
+        failures.record(reason, 1, () -> "error=" + failure.getClass().getSimpleName()
+                + "; affected traffic could not be retained in spill storage.");
     }
 
     /**
@@ -307,8 +317,7 @@ final class TrafficSpillFileQueue {
                 try {
                     return extractDocument(payload);
                 } catch (IOException | JacksonException e) {
-                    recordParseDrop();
-                    Logger.logError("[TrafficSpill] Parse failed: " + e.getMessage());
+                    recordReadDrop("spill_parse_failed", "parse_failed", e);
                 }
             }
             return null;
@@ -328,8 +337,7 @@ final class TrafficSpillFileQueue {
                 try {
                     return extractEntry(payload);
                 } catch (IOException | JacksonException e) {
-                    recordParseDrop();
-                    Logger.logError("[TrafficSpill] Parse failed: " + e.getMessage());
+                    recordReadDrop("spill_parse_failed", "parse_failed", e);
                 }
             }
             return null;
@@ -349,7 +357,7 @@ final class TrafficSpillFileQueue {
             if (Files.notExists(file.path(), LinkOption.NOFOLLOW_LINKS)) {
                 releaseAllocation(file);
             }
-            Logger.logError("[TrafficSpill] Read/delete failed: " + e.getMessage());
+            recordReadDrop("spill_read_failed", "read_delete_failed", e);
             return null;
         }
     }
@@ -703,9 +711,10 @@ final class TrafficSpillFileQueue {
         return root;
     }
 
-    private static void recordParseDrop() {
+    private void recordReadDrop(String reason, String logReason, Exception failure) {
         ExportStats.recordTrafficSpillDrop(1);
-        ExportStats.recordTrafficDropReason("spill_parse_failed", 1);
+        ExportStats.recordTrafficDropReason(reason, 1);
+        logFailure(logReason, failure);
     }
 
     private Map<String, Object> extractDocument(JsonNode root) {

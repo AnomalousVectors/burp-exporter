@@ -794,15 +794,7 @@ public final class StatsPanel extends JPanel {
                 formatWhole(ExportStats.getTrafficSpillEnqueued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDequeued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDrops()));
-        long spillRejectNew = ExportStats.getTrafficDropReasonCount("spill_full_reject_new")
-                + ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_new")
-                + ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")
-                + ExportStats.getTrafficDropReasonCount("spill_low_disk_drop_oldest");
-        dropReasonValue.setText(
-                formatWhole(spillRejectNew) + " / "
-                        + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")
-                                + ExportStats.getTrafficDropReasonCount("spill_requeue_low_disk_drop")) + " / "
-                        + formatWhole(ExportStats.getTrafficSpillExpiredPruned()));
+        dropReasonValue.setText(StatsPanelFormatters.trafficSpillDropReasons());
         throughputValue.setText(
                 StatsPanelFormatters.formatOneDecimal(ExportStats.getThroughputDocsPerSecLast10s()) + " docs/s");
         exportedDocsValue.setText(formatWhole(totalSuccess) + " docs");
@@ -2186,7 +2178,8 @@ public final class StatsPanel extends JPanel {
                 "Spill queue lifetime counters: written to spill / drained back to memory / dropped."));
         tooltips.put("Drop Reasons", Tooltips.htmlRaw(
                 "Spill and traffic drop breakdown (session totals), in order:",
-                "<b>spill full / low-disk reject new</b> / <b>spill requeue failed</b> /",
+                "<b>new document rejected (capacity, low disk, or storage failure)</b> /",
+                "<b>requeue rejected</b> /",
                 "<b>expired prune</b>.",
                 "When Traffic Spill is Full, new live traffic is rejected so the earliest backlog is kept."));
         tooltips.put("Traffic Spill Status", Tooltips.htmlRaw(

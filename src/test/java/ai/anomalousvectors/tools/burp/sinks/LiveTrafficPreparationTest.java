@@ -5,6 +5,9 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -29,6 +32,122 @@ import burp.api.montoya.http.message.responses.HttpResponse;
 
 /** Exercises owned body snapshots, shared capacity and actual asynchronous run cancellation. */
 class LiveTrafficPreparationTest {
+    @Test
+    void capacityIsReservedBeforeRequestResponseAndMalformedFallbackCopies() {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+        ExportAdmissionController.setMemBudgetOverrideForTests(20_000L);
+        HttpRequest request = request(new byte[10_000]);
+        HttpResponse response = response(new byte[10_000], "text/plain");
+        var token = RuntimeConfig.currentExportRunToken();
+        try (var owner = LiveTrafficPreparation.begin(token, "Proxy")) {
+            assertThatThrownBy(() -> RequestResponseDocBuilder.prepareTrafficRequest(request, owner::reserveBodyBytes))
+                    .isInstanceOf(LiveTrafficPreparation.CapacityException.class);
+            verify(request.body(), never()).getBytes();
+            verify(request, never()).toByteArray();
+        }
+        try (var owner = LiveTrafficPreparation.begin(token, "Proxy")) {
+            assertThatThrownBy(() -> RequestResponseDocBuilder.prepareTrafficResponse(response, owner::reserveBodyBytes))
+                    .isInstanceOf(LiveTrafficPreparation.CapacityException.class);
+            verify(response.body(), never()).getBytes();
+        }
+        when(request.contentType()).thenThrow(new IllegalStateException("malformed source"));
+        ByteArray raw = mock(ByteArray.class);
+        when(raw.length()).thenReturn(10_000);
+        when(request.toByteArray()).thenReturn(raw);
+        try (var owner = LiveTrafficPreparation.begin(token, "Proxy")) {
+            assertThatThrownBy(() -> RequestResponseDocBuilder.prepareTrafficRequest(request, owner::reserveBodyBytes))
+                    .isInstanceOf(LiveTrafficPreparation.CapacityException.class);
+            verify(raw, never()).getBytes();
+        }
+        assertThat(ExportAdmissionController.liveBytesHeld()).isZero();
+    }
+
+    @Test
+    void concurrentCopiesShareOneBudgetAndReleaseTheirOwnReservations() throws Exception {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+        ExportAdmissionController.setMemBudgetOverrideForTests(20_000L);
+        var token = RuntimeConfig.currentExportRunToken();
+        var owners = new java.util.concurrent.ConcurrentLinkedQueue<LiveTrafficPreparation.Capture>();
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(4);
+        var results = new java.util.ArrayList<java.util.concurrent.Future<Boolean>>();
+        try {
+            for (int i = 0; i < 16; i++) results.add(executor.submit(() -> {
+                var owner = LiveTrafficPreparation.begin(token, "Proxy");
+                try {
+                    RequestResponseDocBuilder.prepareTrafficResponse(
+                            response(new byte[1_000], "text/plain"), owner::reserveBodyBytes);
+                    owners.add(owner);
+                    return true;
+                } catch (LiveTrafficPreparation.CapacityException e) {
+                    owner.close();
+                    return false;
+                }
+            }));
+            int accepted = 0;
+            for (var result : results) if (result.get(5, TimeUnit.SECONDS)) accepted++;
+            assertThat(accepted).isBetween(1, 3);
+            assertThat(ExportAdmissionController.liveBytesHeld()).isEqualTo(accepted * 5_000L);
+            RuntimeConfig.setExportRunning(false);
+            RuntimeConfig.setExportRunning(true);
+            try (var stale = LiveTrafficPreparation.begin(token, "Proxy")) {
+                assertThatThrownBy(() -> stale.reserveBodyBytes(1))
+                        .isInstanceOf(LiveTrafficPreparation.CapacityException.class);
+            }
+        } finally {
+            executor.shutdownNow();
+            for (var owner : owners) {
+                owner.close();
+                owner.close();
+            }
+        }
+        assertThat(ExportAdmissionController.liveBytesHeld()).isZero();
+    }
+
+    @Test
+    void underestimatedLengthAndAccessorFailureNeverLeakReservations() {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+        ExportAdmissionController.setMemBudgetOverrideForTests(20_000L);
+        HttpResponse response = response(new byte[10_000], "text/plain");
+        when(response.body().length()).thenReturn(100);
+        try (var owner = LiveTrafficPreparation.begin(RuntimeConfig.currentExportRunToken(), "Proxy")) {
+            assertThatThrownBy(() -> RequestResponseDocBuilder.prepareTrafficResponse(response, owner::reserveBodyBytes))
+                    .isInstanceOf(LiveTrafficPreparation.CapacityException.class);
+            assertThat(ExportAdmissionController.liveBytesHeld()).isEqualTo(500L);
+        }
+        when(response.body().getBytes()).thenThrow(new IllegalStateException("source unavailable"));
+        try (var owner = LiveTrafficPreparation.begin(RuntimeConfig.currentExportRunToken(), "Proxy")) {
+            assertThatThrownBy(() -> RequestResponseDocBuilder.prepareTrafficResponse(response, owner::reserveBodyBytes))
+                    .isInstanceOf(IllegalStateException.class);
+        }
+        assertThat(ExportAdmissionController.liveBytesHeld()).isZero();
+    }
+
+    @Test
+    void unexpectedPreparationFailuresKeepSafeCategoryAndBoundRepeatedLogs() throws Exception {
+        TrafficExportQueueTestSupport.configureRunningTraffic(List.of("proxy"));
+        var messages = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        ai.anomalousvectors.tools.burp.utils.Logger.LogListener listener = (level, text) -> {
+            if ("ERROR".equals(level) && text.startsWith("[LiveTrafficPreparation]")) messages.add(text);
+        };
+        ai.anomalousvectors.tools.burp.utils.Logger.registerListener(listener);
+        try {
+            for (int i = 0; i < 100; i++) {
+                Map<String, Object> broken = spy(document(Map.of("method", "GET")));
+                var capture = LiveTrafficPreparation.retain(broken, RuntimeConfig.currentExportRunToken());
+                org.mockito.Mockito.doThrow(new IllegalArgumentException("private payload must not appear"))
+                        .when(broken).entrySet();
+                capture.run();
+            }
+            assertThat(ExportStats.getTrafficDropReasonCount("preparation_failed")).isGreaterThanOrEqualTo(100);
+            assertThat(messages).hasSize(1);
+            assertThat(messages.getFirst()).contains("stage=delivery_admission", "java.lang.IllegalArgumentException")
+                    .doesNotContain("private payload");
+            assertThat(ExportAdmissionController.liveBytesHeld()).isZero();
+        } finally {
+            ai.anomalousvectors.tools.burp.utils.Logger.unregisterListener(listener);
+        }
+    }
+
     @AfterEach
     void cleanup() {
         RuntimeConfig.setExportRunning(false);
@@ -73,7 +192,10 @@ class LiveTrafficPreparationTest {
         when(videoBody.getBytes()).thenThrow(new AssertionError("video body must not be copied"));
         when(video.body()).thenReturn(videoBody);
         var omitted = RequestResponseDocBuilder.prepareTrafficResponse(video);
+        assertThat(omitted.wireBodyLength()).isEqualTo(100_000_000);
         omitted.complete();
+        assertThat(omitted.wireBodyLength()).isEqualTo(100_000_000);
+        verify(video).body();
         assertThat(body(omitted))
                 .containsEntry("omitted", true).containsEntry("length", 100_000_000);
     }
@@ -272,6 +394,7 @@ class LiveTrafficPreparationTest {
         HttpRequest request = mock(HttpRequest.class);
         ByteArray body = mock(ByteArray.class);
         when(body.getBytes()).thenReturn(bytes);
+        when(body.length()).thenReturn(bytes.length);
         when(request.body()).thenReturn(body);
         when(request.method()).thenReturn("POST");
         when(request.path()).thenReturn("/h2?x=one%26two&x=last");

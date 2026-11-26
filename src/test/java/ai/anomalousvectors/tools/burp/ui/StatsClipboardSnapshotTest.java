@@ -206,4 +206,24 @@ class StatsClipboardSnapshotTest {
         assertThat(miscStats).contains("Permanent Drop Reasons").contains("stop_discard=2");
     }
 
+    @Test
+    void stopSummaryPreservesAllThrottledCaptureAndSpillFailureTotals() throws Exception {
+        ExportStats.recordTrafficDropReason("capture_capacity", 7);
+        ExportStats.recordTrafficDropReason("preparation_failed", 11);
+        ExportStats.recordTrafficDropReason("spill_failure_reject_new", 13);
+        var detached = ExportStats.getTrafficDropReasonCounts();
+        ExportStats.recordTrafficDropReason("capture_capacity", 2);
+        assertThat(detached.get("capture_capacity")).isEqualTo(7L);
+        StatsClipboardSnapshot.logSessionStopSummary();
+        SwingUtilities.invokeAndWait(() -> {});
+        String misc = infoMessages.stream().filter(message -> message.contains("\"kind\":\"misc_stats\""))
+                .findFirst().orElseThrow();
+        var payload = JsonMapper.builderWithJackson2Defaults().build()
+                .readTree(misc.substring("[Stats] Session stop ".length()));
+        var reasons = payload.path("traffic_drop_reasons");
+        assertThat(reasons.path("capture_capacity").asLong()).isEqualTo(9L);
+        assertThat(reasons.path("preparation_failed").asLong()).isEqualTo(11L);
+        assertThat(reasons.path("spill_failure_reject_new").asLong()).isEqualTo(13L);
+    }
+
 }

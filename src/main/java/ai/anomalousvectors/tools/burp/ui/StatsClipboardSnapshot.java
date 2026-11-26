@@ -99,6 +99,8 @@ public final class StatsClipboardSnapshot {
     private static Map<String, Object> buildMiscStatsPayload() {
         Map<String, Object> payload = new LinkedHashMap<>(1);
         payload.put("sections", buildMiscSections());
+        Map<String, Long> reasons = ExportStats.getTrafficDropReasonCounts();
+        if (!reasons.isEmpty()) payload.put("traffic_drop_reasons", reasons);
         return payload;
     }
 
@@ -253,15 +255,7 @@ public final class StatsClipboardSnapshot {
                 formatWhole(ExportStats.getTrafficSpillEnqueued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDequeued()) + " / "
                         + formatWhole(ExportStats.getTrafficSpillDrops()));
-        long spillRejectNew = ExportStats.getTrafficDropReasonCount("spill_full_reject_new")
-                + ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_new")
-                + ExportStats.getTrafficDropReasonCount("spill_rejected_drop_oldest")
-                + ExportStats.getTrafficDropReasonCount("spill_low_disk_drop_oldest");
-        rows.put("Drop Reasons",
-                formatWhole(spillRejectNew) + " / "
-                        + formatWhole(ExportStats.getTrafficDropReasonCount("spill_requeue_failed_drop")
-                                + ExportStats.getTrafficDropReasonCount("spill_requeue_low_disk_drop")) + " / "
-                        + formatWhole(ExportStats.getTrafficSpillExpiredPruned()));
+        rows.put("Drop Reasons", StatsPanelFormatters.trafficSpillDropReasons());
         return rows;
     }
 

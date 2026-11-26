@@ -44,6 +44,15 @@ class StatsPanelFormattersTest {
     }
 
     @Test
+    void spillDropSummaryIncludesStorageFailuresAndBothRequeueCapacityReasons() {
+        ExportStats.recordTrafficDropReason("spill_failure_reject_new", 2);
+        ExportStats.recordTrafficDropReason("spill_failure_reject_requeue", 3);
+        ExportStats.recordTrafficDropReason("spill_full_reject_requeue", 4);
+        ExportStats.recordTrafficDropReason("spill_low_disk_reject_requeue", 5);
+        assertThat(StatsPanelFormatters.trafficSpillDropReasons()).isEqualTo("2 / 12 / 0");
+    }
+
+    @Test
     void formatExportedSummary_joinsDocsSizeAndFailures() {
         assertThat(StatsPanelFormatters.formatExportedSummary(100, "2.4 GB", 0))
                 .isEqualTo("100 docs · 2.4 GB · 0 failures");

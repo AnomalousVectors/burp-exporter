@@ -15,7 +15,7 @@ import java.util.Map;
  * @param indexKey short index key (for example {@code traffic})
  * @param document filtered document body
  * @param estimatedBulkBytes approximate serialized bulk payload size in bytes for chunk sizing
- * @param bulkNdjsonBytes pre-serialized bulk action+document NDJSON pair for OpenSearch flush
+ * @param bulkNdjsonBytes pre-serialized bulk action/document NDJSON pair for search delivery
  * @param trafficRouteKey optional internal traffic-attribution key; never serialized into the
  *                        exported document source
  * @param searchRevision optional trusted streaming replacement metadata; null keeps the

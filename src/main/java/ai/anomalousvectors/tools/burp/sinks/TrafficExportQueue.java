@@ -332,16 +332,28 @@ public final class TrafficExportQueue {
             startWorkerIfNeeded();
             return true;
         }
-        // Spill Full / low disk: reject the new document; never drop-oldest.
-        ExportAdmissionController.noteSpillFullReject();
+        recordSpillRejection(spillResult, false);
+        return false;
+    }
+
+    // Share classification across new admission, memory refill and retry-to-spill paths.
+    static void recordSpillRejection(TrafficSpillFileQueue.OfferResult result, boolean requeue) {
+        if (result == TrafficSpillFileQueue.OfferResult.QUEUED
+                || result == TrafficSpillFileQueue.OfferResult.REJECTED_STALE) return;
+        String kind = switch (result) {
+            case REJECTED_LOW_DISK -> "low_disk";
+            case REJECTED_LIMIT -> "full";
+            case FAILED -> "failure";
+            default -> throw new IllegalArgumentException("Unexpected spill outcome: " + result);
+        };
+        if (result != TrafficSpillFileQueue.OfferResult.FAILED) {
+            ExportAdmissionController.noteSpillFullReject();
+        }
         ExportStats.recordTrafficQueueDrop(1);
         ExportStats.recordTrafficSpillDrop(1);
-        String dropReason = spillResult == TrafficSpillFileQueue.OfferResult.REJECTED_LOW_DISK
-                ? "spill_low_disk_reject_new"
-                : "spill_full_reject_new";
-        ExportStats.recordTrafficDropReason(dropReason, 1);
-        OVERFLOW_LOGS.record(dropReason, 1, TrafficExportQueue::overflowContext);
-        return false;
+        String reason = "spill_" + kind + (requeue ? "_reject_requeue" : "_reject_new");
+        ExportStats.recordTrafficDropReason(reason, 1);
+        OVERFLOW_LOGS.record(reason, 1, TrafficExportQueue::overflowContext);
     }
 
     /** Admits a bounded final streaming snapshot only for the exact run being stopped. */
@@ -727,13 +739,7 @@ public final class TrafficExportQueue {
             if (!queue.offerWithinBudget(entry)) {
                 TrafficSpillFileQueue.OfferResult spillResult = spillQueue.offerDetailed(entry);
                 if (spillResult != TrafficSpillFileQueue.OfferResult.QUEUED) {
-                    ExportStats.recordTrafficQueueDrop(1);
-                    ExportStats.recordTrafficSpillDrop(1);
-                    String dropReason = spillResult == TrafficSpillFileQueue.OfferResult.REJECTED_LOW_DISK
-                            ? "spill_requeue_low_disk_drop"
-                            : "spill_requeue_failed_drop";
-                    ExportStats.recordTrafficDropReason(dropReason, 1);
-                    OVERFLOW_LOGS.record(dropReason, 1, TrafficExportQueue::overflowContext);
+                    recordSpillRejection(spillResult, true);
                 }
                 return;
             }
@@ -841,14 +847,7 @@ public final class TrafficExportQueue {
             ExportStats.recordTrafficSpillEnqueued(1);
             return;
         }
-        ExportAdmissionController.noteSpillFullReject();
-        ExportStats.recordTrafficQueueDrop(1);
-        ExportStats.recordTrafficSpillDrop(1);
-        String reason = spillResult == TrafficSpillFileQueue.OfferResult.REJECTED_LOW_DISK
-                ? "spill_low_disk_reject_requeue"
-                : "spill_full_reject_requeue";
-        ExportStats.recordTrafficDropReason(reason, 1);
-        OVERFLOW_LOGS.record(reason, 1, TrafficExportQueue::overflowContext);
+        recordSpillRejection(spillResult, true);
     }
 
     private record FileOnlyDrainResult(int attemptedCount, long exportedBytes) { }

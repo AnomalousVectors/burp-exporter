@@ -1092,6 +1092,15 @@ public final class ExportStats {
     }
 
     /**
+     * Returns a detached, key-sorted snapshot of reason-coded traffic losses for diagnostics.
+     *
+     * @return current session counts; later updates are not reflected
+     */
+    public static Map<String, Long> getTrafficDropReasonCounts() {
+        return trafficDropReasons.snapshot();
+    }
+
+    /**
      * Records a response-path export decision that used request-side tool-type fallback.
      *
      * <p>This is used for observability when response tool source is absent but request-side

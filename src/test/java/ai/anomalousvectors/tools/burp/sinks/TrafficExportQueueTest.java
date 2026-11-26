@@ -39,6 +39,22 @@ class TrafficExportQueueTest {
     }
 
     @Test
+    void spillFailureIsNotCapacityAndStaleWorkIsNotADrop() {
+        TrafficExportQueue.recordSpillRejection(TrafficSpillFileQueue.OfferResult.FAILED, false);
+        TrafficExportQueue.recordSpillRejection(TrafficSpillFileQueue.OfferResult.FAILED, true);
+        TrafficExportQueue.recordSpillRejection(TrafficSpillFileQueue.OfferResult.REJECTED_STALE, true);
+        TrafficExportQueue.recordSpillRejection(TrafficSpillFileQueue.OfferResult.REJECTED_LIMIT, false);
+        TrafficExportQueue.recordSpillRejection(TrafficSpillFileQueue.OfferResult.REJECTED_LOW_DISK, true);
+        assertThat(ExportStats.getTrafficDropReasonCount("spill_failure_reject_new")).isEqualTo(1);
+        assertThat(ExportStats.getTrafficDropReasonCount("spill_failure_reject_requeue")).isEqualTo(1);
+        assertThat(ExportStats.getTrafficDropReasonCount("spill_full_reject_new")).isEqualTo(1);
+        assertThat(ExportStats.getTrafficDropReasonCount("spill_full_reject_requeue")).isZero();
+        assertThat(ExportStats.getTrafficDropReasonCount("spill_low_disk_reject_requeue")).isEqualTo(1);
+        assertThat(ExportStats.getTrafficQueueDrops()).isEqualTo(4);
+        assertThat(ExportStats.getTrafficSpillDrops()).isEqualTo(4);
+    }
+
+    @Test
     void getCurrentBytesEstimate_matchesWalkAfterOffer() {
         long before = TrafficExportQueue.getCurrentBytesEstimate();
         assertThat(before).isGreaterThanOrEqualTo(0);

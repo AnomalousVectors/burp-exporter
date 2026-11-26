@@ -12,6 +12,7 @@ import ai.anomalousvectors.tools.burp.utils.ExportAdmissionController;
 import ai.anomalousvectors.tools.burp.utils.ExportPressureLogThrottler;
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.FileExportStats;
+import ai.anomalousvectors.tools.burp.utils.Logger;
 import ai.anomalousvectors.tools.burp.utils.concurrent.ExportRunContext;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
@@ -26,9 +27,8 @@ import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
  * is preserved. Each worker mutation is fenced to its captured run.</p>
  */
 final class LiveTrafficPreparation {
-    private static final ExportPressureLogThrottler PRESSURE =
-            new ExportPressureLogThrottler("LiveTrafficPreparation");
     private static final Object LIFECYCLE = new Object();
+    private static FailureLogs failureLogs;
     private static ThreadPoolExecutor executor;
     private static AtomicInteger outstanding = new AtomicInteger();
     private static RuntimeConfig.ExportRunToken executorToken;
@@ -36,19 +36,49 @@ final class LiveTrafficPreparation {
 
     private LiveTrafficPreparation() { }
 
+    private record FailureLogs(RuntimeConfig.ExportRunToken token,
+            ExportPressureLogThrottler pressure, ExportPressureLogThrottler errors) { }
+
+    // Active failure reports share run-local totals and fresh first-event notices after Start.
+    private static ExportPressureLogThrottler failureLog(RuntimeConfig.ExportRunToken token, boolean error) {
+        synchronized (LIFECYCLE) {
+            if (failureLogs == null || !token.equals(failureLogs.token())) {
+                failureLogs = new FailureLogs(token, new ExportPressureLogThrottler("LiveTrafficPreparation"),
+                        new ExportPressureLogThrottler("LiveTrafficPreparation",
+                                ExportPressureLogThrottler.DEFAULT_INTERVAL_MS,
+                                System::currentTimeMillis, Logger::logErrorPanelOnly));
+            }
+            return error ? failureLogs.errors() : failureLogs.pressure();
+        }
+    }
+
+    /** Creates a source-thread owner before any body copy; close unless ownership is transferred. */
+    static Capture begin(RuntimeConfig.ExportRunToken token, String toolLabel) {
+        return new Capture(Map.of("burp", Map.of("reporting_tool",
+                toolLabel == null ? "Unknown" : toolLabel)), token,
+                new RequestResponseDocBuilder.PreparedTrafficMessage[0], 0L);
+    }
+
     static Capture retain(Map<String, Object> document, RuntimeConfig.ExportRunToken token,
             RequestResponseDocBuilder.PreparedTrafficMessage... messages) {
-        // Reserve future representation work with the compact capture. Pending requests must not
-        // consume the headroom required to finish accepted work and admit it to managed spill.
-        long bytes = 5L * estimate(document);
-        for (var message : messages) {
-            if (message != null) bytes += message.retainedBodyBytes() + message.preparationBytes();
-        }
-        if (!ExportAdmissionController.tryReserveLiveBytes(bytes)) {
+        // Fixtures with already-owned inputs use the same reservation and cleanup path. Live
+        // capture instead begins ownership before the builder copies anything from Burp.
+        Capture capture = begin(token, null);
+        try {
+            for (var message : messages) {
+                if (message != null) capture.reserveBodyBytes(
+                        message.retainedBodyBytes() + message.preparationBytes());
+            }
+            capture.attach(document, messages);
+            return capture;
+        } catch (CapacityException e) {
             failed(document, token, "capture_capacity");
+            capture.close();
             return null;
+        } catch (RuntimeException e) {
+            capture.close();
+            throw e;
         }
-        return new Capture(document, token, messages, bytes);
     }
 
     static boolean submit(Capture capture) {
@@ -128,6 +158,14 @@ final class LiveTrafficPreparation {
 
     private static void failed(Map<String, Object> document, RuntimeConfig.ExportRunToken token,
             String reason) {
+        failed(document, token, reason, "admission", null);
+    }
+
+    private static void failed(Map<String, Object> document, RuntimeConfig.ExportRunToken token,
+            String reason, String stage, RuntimeException failure) {
+        // Exception messages can contain traffic or credentials. Retain only a safe type label.
+        String errorType = failure == null ? "none" : failure.getClass().getName();
+        String boundedType = errorType.substring(0, Math.min(errorType.length(), 160));
         ExportRunContext.call(token, () -> {
             if (!RuntimeConfig.isExportRunActive(token)) return null;
             TrafficRouteBucket.Route route = TrafficRouteBucket.fromDocument(document);
@@ -141,7 +179,9 @@ final class LiveTrafficPreparation {
                 FileExportStats.recordFailure("traffic", 1);
                 TrafficRouteBucket.recordFileFailure(route, 1);
             }
-            PRESSURE.record(reason, 1, () -> "liveBytes=" + ExportAdmissionController.liveBytesHeld()
+            var logs = failureLog(token, failure != null);
+            logs.record(reason, 1, () -> "liveBytes=" + ExportAdmissionController.liveBytesHeld()
+                    + "; stage=" + stage + "; error=" + boundedType
                     + "; Burp traffic continued without waiting; this capture was not exported.");
             return null;
         });
@@ -168,9 +208,9 @@ final class LiveTrafficPreparation {
 
     /** Exactly-once allocation owner, transferred from pending capture to the preparation worker. */
     static final class Capture implements Runnable, AutoCloseable {
-        private final Map<String, Object> document;
+        private Map<String, Object> document;
         private final RuntimeConfig.ExportRunToken token;
-        private final RequestResponseDocBuilder.PreparedTrafficMessage[] messages;
+        private RequestResponseDocBuilder.PreparedTrafficMessage[] messages;
         private long bytes;
         private boolean closed;
         private Runnable onClose;
@@ -184,22 +224,45 @@ final class LiveTrafficPreparation {
             this.bytes = bytes;
         }
 
+        // Only the source thread mutates these inputs, before pending/worker ownership transfer.
+        void attach(Map<String, Object> source,
+                RequestResponseDocBuilder.PreparedTrafficMessage... prepared) {
+            reserveBodyBytes(5L * estimate(source));
+            document = source;
+            messages = prepared.clone();
+        }
+
+        void reserveBodyBytes(long extra) {
+            if (!RuntimeConfig.isExportRunActive(token) || !expandReservation(extra)) {
+                throw new CapacityException();
+            }
+        }
+
+        void reject(String reason, RuntimeException failure) {
+            failed(document, token, reason, "snapshot", failure);
+        }
+
         /** Completes owned representations on the preparation worker, fenced to the captured run. */
         @Override
         public void run() {
+            String stage = "body_representation";
             try {
                 ExportRunContext.call(token, () -> {
                     if (!RuntimeConfig.isExportRunActive(token)) return null;
                     // The shared codec guard bounds transient decoded bytes. Reserve the actual
                     // successful expansion before creating decoded Base64/text representations.
                     for (var message : messages) if (message != null) message.complete(this::reserveDecodedBytes);
-                    TrafficExportQueue.offerForRun(document, token);
+                    return null;
+                });
+                stage = "delivery_admission";
+                ExportRunContext.call(token, () -> {
+                    if (RuntimeConfig.isExportRunActive(token)) TrafficExportQueue.offerForRun(document, token);
                     return null;
                 });
             } catch (CapacityException e) {
                 failed(document, token, "preparation_capacity");
             } catch (RuntimeException e) {
-                failed(document, token, "preparation_failed");
+                failed(document, token, "preparation_failed", stage, e);
             } finally {
                 close();
             }
