@@ -56,7 +56,7 @@ class ExportStatsTest {
     }
 
     @Test
-    void recordExportStartRequested_clearsEveryPriorRunMetricFamily() {
+    void recordExportStartRequested_clearsRunMetricsButRetainsOwnedMemoryCharges() {
         ExportStats.resetForTests();
         ExportStats.recordExported("traffic", 2L);
         ExportStats.recordNoop("traffic", 1L);
@@ -162,6 +162,9 @@ class ExportStatsTest {
         assertThat(ExportStats.getLastBulkAttemptedDocs()).isEqualTo(-1);
         assertThat(ExportStats.getPeakTrafficQueueDocs()).isZero();
         assertThat(ExportStats.getLastActiveBulkByteBudget()).isZero();
+        assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isEqualTo(1);
+        assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isEqualTo(64L);
+        ExportStats.releaseSnapshotBuildAhead(1, 64L);
         assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
         assertThat(ExportStats.getPeakSnapshotFlushMs()).isZero();
         assertThat(ExportStats.getSnapshotLastRun(ExportStats.SNAPSHOT_SITEMAP)).isNull();
@@ -637,8 +640,10 @@ class ExportStatsTest {
         assertThat(ExportStats.getPeakTrafficQueueDocs()).isZero();
         assertThat(ExportStats.getPeakSnapshotChunkTarget()).isZero();
         assertThat(ExportStats.getPeakSnapshotFlushMs()).isZero();
+        assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isEqualTo(4);
+        assertThat(ExportStats.getPeakSnapshotBuildAheadReservedPermits()).isEqualTo(4);
+        ExportStats.releaseSnapshotBuildAhead(4, 256L * 1024L);
         assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
-        assertThat(ExportStats.getPeakSnapshotBuildAheadReservedPermits()).isZero();
     }
 
     @Test

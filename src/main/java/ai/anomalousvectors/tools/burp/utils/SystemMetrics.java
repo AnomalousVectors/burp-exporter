@@ -10,16 +10,41 @@ import java.lang.management.ThreadMXBean;
 import java.util.List;
 
 /**
- * JVM/process resource metrics sampled from the JMX {@code ManagementFactory} beans.
+ * JVM heap and process resource metrics for admission and reporting.
  *
  * <p>Centralized so the periodic exporter stats snapshot, the Stats panel Misc Stats card, and
- * the plain-text stats summary all read identical values. JMX calls are cheap but may throw in
- * restricted environments; each field is collected independently and falls back to {@code -1}
- * (or {@code NaN} for CPU load) rather than propagating the failure.</p>
+ * the plain-text stats summary use the same collection logic. Admission uses only
+ * {@link #heapSnapshot()}, avoiding unrelated JMX and native process queries on traffic threads.
+ * Reporting fields are collected independently and fall back to {@code -1} (or {@code NaN} for
+ * CPU load) when unavailable.</p>
  */
 public final class SystemMetrics {
 
     private SystemMetrics() {}
+
+    /**
+     * Immutable heap readings used by resource admission and full process snapshots.
+     *
+     * @param heapUsedBytes committed heap minus currently free heap
+     * @param heapCommittedBytes heap currently allocated to the JVM
+     * @param heapMaxBytes maximum heap reported by the JVM
+     */
+    public record HeapSnapshot(long heapUsedBytes, long heapCommittedBytes, long heapMaxBytes) {}
+
+    /**
+     * Samples heap usage without collecting JMX or operating-system process metrics.
+     *
+     * <p>Thread-safe and uncached so admission uses current heap headroom. The runtime readings
+     * are not atomic with respect to allocation or garbage collection.</p>
+     *
+     * @return immutable heap readings shared with full process reporting
+     */
+    public static HeapSnapshot heapSnapshot() {
+        Runtime rt = Runtime.getRuntime();
+        long committed = rt.totalMemory();
+        long used = Math.max(-1L, committed - rt.freeMemory());
+        return new HeapSnapshot(used, committed, rt.maxMemory());
+    }
 
     /**
      * Immutable process-wide resource snapshot.
@@ -49,12 +74,16 @@ public final class SystemMetrics {
             long directBufferUsedBytes,
             long mappedBufferUsedBytes) {}
 
-    /** Returns {@code true} when any JMX field above reported a usable value. */
+    /**
+     * Collects a full process snapshot for periodic or user-requested reporting.
+     *
+     * <p>Thread-safe, but JMX and native process queries may be costly. Use
+     * {@link #heapSnapshot()} for heap-only admission checks.</p>
+     *
+     * @return immutable resource readings with unavailable reporting fields marked by sentinels
+     */
     public static Snapshot snapshot() {
-        Runtime rt = Runtime.getRuntime();
-        long heapCommitted = rt.totalMemory();
-        long heapUsed = Math.max(-1L, heapCommitted - rt.freeMemory());
-        long heapMax = rt.maxMemory();
+        HeapSnapshot heap = heapSnapshot();
 
         long nonHeapUsed = -1L;
         long nonHeapMax = -1L;
@@ -144,9 +173,9 @@ public final class SystemMetrics {
         }
 
         return new Snapshot(
-                heapUsed,
-                heapCommitted,
-                heapMax,
+                heap.heapUsedBytes(),
+                heap.heapCommittedBytes(),
+                heap.heapMaxBytes(),
                 nonHeapUsed,
                 nonHeapMax,
                 threadCount,

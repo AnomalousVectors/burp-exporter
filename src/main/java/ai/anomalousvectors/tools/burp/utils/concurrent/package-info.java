@@ -11,7 +11,8 @@
  *       creation and bounded shutdown for recurring background work.</li>
  *   <li>{@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotExportEngine} runs parallel
  *       {@code build + prepare} on worker threads with overlapping bulk flushes, while serializing
- *       whole engine runs and bounding prepared build-ahead by both count and bytes. Used by Proxy
+ *       whole engine runs. Shared estimated-memory admission precedes construction and remains
+ *       held through delivery; the prepared queue also has a count bound. Used by Proxy
  *       History, Sitemap initial, Findings backlog, and Proxy WebSocket historic snapshots.</li>
  *   <li>{@link ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor} owns the
  *       separate shared pools for whole-chunk flushes and nested dual-sink work, preserving the

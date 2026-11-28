@@ -778,7 +778,7 @@ public final class ExportStats {
     }
 
     /**
-     * Returns current snapshot build-ahead permits reserved by prepared documents.
+     * Returns current snapshot memory-admission units held from construction through delivery.
      *
      * @return non-negative live permit count
      */
@@ -816,7 +816,7 @@ public final class ExportStats {
     /**
      * Records a successful snapshot build-ahead reservation.
      *
-     * @param permits positive semaphore permits reserved
+     * @param permits positive quantized reservation units
      * @param bytes positive quantized bytes represented by the reservation
      */
     public static void reserveSnapshotBuildAhead(int permits, long bytes) {
@@ -830,12 +830,12 @@ public final class ExportStats {
     }
 
     /**
-     * Releases a snapshot build-ahead reservation after dequeue or cancellation.
+     * Releases snapshot memory admission after delivery or abandoned work actually terminates.
      *
      * <p>Non-positive inputs are ignored. Releasing more than the currently reserved amount clamps
      * the corresponding live counter to zero.</p>
      *
-     * @param permits positive semaphore permits released
+     * @param permits positive quantized reservation units released
      * @param bytes positive quantized bytes represented by the reservation
      */
     public static void releaseSnapshotBuildAhead(int permits, long bytes) {
@@ -846,7 +846,7 @@ public final class ExportStats {
         snapshotBuildAheadReservedBytes.updateAndGet(current -> Math.max(0L, current - bytes));
     }
 
-    /** Clears live snapshot build-ahead reservations after the exclusive engine run ends. */
+    /** Clears snapshot reservation counters during a complete test reset. */
     public static void clearSnapshotBuildAheadReservations() {
         snapshotBuildAheadReservedPermits.set(0);
         snapshotBuildAheadReservedBytes.set(0L);
@@ -863,9 +863,9 @@ public final class ExportStats {
         peakSnapshotFlushMs.set(0);
         lastActiveBulkByteBudget.set(0L);
         lastActiveSnapshotFlushCap.set(0);
-        peakSnapshotBuildAheadReservedPermits.set(0);
-        peakSnapshotBuildAheadReservedBytes.set(0L);
-        clearSnapshotBuildAheadReservations();
+        // A cancelled older supplier can still own memory. Start must not erase its charge.
+        peakSnapshotBuildAheadReservedPermits.set(snapshotBuildAheadReservedPermits.get());
+        peakSnapshotBuildAheadReservedBytes.set(snapshotBuildAheadReservedBytes.get());
     }
 
     private static void noteSnapshotChunkTargetPeak(int chunkTarget) {
@@ -1819,7 +1819,7 @@ public final class ExportStats {
     }
 
     /**
-     * Clears every metric owned by the preceding export run.
+     * Clears run metrics while retaining memory charges still owned by older snapshot work.
      *
      * <p>Individual counter operations are thread-safe, but reset is not an atomic snapshot
      * transition. Callers must quiesce export producers before invoking it.</p>
@@ -1895,7 +1895,6 @@ public final class ExportStats {
         permanentDropReasons.clear();
         peakCooldownWaitMs.set(0L);
         peakFlushSlotWaitMs.set(0L);
-        clearSnapshotBuildAheadReservations();
     }
 
     /**
@@ -1922,6 +1921,7 @@ public final class ExportStats {
      * <p>Callers must ensure no producers are recording concurrently.</p>
      */
     public static void resetForTests() {
+        clearSnapshotBuildAheadReservations();
         resetForRun();
         FileExportStats.resetForTests();
         STATS.clear();

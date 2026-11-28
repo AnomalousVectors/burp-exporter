@@ -203,14 +203,14 @@ public final class ProxyHistoryIndexReporter {
                 RuntimeConfig.searchBaseUrl(),
                 trafficIndexName,
                 TrafficRouteBucket.INDEX_KEY,
-                item -> {
+                SnapshotExportEngine.ItemPreparer.estimated(SnapshotMemoryEstimate::proxy, item -> {
                     Map<String, Object> doc =
                             buildDocument(item, state.config, state.scopeCache, state.skippedScope);
                     return doc == null
                             ? null
                             : ExportDocumentIdentity.prepare(
                                     trafficIndexName, TrafficRouteBucket.INDEX_KEY, doc);
-                },
+                }),
                 (chunk, outcome, nextChunkTarget) -> {
                     recordChunkOutcome(state.route, RuntimeConfig.isSearchActive(), outcome);
                     ExportStats.setCurrentProxyHistoryChunkTarget(nextChunkTarget);

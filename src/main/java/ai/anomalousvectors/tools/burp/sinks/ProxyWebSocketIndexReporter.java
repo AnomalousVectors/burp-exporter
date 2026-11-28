@@ -192,7 +192,7 @@ public final class ProxyWebSocketIndexReporter {
                 RuntimeConfig.searchBaseUrl(),
                 indexName,
                 TrafficRouteBucket.INDEX_KEY,
-                msg -> {
+                SnapshotExportEngine.ItemPreparer.estimated(SnapshotMemoryEstimate::webSocket, msg -> {
                     if (!RuntimeConfig.isExportRunActive(state.token)) {
                         return null;
                     }
@@ -205,7 +205,7 @@ public final class ProxyWebSocketIndexReporter {
                                     TrafficRouteBucket.INDEX_KEY,
                                     doc,
                                     state.route.key());
-                },
+                }),
                 (chunk, outcome, nextChunkTarget) -> TrafficRouteBucket.recordBulkOutcome(
                         state.route,
                         outcome,

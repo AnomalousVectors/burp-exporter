@@ -358,7 +358,7 @@ public final class FindingsIndexReporter {
                 activeBaseUrl,
                 indexName,
                 "findings",
-                issue -> {
+                SnapshotExportEngine.ItemPreparer.estimated(SnapshotMemoryEstimate::finding, issue -> {
                     FindingWorkItem work = toStartupWorkItem(
                             issue,
                             state.config,
@@ -374,7 +374,7 @@ public final class FindingsIndexReporter {
                     }
                     Map<String, Object> doc = buildFindingDoc(work.issue(), work.burpInScope());
                     return ExportDocumentIdentity.prepare(indexName, "findings", doc);
-                },
+                }),
                 (chunk, outcome, nextChunkTarget) ->
                         BulkOutcomeRecorder.record(
                                 "findings", "Findings", "Bulk push", outcome, openSearchActive));
@@ -542,7 +542,7 @@ public final class FindingsIndexReporter {
                 activeBaseUrl,
                 indexName,
                 "findings",
-                issue -> {
+                SnapshotExportEngine.ItemPreparer.estimated(SnapshotMemoryEstimate::finding, issue -> {
                     FindingWorkItem work = toStartupWorkItem(
                             issue,
                             state,
@@ -558,7 +558,7 @@ public final class FindingsIndexReporter {
                     }
                     Map<String, Object> doc = buildFindingDoc(work.issue(), work.burpInScope());
                     return ExportDocumentIdentity.prepare(indexName, "findings", doc);
-                },
+                }),
                 (chunk, outcome, nextChunkTarget) ->
                         BulkOutcomeRecorder.record(
                                 "findings", "Findings", "Bulk push", outcome, openSearchActive));

@@ -2217,11 +2217,11 @@ public final class StatsPanel extends JPanel {
                 "to <b>2</b> after success or soft-outage clear, and may rise to <b>3</b> when a",
                 "healthy success streak shows unused headroom."));
         tooltips.put("Snapshot Build-Ahead", Tooltips.htmlRaw(
-                "Current quantized byte and semaphore-permit reservation held by prepared snapshot",
-                "documents waiting for chunk assembly, followed by the fixed 64 MiB / 1,024-permit",
-                "capacity. One larger document may reserve the full envelope alone.",
-                "This measures only prepared queue build-ahead, not active serialization, in-flight",
-                "flushes, Burp-owned objects, or other JVM allocations."));
+                "Estimated snapshot memory reservations from construction through queued and",
+                "in-flight delivery, against a 64 MiB / 1,024-unit admission envelope.",
+                "One oversized item reserves the envelope alone. Size reconciliation can exceed",
+                "the envelope temporarily; new builders wait for capacity. This is not a hard",
+                "heap limit and does not measure Burp-owned objects or all JVM allocations."));
         tooltips.put("Cooldown Remaining", Tooltips.htmlRaw(
                 "Longest remaining wait before the next bulk send across hard cluster cooldown",
                 "and any per-index mild cooldown. Hard pressure (429/502/503/504, transport, probes)",
@@ -2254,10 +2254,10 @@ public final class StatsPanel extends JPanel {
                 "Longest single snapshot chunk flush wall time observed during the current export run.",
                 "Resets on Start."));
         tooltips.put("Peak Snapshot Build-Ahead", Tooltips.htmlRaw(
-                "Highest quantized byte and semaphore-permit reservation held by prepared snapshot",
-                "documents waiting for chunk assembly during this export run.",
-                "Use with Snapshot Build-Ahead to verify the 64 MiB queue envelope independently of",
-                "the JVM heap chart. Resets on Start."));
+                "Highest estimated snapshot memory reservation across construction and delivery",
+                "during this export run. Reconciled estimates may exceed the admission envelope.",
+                "Use with Snapshot Build-Ahead and the JVM heap chart. Resets on Start, retaining",
+                "any charge still owned by finishing work from an older run."));
         tooltips.put("Peak Cooldown Wait (ms)", Tooltips.htmlRaw(
                 "Longest shared capacity-cooldown park observed before a bulk send this run.",
                 "Includes capped Stop-drain waits. Resets on Start."));

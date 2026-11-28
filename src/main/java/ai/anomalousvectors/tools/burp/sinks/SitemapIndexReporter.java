@@ -296,11 +296,11 @@ public final class SitemapIndexReporter {
                 RuntimeConfig.searchBaseUrl(),
                 indexName,
                 "sitemap",
-                item -> {
+                SnapshotExportEngine.ItemPreparer.estimated(SnapshotMemoryEstimate::exchange, item -> {
                     SitemapWorkItem work = toStartupWorkItem(
                             item, state.config, state.scopeCache, state.processed, state.skippedScope);
                     return work == null ? null : prepareSitemapWorkItem(indexName, work);
-                },
+                }),
                 (chunk, outcome, nextChunkTarget) ->
                         BulkOutcomeRecorder.record(
                                 "sitemap", "Sitemap", "Bulk push", outcome, openSearchActive));
@@ -431,14 +431,14 @@ public final class SitemapIndexReporter {
                 activeBaseUrl,
                 indexName,
                 "sitemap",
-                item -> {
+                SnapshotExportEngine.ItemPreparer.estimated(SnapshotMemoryEstimate::exchange, item -> {
                     SitemapWorkItem work = toStartupWorkItem(
                             item, state, scopeCache, processed, skippedScope);
                     if (work == null) {
                         return null;
                     }
                     return prepareSitemapWorkItem(indexName, work);
-                },
+                }),
                 (chunk, outcome, nextChunkTarget) ->
                         BulkOutcomeRecorder.record(
                                 "sitemap", "Sitemap", "Bulk push", outcome, openSearchActive));

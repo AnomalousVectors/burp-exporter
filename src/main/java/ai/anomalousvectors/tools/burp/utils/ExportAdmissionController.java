@@ -404,7 +404,7 @@ public final class ExportAdmissionController {
     }
 
     private static long budgetFromHeadroom(double fraction, long floor, long ceiling) {
-        SystemMetrics.Snapshot snap = SystemMetrics.snapshot();
+        SystemMetrics.HeapSnapshot snap = SystemMetrics.heapSnapshot();
         long used = Math.max(0L, snap.heapUsedBytes());
         long committed = Math.max(used, snap.heapCommittedBytes());
         long max = snap.heapMaxBytes();

@@ -1,6 +1,10 @@
 package ai.anomalousvectors.tools.burp.utils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
+import static org.mockito.Mockito.mockStatic;
+
+import java.lang.management.ManagementFactory;
 
 import org.junit.jupiter.api.Test;
 
@@ -13,6 +17,33 @@ import org.junit.jupiter.api.Test;
  * sentinel.</p>
  */
 class SystemMetricsTest {
+
+    @Test
+    void heapSnapshot_doesNotCollectManagementMetrics() {
+        try (var management = mockStatic(ManagementFactory.class)) {
+            SystemMetrics.HeapSnapshot heap = SystemMetrics.heapSnapshot();
+
+            assertThat(heap.heapUsedBytes()).isGreaterThanOrEqualTo(0L);
+            assertThat(heap.heapCommittedBytes()).isGreaterThanOrEqualTo(heap.heapUsedBytes());
+            assertThat(heap.heapMaxBytes()).isGreaterThanOrEqualTo(heap.heapCommittedBytes());
+            management.verifyNoInteractions();
+        }
+    }
+
+    @Test
+    void snapshot_reusesHeapOnlyCollection() {
+        SystemMetrics.HeapSnapshot heap = new SystemMetrics.HeapSnapshot(100L, 200L, 400L);
+        try (var metrics = mockStatic(SystemMetrics.class, CALLS_REAL_METHODS)) {
+            metrics.when(SystemMetrics::heapSnapshot).thenReturn(heap);
+
+            SystemMetrics.Snapshot snapshot = SystemMetrics.snapshot();
+
+            assertThat(snapshot.heapUsedBytes()).isEqualTo(heap.heapUsedBytes());
+            assertThat(snapshot.heapCommittedBytes()).isEqualTo(heap.heapCommittedBytes());
+            assertThat(snapshot.heapMaxBytes()).isEqualTo(heap.heapMaxBytes());
+            metrics.verify(SystemMetrics::heapSnapshot);
+        }
+    }
 
     @Test
     void snapshot_heapValuesAreOrdered_andCommittedExposed() {

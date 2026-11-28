@@ -5,6 +5,8 @@ import static ai.anomalousvectors.tools.burp.testutils.Reflect.callStatic;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.getStatic;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.setStatic;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -12,9 +14,11 @@ import java.util.Map;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -25,11 +29,13 @@ import org.junit.jupiter.api.Test;
 
 import ai.anomalousvectors.tools.burp.testutils.Reflect;
 import ai.anomalousvectors.tools.burp.ui.ConfigPanel;
+import ai.anomalousvectors.tools.burp.utils.MontoyaApiProvider;
 import ai.anomalousvectors.tools.burp.utils.concurrent.LazyScheduler;
 import ai.anomalousvectors.tools.burp.utils.concurrent.Workers;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 import ai.anomalousvectors.tools.burp.utils.config.RuntimeConfig;
 import ai.anomalousvectors.tools.burp.utils.search.IndexingRetryCoordinator;
+import burp.api.montoya.MontoyaApi;
 
 /**
  * Proves that every extension-owned background worker terminates deterministically when its
@@ -158,6 +164,60 @@ class WorkerShutdownTest {
         ProxyHistoryIndexReporter.stop();
         IndexingRetryCoordinator.getInstance().stopDrainThread();
         IndexingRetryCoordinator.getInstance().clearPendingWork();
+    }
+
+    @Test
+    void invalidatedTrafficRun_waitsWithoutRepeatedDestinationLookups() throws Exception {
+        MontoyaApi previousApi = MontoyaApiProvider.get();
+        MontoyaApi api = mock(MontoyaApi.class);
+        CountDownLatch firstLookup = new CountDownLatch(1);
+        CountDownLatch repeatedInactiveLookup = new CountDownLatch(1);
+        CountDownLatch releaseLookup = new CountDownLatch(1);
+        CountDownLatch resumedLookup = new CountDownLatch(1);
+        AtomicBoolean replacementStarted = new AtomicBoolean();
+        AtomicInteger inactiveLookups = new AtomicInteger();
+        when(api.burpSuite()).thenAnswer(call -> {
+            if (Thread.currentThread().getName().equals("burp-exporter-traffic-export")) {
+                firstLookup.countDown();
+                if (replacementStarted.get()
+                        && RuntimeConfig.isExportRunActive(RuntimeConfig.currentExportRunToken())) {
+                    resumedLookup.countDown();
+                }
+                if (!RuntimeConfig.isExportRunActive(RuntimeConfig.currentExportRunToken())
+                        && inactiveLookups.incrementAndGet() > 1) {
+                    // Bound a regressed loop before Mockito can retain an unbounded call history.
+                    repeatedInactiveLookup.countDown();
+                    releaseLookup.await(2, TimeUnit.SECONDS);
+                }
+            }
+            return null;
+        });
+        try {
+            TrafficExportQueueTestSupport.configureRunningTraffic(List.of("scanner"));
+            MontoyaApiProvider.set(api);
+            callStatic(TrafficExportQueue.class, "startWorkerIfNeeded");
+            assertThat(firstLookup.await(5, TimeUnit.SECONDS)).isTrue();
+
+            RuntimeConfig.invalidateExportRun();
+
+            assertThat(RuntimeConfig.isExportReady()).isTrue();
+            assertThat(repeatedInactiveLookup.await(300, TimeUnit.MILLISECONDS))
+                    .as("An invalidated run must wait rather than retry an immediately skipped bulk")
+                    .isFalse();
+
+            RuntimeConfig.setExportRunning(false);
+            replacementStarted.set(true);
+            RuntimeConfig.setExportRunning(true);
+            assertThat(resumedLookup.await(1, TimeUnit.SECONDS))
+                    .as("A replacement run must resume normal destination polling")
+                    .isTrue();
+        } finally {
+            RuntimeConfig.setExportRunning(false);
+            releaseLookup.countDown();
+            TrafficExportQueue.stopWorker();
+            TrafficExportQueue.clearPendingWork();
+            MontoyaApiProvider.set(previousApi);
+        }
     }
 
     @Test

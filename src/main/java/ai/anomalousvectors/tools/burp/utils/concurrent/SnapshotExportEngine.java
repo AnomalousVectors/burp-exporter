@@ -2,7 +2,6 @@ package ai.anomalousvectors.tools.burp.utils.concurrent;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.TreeMap;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -17,6 +16,7 @@ import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntUnaryOperator;
+import java.util.function.ToLongFunction;
 
 import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.Logger;
@@ -35,7 +35,8 @@ import ai.anomalousvectors.tools.burp.utils.search.SearchClientWrapper;
  * historic startups cannot materialize multiple prepared-document queues in parallel. Startup
  * reporters also submit through {@link StartupSnapshotCoordinator} so ConfigPanel order
  * (Findings → Sitemap → Proxy History → WebSocket) is preserved under that gate. Build workers fill
- * a count- and byte-bounded queue; the assembly thread chunks prepared documents by the live byte
+ * a count-bounded queue after estimated-memory admission; reservations cover construction,
+ * queued data and delivery. The assembly thread chunks prepared documents by the live byte
  * budget and overlaps chunk flushes with continued queue draining. Adaptive {@link BulkByteBudget}
  * starts at one in-flight flush and may raise concurrency after a healthy success streak.</p>
  */
@@ -45,9 +46,9 @@ public final class SnapshotExportEngine {
     private static final int MAX_IN_FLIGHT_FLUSHES = 3;
     private static final int MIN_QUEUE_CAPACITY = 64;
     private static final int MAX_QUEUE_CAPACITY = 512;
-    /** Caps resolved NDJSON waiting in the prepared queue; one larger document reserves it alone. */
+    /** Estimated-memory admission envelope; an oversized item reserves it alone before building. */
     static final long MAX_BUILD_AHEAD_BYTES = 64L * 1024L * 1024L;
-    /** Quantizes byte reservations so the limiter can use integer semaphore permits. */
+    /** Quantizes byte estimates into integer admission units. */
     private static final long BUILD_AHEAD_PERMIT_BYTES = 64L * 1024L;
     private static final int MAX_BUILD_AHEAD_PERMITS =
             Math.toIntExact(MAX_BUILD_AHEAD_BYTES / BUILD_AHEAD_PERMIT_BYTES);
@@ -57,7 +58,10 @@ public final class SnapshotExportEngine {
     private static final Semaphore ENGINE_GATE = new Semaphore(1, true);
     private static final ConcurrentHashMap<Long, RunCancellation> ACTIVE_RUNS = new ConcurrentHashMap<>();
 
-    private record QueuedPreparedDocument(PreparedExportDocument document, int reservedPermits) {}
+    private static final SnapshotMemoryBudget MEMORY_BUDGET = new SnapshotMemoryBudget();
+
+    private record QueuedPreparedDocument(
+            PreparedExportDocument document, SnapshotMemoryBudget.Reservation reservation) {}
 
     /** Minimum completed flush-slot wait logged at INFO. */
     static final long SLOW_FLUSH_SLOT_WAIT_LOG_MS = 1_000L;
@@ -148,7 +152,7 @@ public final class SnapshotExportEngine {
      * Returns the bounded prepared-document queue capacity for one snapshot run.
      *
      * <p>Sized for a few in-flight chunks plus worker slack. A separate byte reservation limits the
-     * aggregate prepared data waiting in this queue.</p>
+     * estimated memory across construction, queued data and delivery.</p>
      *
      * @param buildWorkers requested build worker count
      * @param initialChunkTarget initial chunk target for the snapshot run
@@ -165,7 +169,7 @@ public final class SnapshotExportEngine {
     }
 
     /**
-     * Returns the byte capacity of the prepared-document build-ahead reservation.
+     * Returns the estimated-memory admission capacity for snapshot work.
      *
      * @return reservation capacity in bytes
      */
@@ -199,6 +203,53 @@ public final class SnapshotExportEngine {
      */
     @FunctionalInterface
     public interface ItemPreparer<T> {
+        /**
+         * Estimates memory before copying, encoding or serializing an item.
+         *
+         * <p>The default reserves one quantized unit for an unknown source. Estimates are not
+         * hard heap limits: public API reads and decoded representations can allocate more.
+         * The engine reconciles prepared sizes without blocking an already completed build.</p>
+         *
+         * @param item source item, possibly null
+         * @return positive estimated bytes; values above the envelope reserve it exclusively
+         */
+        default long estimatedMemoryBytes(T item) {
+            return BUILD_AHEAD_PERMIT_BYTES;
+        }
+
+        /**
+         * Associates a cheap source-size estimator with an item preparer.
+         *
+         * <p>Both callbacks run on build workers and must support concurrent calls. Estimators
+         * must avoid payload copies. An estimator exception reserves the entire envelope rather
+         * than skipping otherwise exportable data.</p>
+         *
+         * @param estimator estimated resident bytes before preparation
+         * @param preparer item preparation callback
+         * @param <T> source item type
+         * @return preparer using the supplied estimate
+         * @throws NullPointerException if either callback is null
+         */
+        static <T> ItemPreparer<T> estimated(ToLongFunction<T> estimator, ItemPreparer<T> preparer) {
+            java.util.Objects.requireNonNull(estimator);
+            java.util.Objects.requireNonNull(preparer);
+            return new ItemPreparer<>() {
+                @Override
+                public long estimatedMemoryBytes(T item) {
+                    try {
+                        return estimator.applyAsLong(item);
+                    } catch (RuntimeException unavailable) {
+                        return MAX_BUILD_AHEAD_BYTES;
+                    }
+                }
+
+                @Override
+                public PreparedExportDocument prepare(T item) {
+                    return preparer.prepare(item);
+                }
+            };
+        }
+
         /**
          * Builds and prepares one snapshot item.
          *
@@ -457,7 +508,6 @@ public final class SnapshotExportEngine {
             ChunkObserver chunkObserver) {
         int workers = Math.max(1, buildWorkers);
         BlockingQueue<Object> queue = new ArrayBlockingQueue<>(queueCapacity(workers, initialChunkTarget));
-        Semaphore buildAheadPermits = new Semaphore(MAX_BUILD_AHEAD_PERMITS, true);
         LongAdder buildNanos = new LongAdder();
         LongAdder preparationFailures = new LongAdder();
         long buildWallStartNs = System.nanoTime();
@@ -480,8 +530,7 @@ public final class SnapshotExportEngine {
                     preparer,
                     buildNanos,
                     preparationFailures,
-                    queue,
-                    buildAheadPermits));
+                    queue));
         }
 
         ChunkFlushCoordinator flushCoordinator = new ChunkFlushCoordinator(
@@ -500,6 +549,7 @@ public final class SnapshotExportEngine {
         int poisonsReceived = 0;
         long estBytes = 0L;
         List<PreparedExportDocument> chunk = new ArrayList<>(initialChunkTarget);
+        List<SnapshotMemoryBudget.Reservation> chunkReservations = new ArrayList<>();
 
         try {
             while (true) {
@@ -519,11 +569,15 @@ public final class SnapshotExportEngine {
                     break;
                 }
                 if (taken == null) {
-                    if (poisonsReceived >= workers && !chunk.isEmpty() && queue.isEmpty()
-                            && isLive(token, cancellation)) {
-                        flushCoordinator.submit(chunk);
+                    // Builders may be waiting for this partial chunk's reservations. Do not
+                    // require a full chunk or worker completion before releasing it to delivery.
+                    if (!chunk.isEmpty() && isLive(token, cancellation)) {
+                        flushCoordinator.submit(chunk, chunkReservations);
                         chunk = new ArrayList<>(flushCoordinator.chunkTarget());
+                        chunkReservations = new ArrayList<>();
                         estBytes = 0L;
+                    } else {
+                        flushCoordinator.awaitPending();
                     }
                     continue;
                 }
@@ -536,33 +590,36 @@ public final class SnapshotExportEngine {
                     continue;
                 }
                 QueuedPreparedDocument queued = (QueuedPreparedDocument) taken;
-                ExportStats.releaseSnapshotBuildAhead(
-                        queued.reservedPermits(), buildAheadReservationBytes(queued.reservedPermits()));
-                buildAheadPermits.release(queued.reservedPermits());
-                PreparedExportDocument prepared = queued.document();
-                if (!isLive(token, cancellation)) {
-                    break;
+                boolean transferred = false;
+                try {
+                    PreparedExportDocument prepared = queued.document();
+                    if (!isLive(token, cancellation)) break;
+                    SnapshotPacing.paceItem(processed);
+                    processed++;
+                    long maxBytes = effectiveBulkMaxBytes(bulkMaxBytes);
+                    long docBytes = prepared.resolvedBulkBytes();
+                    // Oversized singles retain full Files output; the search sender fits a
+                    // derived copy and enforces its own live bulk-byte postcondition.
+                    boolean countCapReached = chunk.size() >= flushCoordinator.chunkTarget();
+                    boolean wouldExceedBytes = !chunk.isEmpty() && (estBytes + docBytes) > maxBytes;
+                    boolean oversizedSingle = docBytes > maxBytes;
+                    if (wouldExceedBytes || countCapReached || (oversizedSingle && !chunk.isEmpty())) {
+                        flushCoordinator.submit(chunk, chunkReservations);
+                        chunk = new ArrayList<>(flushCoordinator.chunkTarget());
+                        chunkReservations = new ArrayList<>();
+                        estBytes = 0L;
+                    }
+                    chunk.add(prepared);
+                    chunkReservations.add(queued.reservation());
+                    transferred = true;
+                    estBytes += docBytes;
+                } finally {
+                    if (!transferred) queued.reservation().close();
                 }
-                SnapshotPacing.paceItem(processed);
-                processed++;
-                long maxBytes = effectiveBulkMaxBytes(bulkMaxBytes);
-                long docBytes = prepared.resolvedBulkBytes();
-                // Oversized singles stay in the chunk for full dual-sink file emit. The search
-                // sender fits a derived copy and refuses HTTP if the live-budget postcondition
-                // still cannot be met.
-                boolean countCapReached = chunk.size() >= flushCoordinator.chunkTarget();
-                boolean wouldExceedBytes = !chunk.isEmpty() && (estBytes + docBytes) > maxBytes;
-                boolean oversizedSingle = docBytes > maxBytes;
-                if (wouldExceedBytes || countCapReached || (oversizedSingle && !chunk.isEmpty())) {
-                    flushCoordinator.submit(chunk);
-                    chunk = new ArrayList<>(flushCoordinator.chunkTarget());
-                    estBytes = 0L;
-                }
-                chunk.add(prepared);
-                estBytes += docBytes;
             }
             if (!chunk.isEmpty() && isLive(token, cancellation)) {
-                flushCoordinator.submit(chunk);
+                flushCoordinator.submit(chunk, chunkReservations);
+                chunkReservations = new ArrayList<>();
             }
             if (isLive(token, cancellation)) {
                 flushCoordinator.awaitAll();
@@ -570,13 +627,20 @@ public final class SnapshotExportEngine {
                 flushCoordinator.cancelAll();
             }
         } finally {
+            chunkReservations.forEach(reservation -> reservation.close());
+            flushCoordinator.cancelAll();
             buildPool.shutdownNow();
             try {
                 buildPool.awaitTermination(Workers.DEFAULT_SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            ExportStats.clearSnapshotBuildAheadReservations();
+            Object abandoned;
+            while ((abandoned = queue.poll()) != null) {
+                if (abandoned instanceof QueuedPreparedDocument prepared) {
+                    prepared.reservation().close();
+                }
+            }
             if (!buildWallEnded) {
                 buildWallMs = (System.nanoTime() - buildWallStartNs) / 1_000_000L;
             }
@@ -649,56 +713,42 @@ public final class SnapshotExportEngine {
             ItemPreparer<T> preparer,
             LongAdder buildNanos,
             LongAdder preparationFailures,
-            BlockingQueue<Object> queue,
-            Semaphore buildAheadPermits) {
+            BlockingQueue<Object> queue) {
         try {
             for (int index = workerIndex; index < items.size(); index += workers) {
                 if (!isLive(token, cancellation)) {
                     break;
                 }
-                long buildStartNs = System.nanoTime();
-                PreparedExportDocument prepared;
+                SnapshotMemoryBudget.Reservation reservation = null;
+                boolean queued = false;
                 try {
-                    prepared = preparer.prepare(items.get(index));
+                    reservation = MEMORY_BUDGET.acquire(
+                            preparer.estimatedMemoryBytes(items.get(index)), () -> isLive(token, cancellation));
+                    if (reservation == null) break;
+                    long buildStartNs = System.nanoTime();
+                    PreparedExportDocument prepared;
+                    try {
+                        prepared = preparer.prepare(items.get(index));
+                    } finally {
+                        buildNanos.add(System.nanoTime() - buildStartNs);
+                    }
+                    if (prepared != null && isLive(token, cancellation)) {
+                        long bytes = prepared.resolvedBulkBytes();
+                        // Account for both serialized bytes and the retained document tree.
+                        reservation.accountPreparedBytes(bytes > Long.MAX_VALUE / 2L ? Long.MAX_VALUE : bytes * 2L);
+                        while (isLive(token, cancellation)
+                                && !(queued = queue.offer(new QueuedPreparedDocument(prepared, reservation),
+                                        QUEUE_POLL_MS, TimeUnit.MILLISECONDS))) {
+                            // Stop and cancellation remain observable behind a full queue.
+                        }
+                    }
                 } catch (RuntimeException e) {
                     preparationFailures.increment();
                     Logger.logDebug("[SnapshotExport] Item preparation failed for "
                             + (items.get(index) == null ? "null" : items.get(index).getClass().getSimpleName())
                             + ": " + (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
-                    continue;
                 } finally {
-                    buildNanos.add(System.nanoTime() - buildStartNs);
-                }
-                if (prepared != null && isLive(token, cancellation)) {
-                    int reservedPermits = buildAheadReservationPermits(prepared.resolvedBulkBytes());
-                    boolean reserved = false;
-                    boolean queued = false;
-                    try {
-                        while (isLive(token, cancellation) && !reserved) {
-                            reserved = buildAheadPermits.tryAcquire(
-                                    reservedPermits, QUEUE_POLL_MS, TimeUnit.MILLISECONDS);
-                        }
-                        if (reserved) {
-                            ExportStats.reserveSnapshotBuildAhead(
-                                    reservedPermits, buildAheadReservationBytes(reservedPermits));
-                        }
-                        // Timed offers let Stop/token invalidation terminate builders behind a full
-                        // queue. A document larger than the byte envelope reserves it exclusively.
-                        while (reserved
-                                && isLive(token, cancellation)
-                                && !(queued = queue.offer(
-                                        new QueuedPreparedDocument(prepared, reservedPermits),
-                                        QUEUE_POLL_MS,
-                                        TimeUnit.MILLISECONDS))) {
-                            // Retry while this run remains live.
-                        }
-                    } finally {
-                        if (reserved && !queued) {
-                            ExportStats.releaseSnapshotBuildAhead(
-                                    reservedPermits, buildAheadReservationBytes(reservedPermits));
-                            buildAheadPermits.release(reservedPermits);
-                        }
-                    }
+                    if (reservation != null && !queued) reservation.close();
                 }
             }
         } catch (InterruptedException e) {
@@ -796,10 +846,7 @@ public final class SnapshotExportEngine {
         private final IntUnaryOperator applyBackpressure;
         private final ChunkTargetAdjuster adjustChunkTarget;
         private final ChunkObserver chunkObserver;
-        private final List<CompletableFuture<FlushOutcome>> inFlight = new CopyOnWriteArrayList<>();
-        private final TreeMap<Integer, FlushOutcome> completed = new TreeMap<>();
-        private int assignSequence;
-        private int emitSequence;
+        private final List<PendingFlush> inFlight = new CopyOnWriteArrayList<>();
         private int chunkTarget;
         private int attempted;
         private int success;
@@ -869,8 +916,10 @@ public final class SnapshotExportEngine {
          * that by allocating a fresh chunk list for subsequent documents, which avoids an extra
          * per-chunk defensive copy on large WebSocket/history snapshots.</p>
          */
-        void submit(List<PreparedExportDocument> snapshot) {
+        void submit(List<PreparedExportDocument> snapshot,
+                List<SnapshotMemoryBudget.Reservation> reservations) {
             if (snapshot.isEmpty() || !isLive(token, cancellation)) {
+                reservations.forEach(reservation -> reservation.close());
                 return;
             }
             while (isLive(token, cancellation)
@@ -878,73 +927,75 @@ public final class SnapshotExportEngine {
                 awaitOldest();
             }
             if (!isLive(token, cancellation)) {
+                reservations.forEach(reservation -> reservation.close());
                 return;
             }
             int currentTarget = chunkTarget;
-            int sequence = assignSequence++;
-            CompletableFuture<FlushOutcome> future = SnapshotFlushExecutor.supplyFlushAsync(
-                    token,
-                    () -> {
-                        cancellation.flushStarted();
-                        try {
-                            return flushChunkSync(
-                                    token,
-                                    cancellation,
-                                    baseUrl,
-                                    indexName,
-                                    indexKey,
-                                    snapshot,
-                                    applyBackpressure,
-                                    adjustChunkTarget,
-                                    currentTarget);
-                        } finally {
-                            cancellation.flushFinished();
-                        }
-                    });
+            PendingFlush pending = new PendingFlush(reservations);
+            CompletableFuture<FlushOutcome> future;
+            try {
+                future = SnapshotFlushExecutor.supplyFlushAsync(
+                        token,
+                        () -> {
+                            if (!pending.start()) return null;
+                            cancellation.flushStarted();
+                            try {
+                                return flushChunkSync(
+                                        token,
+                                        cancellation,
+                                        baseUrl,
+                                        indexName,
+                                        indexKey,
+                                        snapshot,
+                                        applyBackpressure,
+                                        adjustChunkTarget,
+                                        currentTarget);
+                            } finally {
+                                cancellation.flushFinished();
+                                pending.finish();
+                            }
+                        });
+            } catch (RuntimeException submissionFailure) {
+                pending.abandon();
+                throw submissionFailure;
+            }
             future = future.exceptionally(error -> isLive(token, cancellation)
                     ? failureFlushOutcome(snapshot, currentTarget, error)
                     : null);
-            inFlight.add(future);
-            future.whenComplete((outcome, error) -> {
-                if (outcome != null && isLive(token, cancellation)) {
-                    synchronized (completed) {
-                        completed.put(sequence, outcome);
-                    }
-                    drainCompleted();
-                }
-            });
+            pending.future = future;
+            inFlight.add(pending);
         }
 
         void awaitAll() {
             while (!inFlight.isEmpty() && isLive(token, cancellation)) {
                 awaitOldest();
             }
-            if (isLive(token, cancellation)) {
-                drainCompleted();
-            } else {
-                cancelAll();
-            }
+            if (!isLive(token, cancellation)) cancelAll();
+        }
+
+        void awaitPending() {
+            if (!inFlight.isEmpty() && isLive(token, cancellation)) awaitOldest();
         }
 
         void cancelAll() {
             cancellation.cancelled.set(true);
-            for (CompletableFuture<FlushOutcome> future : inFlight) {
-                future.cancel(true);
-            }
-            synchronized (completed) {
-                completed.clear();
+            for (PendingFlush pending : inFlight) {
+                pending.abandon();
+                pending.future.cancel(true);
             }
         }
 
         private void awaitOldest() {
             int inFlightBeforeWait = inFlight.size();
             long startedNanos = System.nanoTime();
-            CompletableFuture<FlushOutcome> oldest = inFlight.remove(0);
+            PendingFlush pending = inFlight.get(0);
+            CompletableFuture<FlushOutcome> oldest = pending.future;
+            FlushOutcome outcome = null;
             try {
                 // The HTTP transport owns its response timeout and retry hand-off. Waiting for the
                 // same future preserves one authoritative outcome instead of abandoning a live
                 // request that may still index or enqueue its own retry.
-                oldest.get(FLUSH_SLOT_WATCHDOG_LOG_MS, TimeUnit.MILLISECONDS);
+                outcome = oldest.get(FLUSH_SLOT_WATCHDOG_LOG_MS, TimeUnit.MILLISECONDS);
             } catch (TimeoutException timeout) {
                 long waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
                 if (isLive(token, cancellation)) {
@@ -958,7 +1009,7 @@ public final class SnapshotExportEngine {
                             + " action=await_transport_outcome.");
                 }
                 try {
-                    oldest.get();
+                    outcome = oldest.get();
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
                 } catch (Exception error) {
@@ -968,6 +1019,22 @@ public final class SnapshotExportEngine {
                 Thread.currentThread().interrupt();
             } catch (Exception error) {
                 // Failure outcomes are already merged via exceptionally; ignore join noise.
+            }
+            if (!oldest.isDone()) return;
+            inFlight.remove(pending);
+            // Completion accounting and reservation handback have one owner. The observer sees
+            // ordered outcomes before another builder can reuse this chunk's memory allowance.
+            try {
+                if (outcome != null && isLive(token, cancellation)) {
+                    merge(outcome);
+                    if (chunkObserver != null) {
+                        chunkObserver.onChunkFlushed(
+                                outcome.snapshot(), outcome.bulkOutcome(), outcome.nextChunkTarget());
+                    }
+                    chunkTarget = outcome.nextChunkTarget();
+                }
+            } finally {
+                pending.abandon();
             }
             long waitedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
             if (!isLive(token, cancellation)) {
@@ -983,16 +1050,38 @@ public final class SnapshotExportEngine {
             }
         }
 
-        private void drainCompleted() {
-            synchronized (completed) {
-                while (isLive(token, cancellation) && completed.containsKey(emitSequence)) {
-                    FlushOutcome outcome = completed.remove(emitSequence++);
-                    merge(outcome);
-                    if (chunkObserver != null) {
-                        chunkObserver.onChunkFlushed(outcome.snapshot(), outcome.bulkOutcome(), outcome.nextChunkTarget());
-                    }
-                    chunkTarget = outcome.nextChunkTarget();
-                }
+        // Cancelling a CompletableFuture does not prove that its transport has returned. Keep
+        // running work charged until its supplier exits; queued or completed work releases now.
+        private static final class PendingFlush {
+            private final List<SnapshotMemoryBudget.Reservation> reservations;
+            private CompletableFuture<FlushOutcome> future;
+            private boolean started;
+            private boolean finished;
+            private boolean abandoned;
+
+            private PendingFlush(List<SnapshotMemoryBudget.Reservation> reservations) {
+                this.reservations = reservations;
+            }
+
+            synchronized boolean start() {
+                if (abandoned) return false;
+                started = true;
+                return true;
+            }
+
+            synchronized void finish() {
+                finished = true;
+                if (abandoned) release();
+            }
+
+            synchronized void abandon() {
+                abandoned = true;
+                if (!started || finished) release();
+            }
+
+            private void release() {
+                reservations.forEach(reservation -> reservation.close());
+                reservations.clear();
             }
         }
 

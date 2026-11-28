@@ -553,9 +553,10 @@ public final class TrafficExportQueue {
                     break;
                 }
                 RuntimeConfig.TrafficExportGate trafficGate = RuntimeConfig.trafficExportGate();
-                boolean openSearchEnabled = RuntimeConfig.isSearchTrafficEnabled();
-                String baseUrl = openSearchEnabled ? RuntimeConfig.searchBaseUrl() : "";
-                if (!RuntimeConfig.isExportReady() || !trafficGate.anyTrafficExportEnabled()) {
+                // Stop may invalidate the token before readiness is cleared. The bulk sender
+                // skips that run without polling, so wait here rather than retrying in a spin.
+                if (!RuntimeConfig.isExportRunActive(RuntimeConfig.currentExportRunToken())
+                        || !RuntimeConfig.isExportReady() || !trafficGate.anyTrafficExportEnabled()) {
                     try {
                         TimeUnit.MILLISECONDS.sleep(POLL_TIMEOUT_MS);
                     } catch (InterruptedException e) {
@@ -564,6 +565,8 @@ public final class TrafficExportQueue {
                     }
                     continue;
                 }
+                boolean openSearchEnabled = RuntimeConfig.isSearchTrafficEnabled();
+                String baseUrl = openSearchEnabled ? RuntimeConfig.searchBaseUrl() : "";
                 if (IndexingRetryCoordinator.getInstance().isAuthorizationRecoveryPaused()) {
                     try {
                         TimeUnit.MILLISECONDS.sleep(POLL_TIMEOUT_MS);
@@ -573,19 +576,33 @@ public final class TrafficExportQueue {
                     }
                     continue;
                 }
-                if (baseUrl == null || baseUrl.isBlank()) {
-                    if (!RuntimeConfig.isAnyFileExportEnabled()) {
-                        try {
-                            TimeUnit.MILLISECONDS.sleep(POLL_TIMEOUT_MS);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            break;
-                        }
+                boolean fileOnly = baseUrl == null || baseUrl.isBlank();
+                if (fileOnly && !RuntimeConfig.isAnyFileExportEnabled()) {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(POLL_TIMEOUT_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                    continue;
+                }
+                int maxBatch = batchController.getCurrentBatchSize();
+                long maxBytes = BulkByteBudget.currentMaxBytes();
+                refillFromSpill(Math.max(SPILL_REFILL_TARGET_DOCS, maxBatch));
+                // An empty-queue wait is not delivery work. Leave the entry queued until the
+                // batch is counted so Stop cannot miss the handoff from queued to in-flight.
+                try {
+                    if (!queue.awaitEntry(BATCH_MAX_WAIT_MS)) {
                         continue;
                     }
-                    int maxBatch = batchController.getCurrentBatchSize();
-                    long maxBytes = BulkByteBudget.currentMaxBytes();
-                    refillFromSpill(Math.max(SPILL_REFILL_TARGET_DOCS, maxBatch));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                if (isStopRequested(generation)) {
+                    break;
+                }
+                if (fileOnly) {
                     activeDrainBatches.incrementAndGet();
                     try {
                         FileOnlyDrainResult result = drainToFileOnly(maxBatch, maxBytes);
@@ -599,9 +616,6 @@ public final class TrafficExportQueue {
                     continue;
                 }
 
-                int maxBatch = batchController.getCurrentBatchSize();
-                long maxBytes = BulkByteBudget.currentMaxBytes();
-                refillFromSpill(Math.max(SPILL_REFILL_TARGET_DOCS, maxBatch));
                 long startNs = System.nanoTime();
                 activeDrainBatches.incrementAndGet();
                 try {
@@ -875,11 +889,27 @@ public final class TrafficExportQueue {
                 return false;
             }
             if (super.offer(entry)) {
+                synchronized (this) {
+                    notifyAll();
+                }
                 return true;
             }
             queueBytesHeld.addAndGet(-bytes);
             ExportAdmissionController.releaseLiveBytes(bytes);
             return false;
+        }
+
+        /** Waits without dequeueing so idle polling does not keep the Stop drain gate open. */
+        private synchronized boolean awaitEntry(long timeoutMs) throws InterruptedException {
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+            while (isEmpty()) {
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0L) {
+                    return false;
+                }
+                TimeUnit.NANOSECONDS.timedWait(this, remaining);
+            }
+            return true;
         }
 
         @Override

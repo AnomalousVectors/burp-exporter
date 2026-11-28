@@ -1,6 +1,7 @@
 package ai.anomalousvectors.tools.burp.utils.concurrent;
 
 import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestSupport.awaitFlushPoolsIdle;
+import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestSupport.awaitSnapshotMemoryReleased;
 import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestSupport.fileOnlyTrafficState;
 import static ai.anomalousvectors.tools.burp.testutils.SnapshotExportEngineTestSupport.preparedTrafficDoc;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,6 +66,9 @@ class StopDuringSnapshotExportTest {
             }
             assertThat(ownedWorkers).as("All raw fixture workers must exit before global reset")
                     .allMatch(worker -> !worker.isAlive());
+            assertThat(awaitSnapshotMemoryReleased(5_000L))
+                    .as("Cancelled snapshot owners must release their reservations before global reset")
+                    .isTrue();
             Throwable firstFailure = workerFailures.poll();
             if (firstFailure != null) {
                 AssertionError reported = new AssertionError("Raw fixture worker failed", firstFailure);
@@ -157,6 +161,7 @@ class StopDuringSnapshotExportTest {
         assertThat(awaitFlushPoolsIdle(10_000L))
                 .as("snapshot flush pools must return to idle after cooperative stop")
                 .isTrue();
+        assertThat(awaitSnapshotMemoryReleased(5_000L)).isTrue();
         assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
         assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
     }
@@ -190,6 +195,7 @@ class StopDuringSnapshotExportTest {
         assertThat(RuntimeConfig.isExportRunning()).isFalse();
         assertThat(TrafficExportQueue.getCurrentSize()).isNotNegative();
         assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
+        assertThat(awaitSnapshotMemoryReleased(5_000L)).isTrue();
         assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isZero();
         assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isZero();
     }
@@ -221,6 +227,55 @@ class StopDuringSnapshotExportTest {
         assertThat(snapshotThread.isAlive()).isFalse();
         assertThat(RuntimeConfig.isExportRunning()).isFalse();
         assertThat(awaitFlushPoolsIdle(10_000L)).isTrue();
+        assertThat(awaitSnapshotMemoryReleased(5_000L)).isTrue();
+    }
+
+    @Test
+    void cancelledPreparationKeepsItsReservationUntilTheBuilderReturns() throws Exception {
+        Path root = TestPathSupport.createDirectory("snapshot-cancelled-builder-ownership");
+        RuntimeConfig.updateState(fileOnlyTrafficState(root));
+        RuntimeConfig.setExportRunning(true);
+        var token = RuntimeConfig.currentExportRunToken();
+        String index = IndexNaming.indexNameForShortName("traffic");
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch interrupted = new CountDownLatch(1);
+        Thread snapshotThread = newWorker(() -> SnapshotExportEngine.run(
+                token, List.of(1), 1, 5_000_000L, 250, null, null, "", index, "traffic",
+                SnapshotExportEngine.ItemPreparer.estimated(item -> 65_536L, item -> {
+                    started.countDown();
+                    boolean wasInterrupted = false;
+                    try {
+                        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                        while (releasePrepare.getCount() != 0L) {
+                            if (System.nanoTime() >= deadline) {
+                                throw new IllegalStateException("Fixture builder was not released");
+                            }
+                            try {
+                                releasePrepare.await(10, TimeUnit.MILLISECONDS);
+                            } catch (InterruptedException cancellation) {
+                                wasInterrupted = true;
+                                interrupted.countDown();
+                            }
+                        }
+                        return preparedTrafficDoc(index, item, 512L);
+                    } finally {
+                        if (wasInterrupted) Thread.currentThread().interrupt();
+                    }
+                }), null), "test-cancelled-builder-ownership");
+        snapshotThread.start();
+        try {
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            RuntimeConfig.setExportRunning(false);
+            SnapshotExportEngine.cancelRun(token);
+            assertThat(interrupted.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(ExportStats.getSnapshotBuildAheadReservedBytes()).isEqualTo(65_536L);
+            assertThat(ExportStats.getSnapshotBuildAheadReservedPermits()).isEqualTo(1);
+        } finally {
+            releasePrepare.countDown();
+        }
+        snapshotThread.join(5_000L);
+        assertThat(snapshotThread.isAlive()).isFalse();
+        assertThat(awaitSnapshotMemoryReleased(5_000L)).isTrue();
     }
 
     @Test

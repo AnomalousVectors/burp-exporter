@@ -6,8 +6,10 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 
+import ai.anomalousvectors.tools.burp.utils.ExportStats;
 import ai.anomalousvectors.tools.burp.utils.concurrent.SnapshotFlushExecutor;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigKeys;
 import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
@@ -85,5 +87,27 @@ public final class SnapshotExportEngineTestSupport {
         }
         SnapshotFlushExecutor.Snapshot stats = SnapshotFlushExecutor.stats();
         return stats.flush().activeCount() == 0 && stats.dualSink().activeCount() == 0;
+    }
+
+    /**
+     * Waits for snapshot memory owners to retire after cancellation or delivery.
+     *
+     * <p>The assembly thread and flush pools can finish before an interrupted builder returns.
+     * This observes the actual owners rather than resetting their accounting to make a test pass.
+     * Call only after the fixture has stopped submitting work and released its held suppliers.</p>
+     *
+     * @param timeoutMs maximum wait in milliseconds
+     * @return whether all estimated-memory reservations were released before the deadline
+     */
+    public static boolean awaitSnapshotMemoryReleased(long timeoutMs) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        while (ExportStats.getSnapshotBuildAheadReservedBytes() != 0L
+                || ExportStats.getSnapshotBuildAheadReservedPermits() != 0) {
+            if (System.nanoTime() >= deadline || Thread.currentThread().isInterrupted()) {
+                return false;
+            }
+            LockSupport.parkNanos(10_000_000L);
+        }
+        return true;
     }
 }
