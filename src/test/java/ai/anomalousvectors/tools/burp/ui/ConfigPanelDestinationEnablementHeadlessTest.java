@@ -17,6 +17,8 @@ import javax.swing.SwingUtilities;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.call;
 import static ai.anomalousvectors.tools.burp.testutils.Reflect.get;
@@ -34,6 +36,95 @@ import ai.anomalousvectors.tools.burp.utils.config.ConfigState;
 class ConfigPanelDestinationEnablementHeadlessTest {
 
     private final ConfigPanel panel = createPanel();
+
+    @ParameterizedTest
+    @CsvSource({
+        "openSearchSinkCheckbox, openSearchUrlField, openSearchTlsModeCombo",
+        "openSearchAmazonDestinationRadio, openSearchAmazonUrlField, openSearchAmazonTlsModeCombo",
+        "elasticSearchDestinationRadio, elasticSearchUrlField, elasticSearchTlsModeCombo"
+    })
+    void endpointEditsRefreshTlsAvailabilityWithoutReselectingDestination(
+            String destinationField, String urlField, String tlsField) throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            JCheckBox database = JCheckBox.class.cast(get(panel, "databaseSinkCheckbox"));
+            JRadioButton destination = JRadioButton.class.cast(get(panel, destinationField));
+            JTextField url = JTextField.class.cast(get(panel, urlField));
+            JComboBox<?> tls = getComboBox(panel, tlsField);
+            if (!database.isSelected()) database.doClick();
+            destination.doClick();
+            tls.setSelectedItem("Trust pinned certificate");
+
+            url.setText("");
+            assertThat(tls.isEnabled()).isFalse();
+            url.setText("https://search.example:9200");
+            assertThat(tls.isEnabled()).isTrue();
+            url.setText("http://search.example:9200");
+            assertThat(tls.isEnabled()).isFalse();
+            url.setText(" HTTPS://search.example:9200 ");
+            assertThat(tls.isEnabled()).isTrue();
+            assertThat(tls.getSelectedItem()).isEqualTo("Trust pinned certificate");
+            url.setText("https:");
+            assertThat(tls.isEnabled()).isFalse();
+            url.setText("https://search.example:9200");
+            assertThat(tls.isEnabled()).isTrue();
+            assertThat(destination.isSelected()).isTrue();
+        });
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "openSearchSinkCheckbox, openSearchUrlField, openSearchTlsModeCombo",
+        "openSearchAmazonDestinationRadio, openSearchAmazonUrlField, openSearchAmazonTlsModeCombo",
+        "elasticSearchDestinationRadio, elasticSearchUrlField, elasticSearchTlsModeCombo"
+    })
+    void endpointEditsDoNotEnableTlsForDisabledDatabaseOrInactiveDestination(
+            String destinationField, String urlField, String tlsField) throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            JCheckBox database = JCheckBox.class.cast(get(panel, "databaseSinkCheckbox"));
+            JRadioButton destination = JRadioButton.class.cast(get(panel, destinationField));
+            JTextField url = JTextField.class.cast(get(panel, urlField));
+            JComboBox<?> tls = getComboBox(panel, tlsField);
+            if (!database.isSelected()) database.doClick();
+            destination.doClick();
+            database.doClick();
+            url.setText("");
+            url.setText("https://search.example:9200");
+            assertThat(tls.isEnabled()).isFalse();
+            database.doClick();
+            assertThat(tls.isEnabled()).isTrue();
+
+            String otherDestination = "openSearchSinkCheckbox".equals(destinationField)
+                    ? "elasticSearchDestinationRadio" : "openSearchSinkCheckbox";
+            JRadioButton.class.cast(get(panel, otherDestination)).doClick();
+            url.setText("");
+            url.setText("https://search.example:9200");
+            assertThat(tls.isEnabled()).isFalse();
+            assertThat(destination.isSelected()).isFalse();
+            destination.doClick();
+            assertThat(tls.isEnabled()).isTrue();
+        });
+    }
+
+    @Test
+    void endpointEditsRefreshPinnedImportAvailabilityWithoutChangingMode() throws Exception {
+        SwingUtilities.invokeAndWait(() -> {
+            JCheckBox database = JCheckBox.class.cast(get(panel, "databaseSinkCheckbox"));
+            JRadioButton destination = JRadioButton.class.cast(get(panel, "openSearchSinkCheckbox"));
+            JTextField url = JTextField.class.cast(get(panel, "openSearchUrlField"));
+            JComboBox<?> tls = getComboBox(panel, "openSearchTlsModeCombo");
+            JButton importButton = JButton.class.cast(get(panel, "importPinnedCertificateButton"));
+            if (!database.isSelected()) database.doClick();
+            destination.doClick();
+            tls.setSelectedItem("Trust pinned certificate");
+            url.setText("");
+            assertThat(importButton.isEnabled()).isFalse();
+            url.setText("https://search.example:9200");
+            assertThat(importButton.isEnabled()).isTrue();
+            url.setText("http://search.example:9200");
+            assertThat(importButton.isEnabled()).isFalse();
+            assertThat(tls.getSelectedItem()).isEqualTo("Trust pinned certificate");
+        });
+    }
 
     private static ConfigPanel createPanel() {
         AtomicReference<ConfigPanel> ref = new AtomicReference<>();

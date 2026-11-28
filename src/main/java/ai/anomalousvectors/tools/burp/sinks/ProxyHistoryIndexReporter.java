@@ -25,6 +25,7 @@ import ai.anomalousvectors.tools.burp.utils.export.ExportDocumentIdentity;
 import ai.anomalousvectors.tools.burp.utils.search.BulkByteBudget;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.HttpService;
+import burp.api.montoya.http.message.params.HttpParameterType;
 import burp.api.montoya.http.message.requests.HttpRequest;
 import burp.api.montoya.http.message.responses.HttpResponse;
 import burp.api.montoya.proxy.ProxyHttpRequestResponse;
@@ -203,14 +204,16 @@ public final class ProxyHistoryIndexReporter {
                 RuntimeConfig.searchBaseUrl(),
                 trafficIndexName,
                 TrafficRouteBucket.INDEX_KEY,
-                SnapshotExportEngine.ItemPreparer.estimated(SnapshotMemoryEstimate::proxy, item -> {
-                    Map<String, Object> doc =
-                            buildDocument(item, state.config, state.scopeCache, state.skippedScope);
-                    return doc == null
-                            ? null
-                            : ExportDocumentIdentity.prepare(
-                                    trafficIndexName, TrafficRouteBucket.INDEX_KEY, doc);
-                }),
+                SnapshotExportEngine.ItemPreparer.estimated(
+                        item -> estimateMemoryBytes(item, state.config, state.scopeCache),
+                        item -> {
+                            Map<String, Object> doc =
+                                    buildDocument(item, state.config, state.scopeCache, state.skippedScope);
+                            return doc == null
+                                    ? null
+                                    : ExportDocumentIdentity.prepare(
+                                            trafficIndexName, TrafficRouteBucket.INDEX_KEY, doc);
+                        }),
                 (chunk, outcome, nextChunkTarget) -> {
                     recordChunkOutcome(state.route, RuntimeConfig.isSearchActive(), outcome);
                     ExportStats.setCurrentProxyHistoryChunkTarget(nextChunkTarget);
@@ -341,6 +344,10 @@ public final class ProxyHistoryIndexReporter {
         if (request == null) {
             return null;
         }
+        if (rejectBeforeBuilding(request, state, scopeCache)) {
+            skippedScope.incrementAndGet();
+            return null;
+        }
         HttpService service = item.httpService();
         Map<String, Object> requestDoc = RequestResponseDocBuilder.buildTrafficRequestDoc(request);
         String url = RequestResponseDocBuilder.buildBestEffortUrl(request, service, requestDoc, "ProxyHistory");
@@ -350,6 +357,46 @@ public final class ProxyHistoryIndexReporter {
             return null;
         }
         return new ProxyHistoryWorkItem(item, service, requestDoc, url, burpInScope);
+    }
+
+    /** Avoids payload access in the size estimator for rows that preparation will reject. */
+    private static long estimateMemoryBytes(
+            ProxyHttpRequestResponse item, ConfigState.State state, SnapshotScopeCache scopeCache) {
+        if (item != null && rejectBeforeBuilding(item.finalRequest(), state, scopeCache)) {
+            return 0L;
+        }
+        return SnapshotMemoryEstimate.proxy(item);
+    }
+
+    private static boolean rejectBeforeBuilding(
+            HttpRequest request, ConfigState.State state, SnapshotScopeCache scopeCache) {
+        String url;
+        try {
+            url = request == null ? null : HttpMessageDocSupport.normalizeBlank(request.url());
+        } catch (RuntimeException ignored) {
+            // This probe is inconclusive; the authoritative builder owns malformed-URL diagnostics.
+            return false;
+        }
+        return url != null
+                && !ScopeFilter.shouldExport(state, url, scopeCache.isInScope(url))
+                && canRejectBeforeBuilding(request);
+    }
+
+    /**
+     * Keeps URL-cap reconstruction on the authoritative document-building path.
+     *
+     * <p>Only URL parameters are inspected; BODY enumeration and payload preparation are avoided.
+     * An oversized list or failed accessor leaves the decision to the existing best-effort URL
+     * builder, which can change the query and backing authority before scope is checked.</p>
+     */
+    private static boolean canRejectBeforeBuilding(HttpRequest request) {
+        try {
+            var parameters = request.parameters(HttpParameterType.URL);
+            return parameters == null
+                    || parameters.size() <= RequestResponseParametersSupport.URL_PARAMETERS_CAP;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static Map<String, Object> buildDocument(

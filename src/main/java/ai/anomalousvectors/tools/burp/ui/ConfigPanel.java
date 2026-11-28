@@ -2260,6 +2260,11 @@ public final class ConfigPanel extends JPanel implements ConfigController.Ui {
         openSearchUrlField.getDocument().addDocumentListener(relayout);
         openSearchAmazonUrlField.getDocument().addDocumentListener(relayout);
         elasticSearchUrlField.getDocument().addDocumentListener(relayout);
+        // URL edits can change TLS availability without another destination selection.
+        DocumentListener endpointEnablement = Doc.onChange(this::refreshEnabledStates);
+        openSearchUrlField.getDocument().addDocumentListener(endpointEnablement);
+        openSearchAmazonUrlField.getDocument().addDocumentListener(endpointEnablement);
+        elasticSearchUrlField.getDocument().addDocumentListener(endpointEnablement);
         openSearchAmazonUserField.getDocument().addDocumentListener(relayout);
         openSearchAmazonPasswordField.getDocument().addDocumentListener(relayout);
         openSearchAmazonRegionField.getDocument().addDocumentListener(relayout);
